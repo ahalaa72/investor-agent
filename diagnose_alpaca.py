@@ -2,12 +2,14 @@
 """Diagnostic script to check Alpaca API credentials and permissions."""
 
 import os
-import httpx
-import asyncio
 
 
-async def diagnose():
+def diagnose():
     """Run diagnostic checks on Alpaca API configuration."""
+    from alpaca.trading.client import TradingClient
+    from alpaca.data.historical import StockHistoricalDataClient
+    from alpaca.data.requests import StockBarsRequest
+    from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 
     print("=" * 70)
     print("  Alpaca API Diagnostic Tool")
@@ -46,74 +48,46 @@ async def diagnose():
     # Test Account API (to verify credentials work at all)
     print("\n2. Account API Test (Paper Trading):")
     print("-" * 70)
-    headers = {
-        'APCA-API-KEY-ID': alpaca_key,
-        'APCA-API-SECRET-KEY': alpaca_secret
-    }
-
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(
-                'https://paper-api.alpaca.markets/v2/account',
-                headers=headers
-            )
-            print(f"Status Code: {response.status_code}")
-            if response.status_code == 200:
-                print("✓ SUCCESS! Credentials are valid for trading API")
-                data = response.json()
-                print(f"  Account Status: {data.get('status', 'unknown')}")
-                print(f"  Account Number: {data.get('account_number', 'unknown')}")
-            else:
-                print(f"✗ FAILED! Response: {response.text[:200]}")
+        trading_client = TradingClient(alpaca_key, alpaca_secret, paper=True)
+        account = trading_client.get_account()
+        print("✓ SUCCESS! Credentials are valid for trading API")
+        print(f"  Account Status: {account.status}")
+        print(f"  Account Number: {account.account_number}")
+        print(f"  Buying Power: ${float(account.buying_power):,.2f}")
     except Exception as e:
-        print(f"✗ ERROR: {e}")
+        print(f"✗ FAILED! Error: {str(e)[:200]}")
 
-    # Test Market Data API (IEX feed)
-    print("\n3. Market Data API Test (IEX Feed):")
+    # Test Market Data API
+    print("\n3. Market Data API Test:")
     print("-" * 70)
     try:
-        url = "https://data.alpaca.markets/v2/stocks/SPY/bars?timeframe=1Hour&limit=5&feed=iex"
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(url, headers=headers)
-            print(f"Status Code: {response.status_code}")
+        data_client = StockHistoricalDataClient(alpaca_key, alpaca_secret)
 
-            if response.status_code == 200:
-                print("✓ SUCCESS! Market data access is working!")
-                data = response.json()
-                if 'bars' in data:
-                    print(f"  Received {len(data['bars'])} bars")
-            elif response.status_code == 403:
-                print("✗ FAILED! 403 Forbidden")
-                print("\nThis means your account doesn't have market data access.")
-                print("Response:", response.text[:300])
-            elif response.status_code == 401:
-                print("✗ FAILED! 401 Unauthorized")
-                print("Your credentials are invalid for market data API")
-                print("Response:", response.text[:300])
-            else:
-                print(f"✗ FAILED! Status {response.status_code}")
-                print("Response:", response.text[:300])
+        # Try to fetch recent intraday data for SPY
+        request = StockBarsRequest(
+            symbol_or_symbols="SPY",
+            timeframe=TimeFrame(1, TimeFrameUnit.Hour),
+            limit=5
+        )
+
+        bars = data_client.get_stock_bars(request)
+        df = bars.df
+
+        if not df.empty:
+            print("✓ SUCCESS! Market data access is working!")
+            print(f"  Retrieved {len(df)} bars for SPY")
+            print(f"  Latest bar timestamp: {df.index[-1][1]}")
+        else:
+            print("✗ FAILED! No data returned (empty DataFrame)")
     except Exception as e:
-        print(f"✗ ERROR: {e}")
+        error_msg = str(e)
+        print(f"✗ FAILED! Error: {error_msg[:300]}")
 
-    # Test Market Data API (SIP feed - requires subscription)
-    print("\n4. Market Data API Test (SIP Feed - Premium):")
-    print("-" * 70)
-    try:
-        url = "https://data.alpaca.markets/v2/stocks/SPY/bars?timeframe=1Hour&limit=5&feed=sip"
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(url, headers=headers)
-            print(f"Status Code: {response.status_code}")
-
-            if response.status_code == 200:
-                print("✓ SUCCESS! Premium SIP feed access is enabled!")
-            elif response.status_code == 403:
-                print("✗ 403 Forbidden - SIP feed requires paid subscription")
-                print("  (This is expected for free accounts)")
-            else:
-                print(f"Status {response.status_code}: {response.text[:200]}")
-    except Exception as e:
-        print(f"✗ ERROR: {e}")
+        if "forbidden" in error_msg.lower() or "403" in error_msg:
+            print("\nThis means your account doesn't have market data access.")
+        elif "unauthorized" in error_msg.lower() or "401" in error_msg:
+            print("\nYour credentials are invalid for market data API")
 
     # Recommendations
     print("\n" + "=" * 70)
@@ -131,21 +105,21 @@ To fix market data access issues:
    - Check if market data is enabled
    - You may need to:
      a) Accept market data agreements
-     b) Subscribe to market data plan
+     b) Subscribe to market data plan (free tier includes IEX data)
      c) Request historical data access
 
 3. For free accounts:
    - You get IEX feed access
+   - This is sufficient for most use cases
    - SIP feed requires a paid subscription
-   - Some accounts have restrictions
 
-4. Alternative: Use a different set of API credentials that have
-   market data permissions enabled.
+4. Make sure you're using Paper Trading API keys if testing
+   - Paper trading keys work for market data
+   - Live trading keys work too
 
-5. If using paper trading credentials, make sure they have market
-   data access (not all paper accounts have this by default).
+5. If issues persist, try regenerating your API keys in the Alpaca dashboard.
 """)
 
 
 if __name__ == "__main__":
-    asyncio.run(diagnose())
+    diagnose()

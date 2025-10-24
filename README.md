@@ -19,7 +19,7 @@ The **investor-agent** is a Model Context Protocol (MCP) server that provides co
 - **Market Sentiment:** CNN Fear & Greed Index, Crypto Fear & Greed Index, and Google Trends sentiment analysis
 - **Technical Analysis:** SMA, EMA, RSI, MACD, BBANDS indicators (optional)
 
-The server integrates with [yfinance](https://pypi.org/project/yfinance/) for market data and [Alpaca Markets](https://alpaca.markets/) for intraday data, automatically optimizing data volume for better performance.
+The server integrates with [yfinance](https://pypi.org/project/yfinance/) for market data and the official [Alpaca Python SDK](https://github.com/alpacahq/alpaca-py) for intraday data, automatically optimizing data volume for better performance.
 
 ## Architecture & Performance
 
