@@ -23,14 +23,14 @@ async def diagnose():
         print(f"✓ ALPACA_API_KEY is set: {alpaca_key[:8]}...{alpaca_key[-4:]}")
     else:
         print("✗ ALPACA_API_KEY is NOT set")
-        alpaca_key = 'PKLPZ2H7Y5CK0JO6QNOI'  # Default from code
+        alpaca_key = 'PKBDGRNGV3AZ7PI72YQXFFFUZB'  # Default from code
         print(f"  Using default: {alpaca_key[:8]}...{alpaca_key[-4:]}")
 
     if alpaca_secret:
         print(f"✓ ALPACA_API_SECRET is set: {alpaca_secret[:8]}...{alpaca_secret[-4:]}")
     else:
         print("✗ ALPACA_API_SECRET is NOT set")
-        alpaca_secret = 'JvyvcgEPPELqgZb1QOPk7CYnf5IUJRdIuR2nBeYa'  # Default from code
+        alpaca_secret = '3MKLHeZaQwDciYyfK1c1xzx5TjKJ2bKcWJPEMXFgTWL7'  # Default from code
         print(f"  Using default: {alpaca_secret[:8]}...{alpaca_secret[-4:]}")
 
     # Test Account API (to verify credentials work at all)
