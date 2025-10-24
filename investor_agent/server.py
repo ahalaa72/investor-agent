@@ -41,10 +41,10 @@ BROWSER_HEADERS = {
 }
 
 # Alpaca API Configuration
-ALPACA_API_KEY = os.getenv('ALPACA_API_KEY', 'PKLPZ2H7Y5CK0JO6QNOI')
-ALPACA_API_SECRET = os.getenv('ALPACA_API_SECRET', 'JvyvcgEPPELqgZb1QOPk7CYnf5IUJRdIuR2nBeYa')
-ALPACA_BASE_URL = os.getenv('ALPACA_BASE_URL', 'https://paper-api.alpaca.markets')
-ALPACA_DATA_URL = os.getenv('ALPACA_DATA_URL', 'https://data.alpaca.markets')
+ALPACA_API_KEY = os.getenv('ALPACA_API_KEY', 'PKBDGRNGV3AZ7PI72YQXFFFUZB')
+ALPACA_API_SECRET = os.getenv('ALPACA_API_SECRET', '3MKLHeZaQwDciYyfK1c1xzx5TjKJ2bKcWJPEMXFgTWL7')
+ALPACA_BASE_URL = os.getenv('ALPACA_BASE_URL', 'https://paper-api.alpaca.markets/v2')
+ALPACA_DATA_URL = os.getenv('ALPACA_DATA_URL', 'https://paper-api.alpaca.markets/v2')
 
 # Alpaca API Headers
 ALPACA_HEADERS = {
