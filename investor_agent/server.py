@@ -41,10 +41,10 @@ BROWSER_HEADERS = {
 }
 
 # Alpaca API Configuration
-ALPACA_API_KEY = os.getenv('ALPACA_API_KEY', 'PKBDGRNGV3AZ7PI72YQXFFFUZB')
-ALPACA_API_SECRET = os.getenv('ALPACA_API_SECRET', '3MKLHeZaQwDciYyfK1c1xzx5TjKJ2bKcWJPEMXFgTWL7')
+ALPACA_API_KEY = os.getenv('ALPACA_API_KEY')
+ALPACA_API_SECRET = os.getenv('ALPACA_API_SECRET')
 ALPACA_BASE_URL = os.getenv('ALPACA_BASE_URL', 'https://paper-api.alpaca.markets/v2')
-ALPACA_DATA_URL = os.getenv('ALPACA_DATA_URL', 'https://paper-api.alpaca.markets/v2')
+ALPACA_DATA_URL = os.getenv('ALPACA_DATA_URL', 'https://data.alpaca.markets')
 
 # Alpaca API Headers
 ALPACA_HEADERS = {
@@ -720,6 +720,13 @@ async def get_intraday_data(
     Returns:
         CSV string with columns: timestamp, open, high, low, close, volume, trade_count, vwap
     """
+    # Validate Alpaca credentials are set
+    if not ALPACA_API_KEY or not ALPACA_API_SECRET:
+        raise ValueError(
+            "Alpaca API credentials not configured. Please set ALPACA_API_KEY and ALPACA_API_SECRET environment variables.\n"
+            "Get your credentials at https://alpaca.markets/ (requires account with market data access)."
+        )
+
     ticker = validate_ticker(ticker)
 
     # Validate and set date range

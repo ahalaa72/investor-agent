@@ -62,15 +62,34 @@ uvx "investor-agent[ta]"
 To enable intraday data features, set up your Alpaca API credentials as environment variables:
 
 ```bash
+# Option 1: Export directly
 export ALPACA_API_KEY="your-api-key"
 export ALPACA_API_SECRET="your-api-secret"
+
+# Option 2: Use .env file (recommended)
+cp .env.example .env
+# Edit .env and add your credentials
 ```
 
 **Important Notes:**
 - Your Alpaca account must have **market data access** enabled
 - Free tier accounts have access to IEX data feed
 - Paper trading credentials work if they have market data permissions
-- Without these credentials, the server will use default placeholder values (which won't work)
+- Credentials are **required** - the integration will not work without them
+
+**Testing Your Setup:**
+
+Run the diagnostic script to verify your credentials and permissions:
+
+```bash
+python diagnose_alpaca.py
+```
+
+This will check:
+- Environment variable configuration
+- Account API access (validates credentials)
+- Market data API access (IEX and SIP feeds)
+- Provide detailed troubleshooting guidance
 
 ## Tools
 
