@@ -12,13 +12,14 @@ The **investor-agent** is a Model Context Protocol (MCP) server that provides co
 - **Ticker Analysis:** Company overview, news, metrics, analyst recommendations, and upgrades/downgrades
 - **Options Data:** Filtered options chains with customizable parameters
 - **Historical Data:** Price trends and earnings history
+- **Intraday Data:** Real-time intraday bars at multiple timeframes (1Min, 5Min, 15Min, 30Min, 1Hour) via Alpaca API
 - **Financial Statements:** Income, balance sheet, and cash flow statements
 - **Ownership Analysis:** Institutional holders and insider trading activity
 - **Earnings Calendar:** Upcoming earnings announcements with date filtering
 - **Market Sentiment:** CNN Fear & Greed Index, Crypto Fear & Greed Index, and Google Trends sentiment analysis
 - **Technical Analysis:** SMA, EMA, RSI, MACD, BBANDS indicators (optional)
 
-The server integrates with [yfinance](https://pypi.org/project/yfinance/) for market data and automatically optimizes data volume for better performance.
+The server integrates with [yfinance](https://pypi.org/project/yfinance/) for market data and [Alpaca Markets](https://alpaca.markets/) for intraday data, automatically optimizing data volume for better performance.
 
 ## Architecture & Performance
 
@@ -41,6 +42,7 @@ This multi-layered approach ensures reliable data delivery while respecting API 
 ### Optional Dependencies
 
 - **TA-Lib C Library:** Required for technical indicators. Follow [official installation instructions](https://ta-lib.org/install/).
+- **Alpaca Markets Account:** Required for intraday data. Sign up at [alpaca.markets](https://alpaca.markets/) to get API credentials with market data access.
 
 ## Installation
 
@@ -55,6 +57,21 @@ uvx "investor-agent[ta]"
 
 ```
 
+### Configuring Alpaca API (Optional)
+
+To enable intraday data features, set up your Alpaca API credentials as environment variables:
+
+```bash
+export ALPACA_API_KEY="your-api-key"
+export ALPACA_API_SECRET="your-api-secret"
+```
+
+**Important Notes:**
+- Your Alpaca account must have **market data access** enabled
+- Free tier accounts have access to IEX data feed
+- Paper trading credentials work if they have market data permissions
+- Without these credentials, the server will use default placeholder values (which won't work)
+
 ## Tools
 
 ### Market Data
@@ -62,6 +79,7 @@ uvx "investor-agent[ta]"
 - **`get_ticker_data(ticker, max_news=5, max_recommendations=5, max_upgrades=5)`** - Comprehensive ticker report with essential field filtering and configurable limits for news, analyst recommendations, and upgrades/downgrades
 - **`get_options(ticker_symbol, num_options=10, start_date=None, end_date=None, strike_lower=None, strike_upper=None, option_type=None)`** - Options data with advanced filtering by date range (YYYY-MM-DD), strike price bounds, and option type (C=calls, P=puts)
 - **`get_price_history(ticker, period="1mo")`** - Historical OHLCV data with intelligent interval selection: daily intervals for periods ≤1y, monthly intervals for periods ≥2y to optimize data volume
+- **`get_intraday_data(ticker, timeframe="5Min", start_date=None, end_date=None, limit=1000)`** - Intraday bar data (OHLCV) using Alpaca API. Supports multiple timeframes (1Min, 5Min, 15Min, 30Min, 1Hour). Returns timestamp, open, high, low, close, volume, trade count, and VWAP. Requires Alpaca API credentials with market data access
 - **`get_financial_statements(ticker, statement_types=["income"], frequency="quarterly", max_periods=8)`** - Financial statements with parallel fetching support. Returns dict with statement type as key
 - **`get_institutional_holders(ticker, top_n=20)`** - Major institutional and mutual fund holders data
 - **`get_earnings_history(ticker, max_entries=8)`** - Historical earnings data with configurable entry limits

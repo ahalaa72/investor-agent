@@ -1,5 +1,6 @@
 import datetime
 import logging
+import os
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from io import StringIO
@@ -37,6 +38,18 @@ logging.basicConfig(
 # Minimal HTTP Headers - only essential ones
 BROWSER_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+}
+
+# Alpaca API Configuration
+ALPACA_API_KEY = os.getenv('ALPACA_API_KEY', 'PKLPZ2H7Y5CK0JO6QNOI')
+ALPACA_API_SECRET = os.getenv('ALPACA_API_SECRET', 'JvyvcgEPPELqgZb1QOPk7CYnf5IUJRdIuR2nBeYa')
+ALPACA_BASE_URL = os.getenv('ALPACA_BASE_URL', 'https://paper-api.alpaca.markets')
+ALPACA_DATA_URL = os.getenv('ALPACA_DATA_URL', 'https://data.alpaca.markets')
+
+# Alpaca API Headers
+ALPACA_HEADERS = {
+    'APCA-API-KEY-ID': ALPACA_API_KEY,
+    'APCA-API-SECRET-KEY': ALPACA_API_SECRET
 }
 
 # Unified retry decorator for API calls (yfinance and HTTP)
@@ -686,6 +699,118 @@ if _ta_available:
             "price_data": to_clean_csv(price_df),
             "indicator_data": to_clean_csv(indicator_df)
         }
+
+@mcp.tool()
+async def get_intraday_data(
+    ticker: str,
+    timeframe: Literal["1Min", "5Min", "15Min", "30Min", "1Hour"] = "5Min",
+    start_date: str | None = None,
+    end_date: str | None = None,
+    limit: int = 1000
+) -> str:
+    """Get intraday bar data (OHLCV) for a ticker using Alpaca API.
+
+    Args:
+        ticker: Stock ticker symbol (e.g., 'AAPL', 'TSLA')
+        timeframe: Bar aggregation timeframe - 1Min, 5Min, 15Min, 30Min, or 1Hour
+        start_date: Start date in YYYY-MM-DD format (defaults to today)
+        end_date: End date in YYYY-MM-DD format (defaults to today)
+        limit: Maximum number of bars to return (max 10000)
+
+    Returns:
+        CSV string with columns: timestamp, open, high, low, close, volume, trade_count, vwap
+    """
+    ticker = validate_ticker(ticker)
+
+    # Validate and set date range
+    today = datetime.date.today()
+
+    if start_date:
+        start = validate_date(start_date)
+    else:
+        # Default to today
+        start = today
+
+    if end_date:
+        end = validate_date(end_date)
+    else:
+        # Default to today
+        end = today
+
+    if start > end:
+        raise ValueError("start_date must be before or equal to end_date")
+
+    # Validate limit
+    limit = min(max(limit, 1), 10000)
+
+    # Build Alpaca API URL
+    # Alpaca uses RFC3339 format for timestamps
+    start_str = f"{start}T00:00:00Z"
+    end_str = f"{end}T23:59:59Z"
+
+    # Build URL with query parameters
+    # Use IEX feed (available for free accounts) instead of SIP (requires paid subscription)
+    url = f"{ALPACA_DATA_URL}/v2/stocks/{ticker}/bars?timeframe={timeframe}&start={start_str}&end={end_str}&limit={limit}&adjustment=split&feed=iex"
+
+    logger.info(f"Fetching intraday data for {ticker} ({timeframe}) from {start} to {end}")
+
+    try:
+        # Fetch data from Alpaca
+        data = await fetch_json(url, headers=ALPACA_HEADERS)
+
+        if not data or "bars" not in data or not data["bars"]:
+            return f"No intraday data found for {ticker} in the specified date range. Market may be closed or ticker invalid."
+
+        bars = data["bars"]
+
+        # Convert to DataFrame
+        df = pd.DataFrame(bars)
+
+        # Rename columns to match standard format
+        column_mapping = {
+            "t": "timestamp",
+            "o": "open",
+            "h": "high",
+            "l": "low",
+            "c": "close",
+            "v": "volume",
+            "n": "trade_count",
+            "vw": "vwap"
+        }
+        df = df.rename(columns=column_mapping)
+
+        # Convert timestamp to readable format
+        if "timestamp" in df.columns:
+            df["timestamp"] = pd.to_datetime(df["timestamp"]).dt.strftime("%Y-%m-%d %H:%M:%S")
+
+        # Select only the columns we want in the output
+        output_columns = ["timestamp", "open", "high", "low", "close", "volume", "trade_count", "vwap"]
+        df = df[[col for col in output_columns if col in df.columns]]
+
+        logger.info(f"Retrieved {len(df)} intraday bars for {ticker}")
+        return to_clean_csv(df)
+
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 401:
+            raise ValueError("Alpaca API authentication failed. Please check your API credentials (ALPACA_API_KEY and ALPACA_API_SECRET environment variables).")
+        elif e.response.status_code == 403:
+            raise ValueError(
+                "Alpaca API access forbidden (403). This usually means:\n"
+                "1. Your API credentials don't have market data access enabled\n"
+                "2. You need to subscribe to Alpaca's market data plan\n"
+                "3. Your account needs to be approved for historical data access\n"
+                "Please check your Alpaca account settings and ensure market data permissions are enabled."
+            )
+        elif e.response.status_code == 422:
+            raise ValueError(f"Invalid request to Alpaca API. Ticker '{ticker}' may not be valid or data may not be available.")
+        elif e.response.status_code == 429:
+            raise ValueError("Alpaca API rate limit exceeded. Please try again later.")
+        else:
+            raise ValueError(f"Alpaca API error (status {e.response.status_code}): {str(e)}")
+    except Exception as e:
+        logger.error(f"Error fetching intraday data for {ticker}: {e}")
+        raise ValueError(f"Failed to retrieve intraday data: {str(e)}")
+
 
 if __name__ == "__main__":
     mcp.run()
