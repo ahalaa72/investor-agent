@@ -67,7 +67,8 @@ uvx "investor-agent[ta]"
 - **`get_earnings_history(ticker, max_entries=8)`** - Historical earnings data with configurable entry limits
 - **`get_insider_trades(ticker, max_trades=20)`** - Recent insider trading activity with configurable trade limits
 - **`get_nasdaq_earnings_calendar(date=None, limit=100)`** - Upcoming earnings announcements using Nasdaq API (YYYY-MM-DD format, defaults to today).
-- **`fetch_intraday_data(stock, window=200)`** - Fetch 15-minute historical stock bars using Alpaca API. Returns CSV string with timestamp and close price data in EST timezone.
+- **`fetch_intraday_15m(stock, window=200)`** - Fetch 15-minute historical stock bars using Alpaca API. Returns CSV string with timestamp and close price data in EST timezone.
+- **`fetch_intraday_1h(stock, window=200)`** - Fetch 1-Hour historical stock bars using Alpaca API. Returns CSV string with timestamp and close price data in EST timezone.
 
 
 ### Market Sentiment
