@@ -1,0 +1,16 @@
+version: '3.8'
+services:
+  investor-agent:
+    image: git-investor-agent:latest
+    container_name: investor-agent-mcp
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    stdin_open: true
+    tty: true
+# You can add volumes here if you want code mounting:
+#    volumes:
+#      - ./:/app
+

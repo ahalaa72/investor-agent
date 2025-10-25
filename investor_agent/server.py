@@ -1,3 +1,8 @@
+from dotenv import load_dotenv
+load_dotenv()
+import os
+#print("KEY:", os.getenv("ALPACA_API_KEY"))
+#print("SECRET:", os.getenv("ALPACA_API_SECRET"))
 import datetime
 import logging
 import sys
@@ -602,7 +607,7 @@ async def get_nasdaq_earnings_calendar(
 
 
 @mcp.tool()
-def fetch_intraday_data(stock: str, window: int = 200) -> str:
+def fetch_intraday_15m(stock: str, window: int = 200) -> str:
     """
     Fetch 15-minute historical stock bars using Alpaca API.
 
@@ -619,11 +624,8 @@ def fetch_intraday_data(stock: str, window: int = 200) -> str:
     import os
 
     try:
-        #api_key = os.getenv('ALPACA_API_KEY')
-        #api_secret = os.getenv('ALPACA_API_SECRET')
-        api_key = 'PKBDGRNGV3AZ7PI72YQXFFFUZB'
-        api_secret = '3MKLHeZaQwDciYyfK1c1xzx5TjKJ2bKcWJPEMXFgTWL7'
-        BASE_URL = 'https://paper-api.alpaca.markets/v2'
+        api_key = os.getenv('ALPACA_API_KEY')
+        api_secret = os.getenv('ALPACA_API_SECRET')
 
         if not api_key or not api_secret:
             raise ValueError("ALPACA_API_KEY and ALPACA_API_SECRET environment variables must be set")
@@ -652,6 +654,59 @@ def fetch_intraday_data(stock: str, window: int = 200) -> str:
 
     except Exception as e:
         raise ValueError(f"Error fetching data for {stock}: {e}")
+
+
+@mcp.tool()
+def fetch_intraday_1h(stock: str, window: int = 200) -> str:
+    """
+    Fetch 1-Hour historical stock bars using Alpaca API.
+
+    Args:
+        stock: Stock ticker symbol
+        window: Number of 15-minute bars to fetch (default: 200)
+
+    Returns:
+        CSV string with timestamp and close price data in EST timezone
+    """
+    from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+    from alpaca.data.historical import StockHistoricalDataClient
+    from alpaca.data.requests import StockBarsRequest
+    import os
+
+    try:
+        api_key = os.getenv('ALPACA_API_KEY')
+        api_secret = os.getenv('ALPACA_API_SECRET')
+
+        if not api_key or not api_secret:
+            raise ValueError("ALPACA_API_KEY and ALPACA_API_SECRET environment variables must be set")
+
+        timeframe = TimeFrame(1, TimeFrameUnit.Hour)
+        client = StockHistoricalDataClient(api_key, api_secret)
+        request = StockBarsRequest(
+            symbol_or_symbols=stock,
+            timeframe=timeframe,
+            limit=window
+        )
+
+        df_raw = client.get_stock_bars(request).df
+
+        if df_raw.empty or 'close' not in df_raw.columns:
+            raise ValueError(f"'close' column missing or data empty for {stock}")
+
+        df = df_raw['close']
+        df.index = df_raw.index.get_level_values('timestamp').tz_convert("America/New_York")
+        df = df.to_frame(name=f'{stock}')
+
+        # Convert to CSV string
+        df_reset = df.reset_index()
+        df_reset['timestamp'] = df_reset['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S %Z')
+        return df_reset.to_csv(index=False)
+
+    except Exception as e:
+        raise ValueError(f"Error fetching data for {stock}: {e}")
+
+
+
 
 
 # Only register the technical indicator tool if TA-Lib is available
