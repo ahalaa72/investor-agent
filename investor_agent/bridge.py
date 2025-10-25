@@ -79,13 +79,23 @@ class ToolListResponse(BaseModel):
 # Helper functions
 def get_tools_list():
     """Get list of tools from MCP server"""
-    # FastMCP stores tools - check different possible attributes
+    # FastMCP stores tools in _tool_manager
+    if hasattr(mcp, '_tool_manager') and mcp._tool_manager:
+        tool_manager = mcp._tool_manager
+        # Tool manager might have _tools or tools attribute
+        if hasattr(tool_manager, '_tools') and tool_manager._tools:
+            tools = tool_manager._tools
+            return list(tools.values()) if isinstance(tools, dict) else tools
+        elif hasattr(tool_manager, 'tools') and tool_manager.tools:
+            tools = tool_manager.tools
+            return list(tools.values()) if isinstance(tools, dict) else tools
+
+    # Fallback to direct attributes
     if hasattr(mcp, '_tools') and mcp._tools:
-        return mcp._tools
+        return list(mcp._tools.values()) if isinstance(mcp._tools, dict) else mcp._tools
     elif hasattr(mcp, 'tools') and mcp.tools:
-        return mcp.tools
-    elif hasattr(mcp, '_tool_manager') and hasattr(mcp._tool_manager, 'tools'):
-        return mcp._tool_manager.tools
+        return list(mcp.tools.values()) if isinstance(mcp.tools, dict) else mcp.tools
+
     return None
 
 
@@ -215,6 +225,13 @@ async def list_tools():
             logger.error(f"Has _tools: {hasattr(mcp, '_tools')}")
             logger.error(f"Has tools: {hasattr(mcp, 'tools')}")
             logger.error(f"Has _tool_manager: {hasattr(mcp, '_tool_manager')}")
+            if hasattr(mcp, '_tool_manager') and mcp._tool_manager:
+                logger.error(f"Tool manager type: {type(mcp._tool_manager)}")
+                logger.error(f"Tool manager attributes: {dir(mcp._tool_manager)}")
+                if hasattr(mcp._tool_manager, '_tools'):
+                    logger.error(f"Tool manager _tools: {mcp._tool_manager._tools}")
+                if hasattr(mcp._tool_manager, 'tools'):
+                    logger.error(f"Tool manager tools: {mcp._tool_manager.tools}")
             raise HTTPException(status_code=500, detail="No tools available in MCP server")
 
         tools_info = []
