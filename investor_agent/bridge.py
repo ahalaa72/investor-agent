@@ -18,8 +18,9 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-# Import the MCP server instance
-from investor_agent.server import mcp
+# Import the MCP server instance and all tool definitions
+from investor_agent import server
+mcp = server.mcp
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -76,13 +77,26 @@ class ToolListResponse(BaseModel):
 
 
 # Helper functions
+def get_tools_list():
+    """Get list of tools from MCP server"""
+    # FastMCP stores tools - check different possible attributes
+    if hasattr(mcp, '_tools') and mcp._tools:
+        return mcp._tools
+    elif hasattr(mcp, 'tools') and mcp.tools:
+        return mcp.tools
+    elif hasattr(mcp, '_tool_manager') and hasattr(mcp._tool_manager, 'tools'):
+        return mcp._tool_manager.tools
+    return None
+
+
 def get_tool_function(tool_name: str):
     """Get the actual function for a tool by name"""
-    # FastMCP stores tools in the _tools dict
-    if not hasattr(mcp, '_tools') or not mcp._tools:
+    tools = get_tools_list()
+
+    if not tools:
         raise ValueError("No tools found in MCP server")
 
-    for tool in mcp._tools:
+    for tool in tools:
         if tool.name == tool_name:
             return tool.fn
 
@@ -193,11 +207,18 @@ async def list_tools():
     Returns tool names, descriptions, and parameter schemas in OpenAI function calling format.
     """
     try:
-        if not hasattr(mcp, '_tools') or not mcp._tools:
+        tools = get_tools_list()
+
+        if not tools:
+            # Log debugging information
+            logger.error(f"MCP attributes: {dir(mcp)}")
+            logger.error(f"Has _tools: {hasattr(mcp, '_tools')}")
+            logger.error(f"Has tools: {hasattr(mcp, 'tools')}")
+            logger.error(f"Has _tool_manager: {hasattr(mcp, '_tool_manager')}")
             raise HTTPException(status_code=500, detail="No tools available in MCP server")
 
         tools_info = []
-        for tool in mcp._tools:
+        for tool in tools:
             tool_info = ToolInfo(
                 name=tool.name,
                 description=tool.description or inspect.getdoc(tool.fn) or "No description available",
@@ -265,10 +286,12 @@ async def call_tool(request: ToolCallRequest):
 async def get_tool_info(tool_name: str):
     """Get detailed information about a specific tool"""
     try:
-        if not hasattr(mcp, '_tools') or not mcp._tools:
+        tools = get_tools_list()
+
+        if not tools:
             raise HTTPException(status_code=500, detail="No tools available in MCP server")
 
-        for tool in mcp._tools:
+        for tool in tools:
             if tool.name == tool_name:
                 return {
                     "name": tool.name,
