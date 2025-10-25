@@ -33,6 +33,10 @@ classifiers = [
 ta = [
     "ta-lib>=0.6.7",
 ]
+bridge = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+]
 
 [dependency-groups]
 dev = [
@@ -42,6 +46,7 @@ dev = [
 
 [project.scripts]
 investor-agent = "investor_agent.server:mcp.run"
+investor-agent-bridge = "investor_agent.bridge:app"
 
 [build-system]
 requires = ["hatchling", "hatch-vcs"]
