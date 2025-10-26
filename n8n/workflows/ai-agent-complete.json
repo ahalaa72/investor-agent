@@ -1,0 +1,324 @@
+{
+  "name": "AI Agent - Investor Report Generator",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ai-agent-report",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-1",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [240, 300],
+      "webhookId": "ai-agent-report"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "http://host.docker.internal:8000/tools",
+        "options": {}
+      },
+      "id": "http-get-tools",
+      "name": "Get MCP Tools",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Get tools from bridge\nconst toolsResponse = $input.first().json;\nconst tools = toolsResponse.tools;\n\n// Get user query from webhook\nconst userQuery = $('Webhook').first().json.body.query;\n\n// Convert to OpenAI function calling format\nconst openaiTools = tools.map(tool => ({\n  type: \"function\",\n  function: {\n    name: tool.name,\n    description: tool.description,\n    parameters: tool.parameters\n  }\n}));\n\nreturn {\n  json: {\n    tools: openaiTools,\n    userQuery: userQuery,\n    toolCount: tools.length\n  }\n};"
+      },
+      "id": "code-format-tools",
+      "name": "Format Tools for AI",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "resource": "text",
+        "operation": "message",
+        "model": "gpt-4o",
+        "messages": {
+          "values": [
+            {
+              "content": "=You are an expert financial analyst and investment advisor. Your job is to:\n\n1. Gather comprehensive data using available tools\n2. Analyze the data with your financial expertise\n3. Generate a detailed, professional investment report\n\nYou have access to market data tools including:\n- Real-time stock prices and history\n- Financial statements and metrics\n- News and analyst recommendations\n- Insider trading activity\n- Market sentiment indicators\n\nAlways provide:\n- Executive Summary\n- Key Findings with specific data points\n- Financial Analysis\n- Risk Assessment\n- Clear Recommendation with reasoning\n\nUse markdown formatting for the report.",
+              "role": "system"
+            },
+            {
+              "content": "={{ $json.userQuery }}",
+              "role": "user"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.3,
+          "maxTokens": 3000
+        },
+        "tools": "={{ $json.tools }}",
+        "toolChoice": "auto"
+      },
+      "id": "openai-agent",
+      "name": "AI Agent Brain",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1.3,
+      "position": [900, 300],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-credentials",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Get OpenAI response\nconst openaiResponse = $input.first().json;\nconst message = openaiResponse.choices[0].message;\n\n// Store conversation for later\nconst conversationHistory = [\n  {\n    role: \"system\",\n    content: \"You are an expert financial analyst and investment advisor.\"\n  },\n  {\n    role: \"user\",\n    content: $('Format Tools for AI').first().json.userQuery\n  },\n  message\n];\n\n// Check if AI wants to call tools\nif (message.tool_calls && message.tool_calls.length > 0) {\n  // AI decided to call tools\n  const toolCalls = message.tool_calls.map(toolCall => {\n    let args;\n    try {\n      args = typeof toolCall.function.arguments === 'string' \n        ? JSON.parse(toolCall.function.arguments)\n        : toolCall.function.arguments;\n    } catch (e) {\n      args = {};\n    }\n    \n    return {\n      json: {\n        call_id: toolCall.id,\n        tool_name: toolCall.function.name,\n        arguments: args,\n        conversation: conversationHistory,\n        needs_synthesis: true\n      }\n    };\n  });\n  \n  return toolCalls;\n} else {\n  // AI provided final answer without needing tools\n  return {\n    json: {\n      final_report: message.content,\n      needs_synthesis: false,\n      done: true\n    }\n  };\n}"
+      },
+      "id": "code-process-function-calls",
+      "name": "Process AI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.needs_synthesis }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "if-needs-tools",
+      "name": "Needs Tool Calls?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1340, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8000/call",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  \"tool_name\": $json.tool_name,\n  \"arguments\": $json.arguments\n} }}",
+        "options": {}
+      },
+      "id": "http-call-tools",
+      "name": "Execute MCP Tools",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1560, 200],
+      "executeOnce": false
+    },
+    {
+      "parameters": {
+        "jsCode": "// Get all tool execution results\nconst toolResults = $input.all();\n\n// Get conversation history from first item\nconst conversation = toolResults[0].json.conversation;\nconst originalCallId = toolResults[0].json.call_id;\n\n// Format tool results for OpenAI\nconst toolMessages = toolResults.map(item => ({\n  role: \"tool\",\n  tool_call_id: item.json.call_id,\n  content: JSON.stringify(item.json.result, null, 2)\n}));\n\n// Combine conversation history with tool results\nconst fullConversation = [\n  ...conversation,\n  ...toolMessages\n];\n\nreturn {\n  json: {\n    messages: fullConversation,\n    userQuery: $('Format Tools for AI').first().json.userQuery\n  }\n};"
+      },
+      "id": "code-format-tool-results",
+      "name": "Format Tool Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1780, 200]
+    },
+    {
+      "parameters": {
+        "resource": "text",
+        "operation": "message",
+        "model": "gpt-4o",
+        "messages": "={{ $json.messages }}",
+        "options": {
+          "temperature": 0.3,
+          "maxTokens": 4000
+        }
+      },
+      "id": "openai-synthesize",
+      "name": "AI Synthesize Report",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1.3,
+      "position": [2000, 200],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-credentials",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Get the final AI response\nconst aiResponse = $input.first().json;\nconst report = aiResponse.choices[0].message.content;\n\n// Get original query\nconst originalQuery = $('Webhook').first().json.body.query;\n\nreturn {\n  json: {\n    query: originalQuery,\n    report: report,\n    timestamp: new Date().toISOString(),\n    model: aiResponse.model,\n    usage: aiResponse.usage\n  }\n};"
+      },
+      "id": "code-format-final",
+      "name": "Format Final Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2220, 200]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
+      },
+      "id": "respond-webhook",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2440, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// If AI provided answer without tools\nconst finalAnswer = $input.first().json.final_report;\nconst originalQuery = $('Webhook').first().json.body.query;\n\nreturn {\n  json: {\n    query: originalQuery,\n    report: finalAnswer,\n    timestamp: new Date().toISOString(),\n    note: \"Generated without additional data gathering\"\n  }\n};"
+      },
+      "id": "code-direct-answer",
+      "name": "Format Direct Answer",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1560, 400]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Get MCP Tools",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get MCP Tools": {
+      "main": [
+        [
+          {
+            "node": "Format Tools for AI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Tools for AI": {
+      "main": [
+        [
+          {
+            "node": "AI Agent Brain",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent Brain": {
+      "main": [
+        [
+          {
+            "node": "Process AI Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process AI Response": {
+      "main": [
+        [
+          {
+            "node": "Needs Tool Calls?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Needs Tool Calls?": {
+      "main": [
+        [
+          {
+            "node": "Execute MCP Tools",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Format Direct Answer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute MCP Tools": {
+      "main": [
+        [
+          {
+            "node": "Format Tool Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Tool Results": {
+      "main": [
+        [
+          {
+            "node": "AI Synthesize Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Synthesize Report": {
+      "main": [
+        [
+          {
+            "node": "Format Final Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Final Report": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Direct Answer": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2025-10-26T00:00:00.000Z",
+  "versionId": "1"
+}
