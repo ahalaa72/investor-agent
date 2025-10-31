@@ -20,8 +20,9 @@ from yfinance.exceptions import YFRateLimitError
 
 mcp = FastMCP("Investor-Agent", dependencies=["yfinance", "pandas", "pytrends"])
 
-# Configure pandas
+# Configure pandas and enable HTTP caching
 pd.set_option('future.no_silent_downcasting', True)
+hishel.install_cache()
 
 # Check TA-Lib availability
 try:

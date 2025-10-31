@@ -27,7 +27,9 @@ RUN /root/.local/bin/uv pip install --system \
     "pytrends>=4.9.2" \
     "requests-cache>=1.2.1" \
     "tenacity>=9.1.2" \
-    "yfinance[nospam]>=0.2.66"
+    "yfinance[nospam]>=0.2.66" \
+    "numpy>=2.0.0" \
+    "scipy>=1.14.0"
 
 # Copy only the investor_agent package (the source code we need)
 COPY investor_agent ./investor_agent
