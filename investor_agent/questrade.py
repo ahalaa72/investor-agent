@@ -8,7 +8,7 @@ error handling, logging, and retry logic consistent with the investor-agent patt
 import logging
 import os
 import sys
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from tenacity import (
     retry,
@@ -31,9 +31,15 @@ try:
     _questrade_available = True
 except ImportError:
     _questrade_available = False
+    Questrade = None  # Define as None when not available
     logger.warning(
         "questrade-api package not available. Install it with: pip install questrade-api"
     )
+
+if TYPE_CHECKING:
+    from questrade_api import Questrade as QuestradeType
+else:
+    QuestradeType = Any
 
 
 class QuestradeClient:
@@ -72,15 +78,15 @@ class QuestradeClient:
                 "environment variable or pass refresh_token parameter."
             )
 
-        self._client: Optional[Questrade] = None
+        self._client: Optional[QuestradeType] = None
         logger.info("QuestradeClient initialized")
 
-    def _get_client(self) -> Questrade:
+    def _get_client(self) -> QuestradeType:
         """
         Get or create the Questrade API client instance.
 
         Returns:
-            Questrade: The initialized Questrade API client.
+            QuestradeType: The initialized Questrade API client.
         """
         if self._client is None:
             try:
