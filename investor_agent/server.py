@@ -1133,5 +1133,593 @@ if _bootstrap_available:
         return calculate_fundamental_scores(ticker, max_periods)
 
 
+# ============================================================================
+# QUESTRADE API TOOLS
+# ============================================================================
+
+# Check Questrade API availability
+try:
+    from questrade_api import Questrade
+    _questrade_available = True
+except ImportError:
+    _questrade_available = False
+    logger.warning("Questrade API not available - install with: pip install questrade-api")
+
+
+def get_questrade_client() -> Questrade:
+    """Initialize Questrade client with refresh token from environment."""
+    refresh_token = os.getenv('QUESTRADE_REFRESH_TOKEN')
+    if not refresh_token:
+        raise ValueError(
+            "QUESTRADE_REFRESH_TOKEN environment variable not set. "
+            "Get your token from: https://login.questrade.com/APIAccess/UserApps.aspx"
+        )
+    return Questrade(refresh_token=refresh_token)
+
+
+def resolve_symbol_to_id(qt: Questrade, symbol: str) -> dict:
+    """Resolve a symbol string to its ID and info."""
+    symbol = symbol.upper().strip()
+    result = qt.symbols_search(prefix=symbol)
+
+    if not result.get('symbols'):
+        raise ValueError(f"Symbol '{symbol}' not found")
+
+    # Find exact match or first result
+    for sym in result['symbols']:
+        if sym.get('symbol') == symbol:
+            return sym
+
+    # Return first result if no exact match
+    first_result = result['symbols'][0]
+    logger.warning(f"Exact match not found for '{symbol}', using '{first_result.get('symbol')}'")
+    return first_result
+
+
+if _questrade_available:
+
+    @mcp.tool()
+    def questrade_get_quote(symbol: str) -> dict:
+        """Get real-time quote for a single symbol from Questrade.
+
+        Returns:
+        - Current bid/ask prices
+        - Last trade price and volume
+        - Day high/low
+        - Open/close prices
+        - Market data timestamp
+        """
+        qt = get_questrade_client()
+        sym_info = resolve_symbol_to_id(qt, symbol)
+        symbol_id = sym_info['symbolId']
+
+        result = qt.markets_quotes(ids=str(symbol_id))
+
+        if not result.get('quotes'):
+            raise ValueError(f"No quote data available for {symbol}")
+
+        quote = result['quotes'][0]
+
+        return {
+            "symbol": quote.get('symbol'),
+            "symbolId": quote.get('symbolId'),
+            "lastTradePrice": quote.get('lastTradePrice'),
+            "lastTradeSize": quote.get('lastTradeSize'),
+            "lastTradeTime": quote.get('lastTradeTime'),
+            "bidPrice": quote.get('bidPrice'),
+            "bidSize": quote.get('bidSize'),
+            "askPrice": quote.get('askPrice'),
+            "askSize": quote.get('askSize'),
+            "openPrice": quote.get('openPrice'),
+            "highPrice": quote.get('highPrice'),
+            "lowPrice": quote.get('lowPrice'),
+            "closePrice": quote.get('previousClose'),
+            "volume": quote.get('volume'),
+            "delay": quote.get('delay', 0),
+            "timestamp": quote.get('lastTradeTick')
+        }
+
+    @mcp.tool()
+    def questrade_get_quotes(symbols: list[str]) -> list[dict]:
+        """Get real-time quotes for multiple symbols from Questrade.
+
+        Args:
+            symbols: List of ticker symbols (e.g., ['AAPL', 'MSFT', 'TSLA'])
+
+        Returns list of quote dictionaries with pricing and volume data.
+        """
+        qt = get_questrade_client()
+
+        # Resolve all symbols to IDs
+        symbol_ids = []
+        symbol_map = {}
+        for symbol in symbols:
+            try:
+                sym_info = resolve_symbol_to_id(qt, symbol)
+                symbol_id = sym_info['symbolId']
+                symbol_ids.append(str(symbol_id))
+                symbol_map[symbol_id] = symbol
+            except Exception as e:
+                logger.warning(f"Failed to resolve {symbol}: {e}")
+                continue
+
+        if not symbol_ids:
+            raise ValueError("No valid symbols could be resolved")
+
+        # Get quotes for all symbols
+        ids_str = ','.join(symbol_ids)
+        result = qt.markets_quotes(ids=ids_str)
+
+        quotes = []
+        for quote in result.get('quotes', []):
+            quotes.append({
+                "symbol": quote.get('symbol'),
+                "symbolId": quote.get('symbolId'),
+                "lastTradePrice": quote.get('lastTradePrice'),
+                "bidPrice": quote.get('bidPrice'),
+                "askPrice": quote.get('askPrice'),
+                "volume": quote.get('volume'),
+                "highPrice": quote.get('highPrice'),
+                "lowPrice": quote.get('lowPrice'),
+                "openPrice": quote.get('openPrice'),
+                "lastTradeTime": quote.get('lastTradeTime')
+            })
+
+        return quotes
+
+    @mcp.tool()
+    def questrade_get_candles(
+        symbol: str,
+        interval: Literal["OneMinute", "TwoMinutes", "ThreeMinutes", "FourMinutes", "FiveMinutes",
+                          "TenMinutes", "FifteenMinutes", "TwentyMinutes", "HalfHour",
+                          "OneHour", "TwoHours", "FourHours", "OneDay", "OneWeek", "OneMonth", "OneYear"] = "OneDay",
+        start_date: str | None = None,
+        end_date: str | None = None,
+        max_candles: int = 100
+    ) -> str:
+        """Get OHLCV candlestick data from Questrade.
+
+        Args:
+            symbol: Stock ticker symbol
+            interval: Candle interval (OneMinute to OneYear)
+            start_date: Start date in YYYY-MM-DD format (optional)
+            end_date: End date in YYYY-MM-DD format (optional)
+            max_candles: Maximum number of candles to return (default 100)
+
+        Returns CSV with: Date, Open, High, Low, Close, Volume
+        """
+        qt = get_questrade_client()
+        sym_info = resolve_symbol_to_id(qt, symbol)
+        symbol_id = sym_info['symbolId']
+
+        # Prepare time parameters
+        kwargs = {'interval': interval}
+
+        if start_date:
+            validate_date(start_date)
+            kwargs['startTime'] = f"{start_date}T00:00:00-05:00"
+
+        if end_date:
+            validate_date(end_date)
+            kwargs['endTime'] = f"{end_date}T23:59:59-05:00"
+
+        if start_date and end_date:
+            validate_date_range(start_date, end_date)
+
+        result = qt.markets_candles(symbol_id, **kwargs)
+
+        if not result.get('candles'):
+            raise ValueError(f"No candle data available for {symbol}")
+
+        # Convert to DataFrame
+        candles = result['candles']
+        df = pd.DataFrame(candles)
+
+        # Rename columns to standard names
+        df = df.rename(columns={
+            'start': 'Date',
+            'open': 'Open',
+            'high': 'High',
+            'low': 'Low',
+            'close': 'Close',
+            'volume': 'Volume'
+        })
+
+        # Convert date format
+        df['Date'] = pd.to_datetime(df['Date']).dt.strftime('%Y-%m-%d %H:%M:%S')
+
+        # Select relevant columns
+        df = df[['Date', 'Open', 'High', 'Low', 'Close', 'Volume']]
+
+        # Limit number of candles
+        if len(df) > max_candles:
+            df = df.tail(max_candles)
+
+        return to_clean_csv(df)
+
+    @mcp.tool()
+    def questrade_search_symbols(query: str, max_results: int = 10) -> list[dict]:
+        """Search for symbols on Questrade by name or ticker prefix.
+
+        Args:
+            query: Symbol prefix or name to search for (e.g., 'AAPL', 'Apple')
+            max_results: Maximum number of results to return
+
+        Returns list of matching symbols with details.
+        """
+        qt = get_questrade_client()
+        query = query.upper().strip()
+
+        result = qt.symbols_search(prefix=query)
+
+        if not result.get('symbols'):
+            return []
+
+        symbols = []
+        for sym in result['symbols'][:max_results]:
+            symbols.append({
+                "symbol": sym.get('symbol'),
+                "symbolId": sym.get('symbolId'),
+                "description": sym.get('description'),
+                "securityType": sym.get('securityType'),
+                "listingExchange": sym.get('listingExchange'),
+                "currency": sym.get('currency'),
+                "isTradable": sym.get('isTradable', False),
+                "isQuotable": sym.get('isQuotable', False)
+            })
+
+        return symbols
+
+    @mcp.tool()
+    def questrade_get_symbol_info(symbol: str) -> dict:
+        """Get detailed information about a specific symbol from Questrade.
+
+        Returns:
+        - Symbol ID and name
+        - Security type (Stock, Option, etc.)
+        - Exchange and currency
+        - Trading status
+        - Description
+        """
+        qt = get_questrade_client()
+        sym_info = resolve_symbol_to_id(qt, symbol)
+
+        return {
+            "symbol": sym_info.get('symbol'),
+            "symbolId": sym_info.get('symbolId'),
+            "description": sym_info.get('description'),
+            "securityType": sym_info.get('securityType'),
+            "listingExchange": sym_info.get('listingExchange'),
+            "currency": sym_info.get('currency'),
+            "isTradable": sym_info.get('isTradable', False),
+            "isQuotable": sym_info.get('isQuotable', False),
+            "hasOptions": sym_info.get('hasOptions', False)
+        }
+
+    @mcp.tool()
+    def questrade_get_markets() -> list[dict]:
+        """Get list of available markets from Questrade.
+
+        Returns information about all trading markets and venues.
+        """
+        qt = get_questrade_client()
+        result = qt.markets
+
+        markets = []
+        for market in result.get('markets', []):
+            markets.append({
+                "name": market.get('name'),
+                "tradingVenues": market.get('tradingVenues', []),
+                "defaultTradingVenue": market.get('defaultTradingVenue'),
+                "primaryOrderRoutes": market.get('primaryOrderRoutes', []),
+                "secondaryOrderRoutes": market.get('secondaryOrderRoutes', [])
+            })
+
+        return markets
+
+    @mcp.tool()
+    def questrade_get_orders(
+        account_number: str,
+        status_filter: Literal["All", "Open", "Closed"] = "Open",
+        start_date: str | None = None,
+        end_date: str | None = None
+    ) -> list[dict]:
+        """Get orders for a Questrade account.
+
+        Args:
+            account_number: Questrade account number
+            status_filter: Filter by order status (All, Open, Closed)
+            start_date: Start date in YYYY-MM-DD format (optional)
+            end_date: End date in YYYY-MM-DD format (optional)
+
+        Returns list of orders with details.
+        """
+        qt = get_questrade_client()
+
+        kwargs = {}
+        if start_date:
+            validate_date(start_date)
+            kwargs['startTime'] = f"{start_date}T00:00:00-05:00"
+
+        if end_date:
+            validate_date(end_date)
+            kwargs['endTime'] = f"{end_date}T23:59:59-05:00"
+
+        if start_date and end_date:
+            validate_date_range(start_date, end_date)
+
+        if status_filter != "All":
+            kwargs['stateFilter'] = status_filter
+
+        result = qt.account_orders(account_number, **kwargs)
+
+        orders = []
+        for order in result.get('orders', []):
+            orders.append({
+                "orderId": order.get('id'),
+                "symbol": order.get('symbol'),
+                "symbolId": order.get('symbolId'),
+                "totalQuantity": order.get('totalQuantity'),
+                "filledQuantity": order.get('filledQuantity'),
+                "orderType": order.get('orderType'),
+                "side": order.get('side'),
+                "price": order.get('limitPrice'),
+                "state": order.get('state'),
+                "creationTime": order.get('creationTime'),
+                "updateTime": order.get('updateTime'),
+                "timeInForce": order.get('timeInForce')
+            })
+
+        return orders
+
+    @mcp.tool()
+    def questrade_get_order(account_number: str, order_id: int) -> dict:
+        """Get details of a specific order from Questrade.
+
+        Args:
+            account_number: Questrade account number
+            order_id: Order ID to retrieve
+
+        Returns detailed order information.
+        """
+        qt = get_questrade_client()
+        result = qt.account_order(account_number, order_id)
+
+        if not result.get('orders'):
+            raise ValueError(f"Order {order_id} not found")
+
+        order = result['orders'][0]
+
+        return {
+            "orderId": order.get('id'),
+            "symbol": order.get('symbol'),
+            "symbolId": order.get('symbolId'),
+            "totalQuantity": order.get('totalQuantity'),
+            "filledQuantity": order.get('filledQuantity'),
+            "openQuantity": order.get('openQuantity'),
+            "canceledQuantity": order.get('canceledQuantity'),
+            "orderType": order.get('orderType'),
+            "side": order.get('side'),
+            "limitPrice": order.get('limitPrice'),
+            "stopPrice": order.get('stopPrice'),
+            "state": order.get('state'),
+            "rejectionReason": order.get('rejectionReason'),
+            "creationTime": order.get('creationTime'),
+            "updateTime": order.get('updateTime'),
+            "timeInForce": order.get('timeInForce'),
+            "legs": order.get('orderLegs', []),
+            "strategyType": order.get('strategyType'),
+            "commissionCharged": order.get('commissionCharged')
+        }
+
+    @mcp.tool()
+    def questrade_get_executions(
+        account_number: str,
+        start_date: str,
+        end_date: str | None = None
+    ) -> list[dict]:
+        """Get trade execution history from Questrade.
+
+        Args:
+            account_number: Questrade account number
+            start_date: Start date in YYYY-MM-DD format (required)
+            end_date: End date in YYYY-MM-DD format (optional, defaults to today)
+
+        Returns list of executed trades with details.
+        """
+        qt = get_questrade_client()
+
+        validate_date(start_date)
+        kwargs = {'startTime': f"{start_date}T00:00:00-05:00"}
+
+        if end_date:
+            validate_date(end_date)
+            kwargs['endTime'] = f"{end_date}T23:59:59-05:00"
+            validate_date_range(start_date, end_date)
+        else:
+            kwargs['endTime'] = datetime.datetime.now().strftime('%Y-%m-%dT23:59:59-05:00')
+
+        result = qt.account_executions(account_number, **kwargs)
+
+        executions = []
+        for execution in result.get('executions', []):
+            executions.append({
+                "executionId": execution.get('id'),
+                "orderId": execution.get('orderId'),
+                "symbol": execution.get('symbol'),
+                "symbolId": execution.get('symbolId'),
+                "quantity": execution.get('quantity'),
+                "side": execution.get('side'),
+                "price": execution.get('price'),
+                "timestamp": execution.get('timestamp'),
+                "notes": execution.get('notes'),
+                "venue": execution.get('venue'),
+                "totalCost": execution.get('totalCost'),
+                "orderPlacementCommission": execution.get('orderPlacementCommission'),
+                "commission": execution.get('commission'),
+                "executionFee": execution.get('executionFee'),
+                "secFee": execution.get('secFee'),
+                "netCost": execution.get('netCost')
+            })
+
+        return executions
+
+    @mcp.tool()
+    def questrade_get_activities(
+        account_number: str,
+        start_date: str,
+        end_date: str | None = None,
+        activity_type: Literal["All", "Trades", "NonTrades", "Dividends", "Deposits", "Withdrawals"] = "All"
+    ) -> list[dict]:
+        """Get account activity history from Questrade.
+
+        Args:
+            account_number: Questrade account number
+            start_date: Start date in YYYY-MM-DD format (required)
+            end_date: End date in YYYY-MM-DD format (optional, defaults to today)
+            activity_type: Filter by activity type
+
+        Returns list of account activities.
+        """
+        qt = get_questrade_client()
+
+        validate_date(start_date)
+        kwargs = {'startTime': f"{start_date}T00:00:00-05:00"}
+
+        if end_date:
+            validate_date(end_date)
+            kwargs['endTime'] = f"{end_date}T23:59:59-05:00"
+            validate_date_range(start_date, end_date)
+        else:
+            kwargs['endTime'] = datetime.datetime.now().strftime('%Y-%m-%dT23:59:59-05:00')
+
+        result = qt.account_activities(account_number, **kwargs)
+
+        activities = result.get('activities', [])
+
+        # Filter by activity type if specified
+        if activity_type != "All":
+            type_filter = activity_type.lower()
+            activities = [a for a in activities if type_filter in a.get('type', '').lower()]
+
+        formatted_activities = []
+        for activity in activities:
+            formatted_activities.append({
+                "type": activity.get('type'),
+                "tradeDate": activity.get('tradeDate'),
+                "transactionDate": activity.get('transactionDate'),
+                "settlementDate": activity.get('settlementDate'),
+                "action": activity.get('action'),
+                "symbol": activity.get('symbol'),
+                "symbolId": activity.get('symbolId'),
+                "description": activity.get('description'),
+                "currency": activity.get('currency'),
+                "quantity": activity.get('quantity'),
+                "price": activity.get('price'),
+                "grossAmount": activity.get('grossAmount'),
+                "commission": activity.get('commission'),
+                "netAmount": activity.get('netAmount')
+            })
+
+        return formatted_activities
+
+    @mcp.tool()
+    def questrade_get_options_chain(symbol: str) -> list[dict]:
+        """Get options chain for a symbol from Questrade.
+
+        Returns list of option expiry dates and details for the underlying symbol.
+        """
+        qt = get_questrade_client()
+        sym_info = resolve_symbol_to_id(qt, symbol)
+        symbol_id = sym_info['symbolId']
+
+        result = qt.symbol_options(symbol_id)
+
+        if not result.get('optionChain'):
+            raise ValueError(f"No options chain available for {symbol}")
+
+        chain = []
+        for option in result['optionChain']:
+            chain.append({
+                "expiryDate": option.get('expiryDate'),
+                "description": option.get('description'),
+                "listingExchange": option.get('listingExchange'),
+                "optionExerciseType": option.get('optionExerciseType'),
+                "chainPerRoot": option.get('chainPerRoot', [])
+            })
+
+        return chain
+
+    @mcp.tool()
+    def questrade_get_option_quotes(
+        option_ids: list[int] | None = None,
+        underlying_symbol: str | None = None
+    ) -> list[dict]:
+        """Get option quotes with Greeks from Questrade.
+
+        Args:
+            option_ids: List of specific option IDs to retrieve (optional)
+            underlying_symbol: Get all options for underlying symbol (optional)
+
+        Note: Must provide either option_ids OR underlying_symbol.
+
+        Returns list of option quotes with Greeks (delta, gamma, theta, vega, rho).
+        """
+        qt = get_questrade_client()
+
+        if option_ids:
+            result = qt.markets_options(optionIds=option_ids)
+        elif underlying_symbol:
+            # Get symbol ID first
+            sym_info = resolve_symbol_to_id(qt, underlying_symbol)
+            symbol_id = sym_info['symbolId']
+
+            # Get options chain to find option IDs
+            chain_result = qt.symbol_options(symbol_id)
+            if not chain_result.get('optionChain'):
+                raise ValueError(f"No options available for {underlying_symbol}")
+
+            # Extract option IDs from chain (limited to first 20 to avoid overload)
+            option_ids = []
+            for option in chain_result['optionChain'][:5]:  # Limit to first 5 expiry dates
+                for root in option.get('chainPerRoot', []):
+                    for strike in root.get('chainPerStrikePrice', [])[:10]:  # Limit strikes per expiry
+                        option_ids.extend([opt.get('symbolId') for opt in strike.get('callSymbolId', [])])
+                        option_ids.extend([opt.get('symbolId') for opt in strike.get('putSymbolId', [])])
+
+            if not option_ids:
+                raise ValueError(f"No option IDs found for {underlying_symbol}")
+
+            result = qt.markets_options(optionIds=option_ids[:50])  # Limit to 50 options
+        else:
+            raise ValueError("Must provide either option_ids or underlying_symbol")
+
+        quotes = []
+        for quote in result.get('optionQuotes', []):
+            quotes.append({
+                "underlying": quote.get('underlying'),
+                "underlyingId": quote.get('underlyingId'),
+                "symbol": quote.get('symbol'),
+                "symbolId": quote.get('symbolId'),
+                "bidPrice": quote.get('bidPrice'),
+                "askPrice": quote.get('askPrice'),
+                "lastTradePrice": quote.get('lastTradePrice'),
+                "openPrice": quote.get('openPrice'),
+                "highPrice": quote.get('highPrice'),
+                "lowPrice": quote.get('lowPrice'),
+                "volume": quote.get('volume'),
+                "openInterest": quote.get('openInterest'),
+                "delta": quote.get('delta'),
+                "gamma": quote.get('gamma'),
+                "theta": quote.get('theta'),
+                "vega": quote.get('vega'),
+                "rho": quote.get('rho'),
+                "volatility": quote.get('volatility'),
+                "expiryDate": quote.get('expiryDate')
+            })
+
+        return quotes
+
+
 if __name__ == "__main__":
     mcp.run()

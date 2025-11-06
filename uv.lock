@@ -884,6 +884,7 @@ dependencies = [
     { name = "numpy" },
     { name = "pandas" },
     { name = "pytrends" },
+    { name = "questrade-api" },
     { name = "requests-cache" },
     { name = "scipy" },
     { name = "tenacity" },
@@ -917,6 +918,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.0.0" },
     { name = "pandas", specifier = ">=2.3.2" },
     { name = "pytrends", specifier = ">=4.9.2" },
+    { name = "questrade-api", specifier = ">=1.0.3" },
     { name = "requests-cache", specifier = ">=1.2.1" },
     { name = "scipy", specifier = ">=1.14.0" },
     { name = "ta-lib", marker = "extra == 'ta'", specifier = ">=0.6.7" },
@@ -2003,6 +2005,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/fe/0f/25911a9f080464c59fab9027482f822b86bf0608957a5fcc6eaac85aa515/PyYAML-6.0.2-cp313-cp313-musllinux_1_1_x86_64.whl", hash = "sha256:68ccc6023a3400877818152ad9a1033e3db8625d899c72eacb5a668902e4d652", size = 751597, upload-time = "2024-08-06T20:32:56.985Z" },
     { url = "https://files.pythonhosted.org/packages/14/0d/e2c3b43bbce3cf6bd97c840b46088a3031085179e596d4929729d8d68270/PyYAML-6.0.2-cp313-cp313-win32.whl", hash = "sha256:bc2fa7c6b47d6bc618dd7fb02ef6fdedb1090ec036abab80d4681424b84c1183", size = 140527, upload-time = "2024-08-06T20:33:03.001Z" },
     { url = "https://files.pythonhosted.org/packages/fa/de/02b54f42487e3d3c6efb3f89428677074ca7bf43aae402517bc7cca949f3/PyYAML-6.0.2-cp313-cp313-win_amd64.whl", hash = "sha256:8388ee1976c416731879ac16da0aff3f63b286ffdd57cdeb95f3f2e085687563", size = 156446, upload-time = "2024-08-06T20:33:04.33Z" },
+]
+
+[[package]]
+name = "questrade-api"
+version = "1.0.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/43/62/e392c06de7cae04444cabe58a45f338ac1bd4349831af18deedcd62b1acc/questrade-api-1.0.3.tar.gz", hash = "sha256:c73d3b0a12b50c61572a09fa2e1ab00d5d5a99fd94af3babd49e97da49913969", size = 7274, upload-time = "2019-02-06T16:10:58.965Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f1/ff/c37f985fa98d2e5c404b549c4f270dfc0a7b59768826d194f7eb0d11b1e7/questrade_api-1.0.3-py3-none-any.whl", hash = "sha256:aeca5c459c42b48923684bbd42c3738aad3023728d7b793a598de8890802b109", size = 7931, upload-time = "2019-02-06T16:10:55.364Z" },
 ]
 
 [[package]]
