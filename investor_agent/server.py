@@ -32,11 +32,10 @@ except ImportError:
 
 # Check Questrade API availability
 try:
-    from .questrade import get_questrade_client, QuestradeClient
-    _questrade_available = True
-except ImportError:
+    from .questrade import get_questrade_client, QuestradeClient, _questrade_available
+except (ImportError, NameError, Exception) as e:
     _questrade_available = False
-    logger.warning("Questrade API not available. Install with: pip install questrade-api")
+    # Don't log warning here - questrade module will log if needed
 
 # Setup logging
 logger = logging.getLogger(__name__)
