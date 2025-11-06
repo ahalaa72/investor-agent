@@ -896,6 +896,9 @@ bridge = [
     { name = "fastapi" },
     { name = "uvicorn", extra = ["standard"] },
 ]
+questrade = [
+    { name = "questrade-api" },
+]
 ta = [
     { name = "ta-lib" },
 ]
@@ -918,7 +921,9 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.0.0" },
     { name = "pandas", specifier = ">=2.3.2" },
     { name = "pytrends", specifier = ">=4.9.2" },
-    { name = "questrade-api", specifier = ">=1.0.3" },
+
+    { name = "questrade-api", marker = "extra == 'questrade'", specifier = ">=1.0.0" },
+
     { name = "requests-cache", specifier = ">=1.2.1" },
     { name = "scipy", specifier = ">=1.14.0" },
     { name = "ta-lib", marker = "extra == 'ta'", specifier = ">=0.6.7" },
@@ -926,7 +931,7 @@ requires-dist = [
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'bridge'", specifier = ">=0.32.0" },
     { name = "yfinance", extras = ["nospam"], specifier = ">=0.2.66" },
 ]
-provides-extras = ["bridge", "ta"]
+provides-extras = ["bridge", "questrade", "ta"]
 
 [package.metadata.requires-dev]
 dev = [
