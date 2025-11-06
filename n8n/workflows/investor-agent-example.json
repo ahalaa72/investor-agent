@@ -1,0 +1,226 @@
+{
+  "name": "Investor Agent - Market Analysis",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "market-query",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300],
+      "webhookId": "market-query"
+    },
+    {
+      "parameters": {
+        "respondWith": "={{ $json.response }}",
+        "options": {}
+      },
+      "id": "webhook-response",
+      "name": "Webhook Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1250, 300]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "user-query",
+              "name": "userQuery",
+              "value": "={{ $json.body.message || $json.body.query || 'What are today\\'s market movers?' }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "extract-query",
+      "name": "Extract User Query",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.2,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://investor-agent-bridge:8000/tools",
+        "options": {}
+      },
+      "id": "get-available-tools",
+      "name": "Get Available Tools",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [650, 200]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "tool-schemas",
+              "name": "toolSchemas",
+              "value": "={{ $json.tools }}",
+              "type": "object"
+            },
+            {
+              "id": "tool-count",
+              "name": "toolCount",
+              "value": "={{ $json.count }}",
+              "type": "number"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "format-tools",
+      "name": "Format Tool Schemas",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.2,
+      "position": [850, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://investor-agent-bridge:8000/call",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "tool_name",
+              "value": "={{ $json.tool_name }}"
+            },
+            {
+              "name": "arguments",
+              "value": "={{ $json.arguments }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "call-mcp-tool",
+      "name": "Call MCP Tool",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [850, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// This is a placeholder for AI Agent logic\n// In a real workflow, you would:\n// 1. Use OpenAI/Anthropic AI Agent node\n// 2. Pass user query and available tools\n// 3. Let AI decide which tool to call\n// 4. Execute the selected tool\n\n// For this example, we'll call get_market_movers\nconst userQuery = $input.first().json.userQuery;\n\n// Simple query parsing (in production, use AI)\nlet toolName = 'get_market_movers';\nlet args = { category: 'most-active', count: 10 };\n\nif (userQuery.toLowerCase().includes('gainers')) {\n  args.category = 'gainers';\n} else if (userQuery.toLowerCase().includes('losers')) {\n  args.category = 'losers';\n}\n\nif (userQuery.toLowerCase().includes('ticker') || userQuery.match(/[A-Z]{1,5}/)) {\n  const ticker = userQuery.match(/[A-Z]{2,5}/);\n  if (ticker) {\n    toolName = 'get_ticker_data';\n    args = { ticker: ticker[0], max_news: 5 };\n  }\n}\n\nreturn {\n  tool_name: toolName,\n  arguments: args,\n  userQuery: userQuery\n};"
+      },
+      "id": "ai-agent-logic",
+      "name": "AI Agent Logic (Placeholder)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "final-response",
+              "name": "response",
+              "value": "={\n  \"query\": \"{{ $('Extract User Query').item.json.userQuery }}\",\n  \"tool_used\": \"{{ $json.tool_name }}\",\n  \"success\": {{ $json.success }},\n  \"data\": {{ $json.result }}\n}",
+              "type": "object"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "format-response",
+      "name": "Format Response",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.2,
+      "position": [1050, 300]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Extract User Query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract User Query": {
+      "main": [
+        [
+          {
+            "node": "Get Available Tools",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "AI Agent Logic (Placeholder)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Available Tools": {
+      "main": [
+        [
+          {
+            "node": "Format Tool Schemas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent Logic (Placeholder)": {
+      "main": [
+        [
+          {
+            "node": "Call MCP Tool",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call MCP Tool": {
+      "main": [
+        [
+          {
+            "node": "Format Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Response": {
+      "main": [
+        [
+          {
+            "node": "Webhook Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "1",
+  "id": "investor-agent-market-analysis",
+  "meta": {
+    "instanceId": "local"
+  },
+  "tags": []
+}

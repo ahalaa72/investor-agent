@@ -20,8 +20,9 @@ from yfinance.exceptions import YFRateLimitError
 
 mcp = FastMCP("Investor-Agent", dependencies=["yfinance", "pandas", "pytrends"])
 
-# Configure pandas
+# Configure pandas and enable HTTP caching
 pd.set_option('future.no_silent_downcasting', True)
+hishel.install_cache()
 
 # Check TA-Lib availability
 try:
@@ -1020,117 +1021,6 @@ if _advanced_ta_available:
             "analysis_date": datetime.date.today().isoformat(),
             **patterns
         }
-
-
-# ============================================================================
-# BOOTSTRAP TOOLS - 4 Critical Analysis Tools ($0 cost, 50%+ improvement)
-# ============================================================================
-
-# Import bootstrap functions
-try:
-    from .technical_analysis_bootstrap import (
-        analyze_volume,
-        analyze_volatility,
-        calculate_relative_strength,
-        calculate_fundamental_scores
-    )
-    _bootstrap_available = True
-except ImportError:
-    _bootstrap_available = False
-    logger.warning("Bootstrap analysis tools not available")
-
-
-if _bootstrap_available:
-    @mcp.tool()
-    def analyze_volume_tool(
-        ticker: str,
-        period: Literal["1mo", "3mo", "6mo", "1y", "2y"] = "3mo",
-        vwap_mode: Literal["session", "rolling", "anchored"] = "session"
-    ) -> dict[str, Any]:
-        """Comprehensive volume analysis - VWAP, Volume Profile, OBV, MFI.
-        
-        Critical for confirming ALL price moves. Volume leads price.
-        
-        Args:
-            ticker: Stock ticker symbol
-            period: Historical period to analyze
-            vwap_mode: VWAP calculation method:
-                - "session": Daily session VWAP (TradingView default for daily charts)
-                - "rolling": 20-day rolling VWAP (swing trading)
-                - "anchored": VWAP from period start (position trading)
-        
-        Returns:
-        - VWAP (Volume Weighted Average Price) - calculated per selected mode
-        - Volume Profile (POC - Point of Control)
-        - Relative Volume (current vs 20-day average)
-        - OBV trend (Accumulation/Distribution)
-        - MFI (Money Flow Index)
-        - Accumulation/Distribution Line
-        
-        Use before EVERY trade to confirm the move is real.
-        """
-        ticker = validate_ticker(ticker)
-        return analyze_volume(ticker, period, vwap_mode)
-    
-    @mcp.tool()
-    def analyze_volatility_tool(
-        ticker: str,
-        period: Literal["3mo", "6mo", "1y", "2y"] = "6mo"
-    ) -> dict[str, Any]:
-        """Advanced volatility analysis for risk management.
-        
-        Critical for proper stop placement and position sizing.
-        
-        Returns:
-        - ATR (Average True Range) - THE standard for stops
-        - Historical Volatility (20-day annualized)
-        - Beta vs SPY
-        - Stop loss recommendations (2x, 2.5x ATR)
-        
-        NEVER set stops without checking ATR first.
-        """
-        ticker = validate_ticker(ticker)
-        return analyze_volatility(ticker, period)
-    
-    @mcp.tool()
-    def calculate_relative_strength_tool(
-        ticker: str,
-        benchmark: str = "SPY",
-        period: Literal["1mo", "3mo", "6mo", "1y", "2y"] = "3mo"
-    ) -> dict[str, Any]:
-        """Calculate relative strength to identify market leaders.
-        
-        Critical for stock selection. Only buy leaders (RS >70).
-        
-        Returns:
-        - RS Score (0-100, IBD-style)
-        - Outperformance vs benchmark
-        - Leader/Laggard classification
-        
-        Professional strategy: Focus on stocks with RS >70.
-        """
-        ticker = validate_ticker(ticker)
-        benchmark = validate_ticker(benchmark)
-        return calculate_relative_strength(ticker, benchmark, period)
-    
-    @mcp.tool()
-    def calculate_fundamental_scores_tool(
-        ticker: str,
-        max_periods: int = 8
-    ) -> dict[str, Any]:
-        """Calculate comprehensive fundamental quality scores.
-        
-        Critical for avoiding value traps and identifying quality.
-        
-        Returns:
-        - Piotroski F-Score (0-9, >7 = excellent)
-        - Altman Z-Score (>2.99 = safe, <1.81 = distress)
-        - Bankruptcy risk assessment
-        
-        Always check F-Score before buying. <3 = value trap.
-        """
-        ticker = validate_ticker(ticker)
-        return calculate_fundamental_scores(ticker, max_periods)
 
 
 if __name__ == "__main__":

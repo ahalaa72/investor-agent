@@ -16,6 +16,8 @@ dependencies = [
     "requests-cache>=1.2.1",
     "tenacity>=9.1.2",
     "yfinance[nospam]>=0.2.66",
+    "numpy>=2.0.0",
+    "scipy>=1.14.0",
 ]
 authors = [
     { name = "Ferdous", email = "ferdous@hey.com" }
@@ -33,6 +35,10 @@ classifiers = [
 ta = [
     "ta-lib>=0.6.7",
 ]
+bridge = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+]
 
 [dependency-groups]
 dev = [
@@ -42,6 +48,7 @@ dev = [
 
 [project.scripts]
 investor-agent = "investor_agent.server:mcp.run"
+investor-agent-bridge = "investor_agent.bridge:app"
 
 [build-system]
 requires = ["hatchling", "hatch-vcs"]
