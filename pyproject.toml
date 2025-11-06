@@ -36,7 +36,7 @@ ta = [
     "ta-lib>=0.6.7",
 ]
 questrade = [
-    "questrade-api>=1.1.0",
+    "questrade-api>=1.0.0",
 ]
 bridge = [
     "fastapi>=0.115.0",
