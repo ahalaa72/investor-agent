@@ -97,6 +97,411 @@ class TechnicalIndicators:
         d = pd.Series(k).rolling(window=smooth_d).mean().values
         
         return k, d
+    
+    @staticmethod
+    def calculate_atr(high: np.ndarray, low: np.ndarray, close: np.ndarray, period: int = 14) -> np.ndarray:
+        """Average True Range (ATR) for volatility measurement."""
+        # True Range calculation
+        high_low = high - low
+        high_close = np.abs(high - np.roll(close, 1))
+        low_close = np.abs(low - np.roll(close, 1))
+        
+        true_range = np.maximum(high_low, np.maximum(high_close, low_close))
+        true_range[0] = high_low[0]  # First value
+        
+        # ATR is EMA of True Range
+        atr = pd.Series(true_range).ewm(span=period, adjust=False).mean().values
+        
+        return atr
+    
+    @staticmethod
+    def calculate_vwap(df: pd.DataFrame) -> float:
+        """Volume Weighted Average Price."""
+        typical_price = (df['High'] + df['Low'] + df['Close']) / 3
+        vwap = (typical_price * df['Volume']).sum() / df['Volume'].sum()
+        return vwap
+    
+    @staticmethod
+    def calculate_obv(close: np.ndarray, volume: np.ndarray) -> np.ndarray:
+        """On Balance Volume."""
+        obv = np.zeros(len(close))
+        obv[0] = volume[0]
+        
+        for i in range(1, len(close)):
+            if close[i] > close[i-1]:
+                obv[i] = obv[i-1] + volume[i]
+            elif close[i] < close[i-1]:
+                obv[i] = obv[i-1] - volume[i]
+            else:
+                obv[i] = obv[i-1]
+        
+        return obv
+    
+    @staticmethod
+    def calculate_mfi(high: np.ndarray, low: np.ndarray, close: np.ndarray, 
+                     volume: np.ndarray, period: int = 14) -> np.ndarray:
+        """Money Flow Index."""
+        typical_price = (high + low + close) / 3
+        money_flow = typical_price * volume
+        
+        mfi = np.zeros(len(close))
+        
+        for i in range(period, len(close)):
+            positive_flow = 0
+            negative_flow = 0
+            
+            for j in range(i - period + 1, i + 1):
+                if typical_price[j] > typical_price[j-1]:
+                    positive_flow += money_flow[j]
+                elif typical_price[j] < typical_price[j-1]:
+                    negative_flow += money_flow[j]
+            
+            if negative_flow == 0:
+                mfi[i] = 100
+            else:
+                money_ratio = positive_flow / negative_flow
+                mfi[i] = 100 - (100 / (1 + money_ratio))
+        
+        return mfi
+
+
+class VolumeAnalysis:
+    """Volume-specific analysis tools."""
+    
+    @staticmethod
+    def calculate_volume_profile(df: pd.DataFrame, num_bins: int = 20) -> Dict[str, Any]:
+        """Calculate volume profile (volume by price level)."""
+        # Create price bins
+        price_range = df['High'].max() - df['Low'].min()
+        bin_size = price_range / num_bins
+        
+        # Initialize bins
+        volume_by_price = {}
+        
+        for _, row in df.iterrows():
+            # Approximate which price bin this bar contributed to
+            avg_price = (row['High'] + row['Low'] + row['Close']) / 3
+            bin_index = int((avg_price - df['Low'].min()) / bin_size)
+            bin_index = min(bin_index, num_bins - 1)  # Cap at max bin
+            
+            bin_price = df['Low'].min() + (bin_index * bin_size) + (bin_size / 2)
+            
+            if bin_price not in volume_by_price:
+                volume_by_price[bin_price] = 0
+            volume_by_price[bin_price] += row['Volume']
+        
+        # Find POC (Point of Control) - price with most volume
+        poc_price = max(volume_by_price, key=volume_by_price.get)
+        max_volume = volume_by_price[poc_price]
+        
+        # Calculate Value Area (70% of volume)
+        sorted_prices = sorted(volume_by_price.items(), key=lambda x: x[1], reverse=True)
+        total_volume = sum(volume_by_price.values())
+        value_area_volume = total_volume * 0.70
+        
+        cumulative_volume = 0
+        value_area_prices = []
+        
+        for price, vol in sorted_prices:
+            cumulative_volume += vol
+            value_area_prices.append(price)
+            if cumulative_volume >= value_area_volume:
+                break
+        
+        value_area_high = max(value_area_prices)
+        value_area_low = min(value_area_prices)
+        
+        return {
+            "poc": poc_price,
+            "value_area_high": value_area_high,
+            "value_area_low": value_area_low,
+            "volume_by_price": volume_by_price
+        }
+    
+    @staticmethod
+    def detect_volume_surges(df: pd.DataFrame, threshold: float = 2.0) -> List[Dict[str, Any]]:
+        """Detect volume surges above average."""
+        avg_volume = df['Volume'].rolling(window=20).mean()
+        surges = []
+        
+        for i in range(20, len(df)):
+            if df['Volume'].iloc[i] > avg_volume.iloc[i] * threshold:
+                price_change = (df['Close'].iloc[i] - df['Close'].iloc[i-1]) / df['Close'].iloc[i-1] * 100
+                
+                surges.append({
+                    "date": df.index[i].strftime('%Y-%m-%d'),
+                    "volume": int(df['Volume'].iloc[i]),
+                    "vs_average": df['Volume'].iloc[i] / avg_volume.iloc[i],
+                    "price_change": price_change
+                })
+        
+        return surges[-5:]  # Return last 5 surges
+
+
+class VolatilityAnalysis:
+    """Volatility-specific analysis tools."""
+    
+    @staticmethod
+    def calculate_historical_volatility(returns: np.ndarray, period: int, annualize: bool = True) -> float:
+        """Calculate historical volatility."""
+        if len(returns) < period:
+            return np.nan
+        
+        recent_returns = returns[-period:]
+        volatility = np.std(recent_returns)
+        
+        if annualize:
+            volatility *= np.sqrt(252)  # Annualize
+        
+        return volatility * 100  # Return as percentage
+    
+    @staticmethod
+    def classify_volatility_regime(current_vol: float, historical_vols: np.ndarray) -> Tuple[float, str]:
+        """Classify current volatility regime."""
+        percentile = (historical_vols < current_vol).sum() / len(historical_vols) * 100
+        
+        if percentile < 25:
+            regime = "Low"
+        elif percentile < 75:
+            regime = "Normal"
+        elif percentile < 90:
+            regime = "High"
+        else:
+            regime = "Extreme"
+        
+        return percentile, regime
+
+
+class RelativeStrengthAnalysis:
+    """Relative Strength analysis tools."""
+    
+    @staticmethod
+    def calculate_rs_score(stock_returns: np.ndarray, benchmark_returns: np.ndarray) -> float:
+        """Calculate IBD-style Relative Strength score (0-100)."""
+        # Calculate cumulative returns
+        stock_cumulative = (1 + stock_returns).prod() - 1
+        benchmark_cumulative = (1 + benchmark_returns).prod() - 1
+        
+        # RS Line = Stock / Benchmark performance
+        rs_value = stock_cumulative - benchmark_cumulative
+        
+        # Normalize to 0-100 scale (simplified version)
+        # In real IBD, this is percentile ranked against all stocks
+        # Here we use a simpler normalization
+        if rs_value > 0.5:
+            score = 90 + (rs_value - 0.5) * 20  # 90-100 range
+        elif rs_value > 0.2:
+            score = 70 + (rs_value - 0.2) * 66.67  # 70-90 range
+        elif rs_value > -0.2:
+            score = 30 + (rs_value + 0.2) * 100  # 30-70 range
+        elif rs_value > -0.5:
+            score = 10 + (rs_value + 0.5) * 66.67  # 10-30 range
+        else:
+            score = max(0, 10 + rs_value * 20)  # 0-10 range
+        
+        return min(100, max(0, score))
+
+
+class FundamentalScoring:
+    """Fundamental analysis scoring systems."""
+    
+    @staticmethod
+    def calculate_piotroski_f_score(financials: Dict[str, pd.DataFrame]) -> Dict[str, Any]:
+        """Calculate Piotroski F-Score (0-9)."""
+        score = 0
+        details = {}
+        
+        try:
+            # Get income statement and balance sheet
+            income = financials.get('income')
+            balance = financials.get('balance')
+            cash_flow = financials.get('cash')
+            
+            if income is None or balance is None:
+                return {"score": 0, "error": "Insufficient financial data"}
+            
+            # PROFITABILITY (4 points)
+            # 1. Positive ROA
+            try:
+                net_income = income.iloc[:, 0].get('Net Income', 0)
+                total_assets = balance.iloc[:, 0].get('Total Assets', 1)
+                roa = net_income / total_assets if total_assets != 0 else 0
+                
+                if roa > 0:
+                    score += 1
+                    details['positive_roe'] = True
+                else:
+                    details['positive_roe'] = False
+            except:
+                details['positive_roe'] = False
+            
+            # 2. Positive Operating Cash Flow
+            if cash_flow is not None:
+                try:
+                    operating_cf = cash_flow.iloc[:, 0].get('Operating Cash Flow', 0)
+                    if operating_cf > 0:
+                        score += 1
+                        details['positive_operating_cf'] = True
+                    else:
+                        details['positive_operating_cf'] = False
+                except:
+                    details['positive_operating_cf'] = False
+            
+            # 3. ROA increase (compare to previous period)
+            if len(income.columns) >= 2 and len(balance.columns) >= 2:
+                try:
+                    net_income_prev = income.iloc[:, 1].get('Net Income', 0)
+                    total_assets_prev = balance.iloc[:, 1].get('Total Assets', 1)
+                    roa_prev = net_income_prev / total_assets_prev if total_assets_prev != 0 else 0
+                    
+                    if roa > roa_prev:
+                        score += 1
+                        details['roa_increase'] = True
+                    else:
+                        details['roa_increase'] = False
+                except:
+                    details['roa_increase'] = False
+            
+            # 4. CF > NI (quality of earnings)
+            if cash_flow is not None:
+                try:
+                    operating_cf = cash_flow.iloc[:, 0].get('Operating Cash Flow', 0)
+                    net_income = income.iloc[:, 0].get('Net Income', 0)
+                    
+                    if operating_cf > net_income:
+                        score += 1
+                        details['cf_vs_ni'] = True
+                    else:
+                        details['cf_vs_ni'] = False
+                except:
+                    details['cf_vs_ni'] = False
+            
+            # LEVERAGE/LIQUIDITY (3 points)
+            # 5. Decrease in long-term debt
+            if len(balance.columns) >= 2:
+                try:
+                    lt_debt = balance.iloc[:, 0].get('Long Term Debt', 0)
+                    lt_debt_prev = balance.iloc[:, 1].get('Long Term Debt', 0)
+                    
+                    if lt_debt < lt_debt_prev:
+                        score += 1
+                        details['debt_decrease'] = True
+                    else:
+                        details['debt_decrease'] = False
+                except:
+                    details['debt_decrease'] = False
+            
+            # 6. Increase in current ratio
+            if len(balance.columns) >= 2:
+                try:
+                    current_assets = balance.iloc[:, 0].get('Current Assets', 0)
+                    current_liab = balance.iloc[:, 0].get('Current Liabilities', 1)
+                    current_ratio = current_assets / current_liab if current_liab != 0 else 0
+                    
+                    current_assets_prev = balance.iloc[:, 1].get('Current Assets', 0)
+                    current_liab_prev = balance.iloc[:, 1].get('Current Liabilities', 1)
+                    current_ratio_prev = current_assets_prev / current_liab_prev if current_liab_prev != 0 else 0
+                    
+                    if current_ratio > current_ratio_prev:
+                        score += 1
+                        details['current_ratio_increase'] = True
+                    else:
+                        details['current_ratio_increase'] = False
+                except:
+                    details['current_ratio_increase'] = False
+            
+            # 7. No new shares issued (simplified - check if shares outstanding decreased)
+            details['shares_decrease'] = False  # Placeholder
+            
+            # OPERATING EFFICIENCY (2 points)
+            # 8. Increase in gross margin
+            if len(income.columns) >= 2:
+                try:
+                    revenue = income.iloc[:, 0].get('Total Revenue', 1)
+                    gross_profit = income.iloc[:, 0].get('Gross Profit', 0)
+                    margin = gross_profit / revenue if revenue != 0 else 0
+                    
+                    revenue_prev = income.iloc[:, 1].get('Total Revenue', 1)
+                    gross_profit_prev = income.iloc[:, 1].get('Gross Profit', 0)
+                    margin_prev = gross_profit_prev / revenue_prev if revenue_prev != 0 else 0
+                    
+                    if margin > margin_prev:
+                        score += 1
+                        details['margin_increase'] = True
+                    else:
+                        details['margin_increase'] = False
+                except:
+                    details['margin_increase'] = False
+            
+            # 9. Increase in asset turnover
+            details['turnover_increase'] = False  # Placeholder
+            
+            return {
+                "score": score,
+                "max_score": 9,
+                "details": details
+            }
+        
+        except Exception as e:
+            return {
+                "score": 0,
+                "error": f"Error calculating F-Score: {str(e)}"
+            }
+    
+    @staticmethod
+    def calculate_altman_z_score(balance: pd.DataFrame, income: pd.DataFrame) -> Dict[str, Any]:
+        """Calculate Altman Z-Score for bankruptcy prediction."""
+        try:
+            # Get most recent period data
+            total_assets = balance.iloc[:, 0].get('Total Assets', 1)
+            current_assets = balance.iloc[:, 0].get('Current Assets', 0)
+            current_liabilities = balance.iloc[:, 0].get('Current Liabilities', 0)
+            total_liabilities = balance.iloc[:, 0].get('Total Liabilities Net Minority Interest', 0)
+            retained_earnings = balance.iloc[:, 0].get('Retained Earnings', 0)
+            ebit = income.iloc[:, 0].get('EBIT', 0)
+            total_equity = balance.iloc[:, 0].get('Total Equity Gross Minority Interest', 1)
+            revenue = income.iloc[:, 0].get('Total Revenue', 0)
+            
+            # Altman Z-Score formula for public companies
+            # Z = 1.2*X1 + 1.4*X2 + 3.3*X3 + 0.6*X4 + 1.0*X5
+            
+            x1 = (current_assets - current_liabilities) / total_assets  # Working Capital / Total Assets
+            x2 = retained_earnings / total_assets  # Retained Earnings / Total Assets
+            x3 = ebit / total_assets  # EBIT / Total Assets
+            x4 = total_equity / total_liabilities if total_liabilities != 0 else 0  # Market Value of Equity / Total Liabilities
+            x5 = revenue / total_assets  # Sales / Total Assets
+            
+            z_score = 1.2*x1 + 1.4*x2 + 3.3*x3 + 0.6*x4 + 1.0*x5
+            
+            # Interpret Z-Score
+            if z_score > 2.99:
+                zone = "Safe"
+                risk = "Low"
+            elif z_score > 1.81:
+                zone = "Grey"
+                risk = "Medium"
+            else:
+                zone = "Distress"
+                risk = "High"
+            
+            return {
+                "score": round(z_score, 2),
+                "zone": zone,
+                "bankruptcy_risk": risk,
+                "components": {
+                    "working_capital_ratio": round(x1, 3),
+                    "retained_earnings_ratio": round(x2, 3),
+                    "ebit_ratio": round(x3, 3),
+                    "equity_to_liab_ratio": round(x4, 3),
+                    "asset_turnover": round(x5, 3)
+                }
+            }
+        
+        except Exception as e:
+            return {
+                "score": 0,
+                "error": f"Error calculating Z-Score: {str(e)}"
+            }
 
 
 class TechnicalAnalysis:
