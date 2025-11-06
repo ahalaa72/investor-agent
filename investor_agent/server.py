@@ -30,6 +30,9 @@ try:
 except ImportError:
     _ta_available = False
 
+# Import Questrade API (now mandatory)
+from .questrade import get_questrade_client, QuestradeClient
+
 # Setup logging
 logger = logging.getLogger(__name__)
 logging.basicConfig(
@@ -705,6 +708,182 @@ def fetch_intraday_1h(stock: str, window: int = 200) -> str:
         raise ValueError(f"Error fetching data for {stock}: {e}")
 
 
+# ============================================================================
+# Questrade Account Tools
+# ============================================================================
+
+@mcp.tool()
+def get_questrade_accounts() -> dict[str, Any]:
+    """
+    Get list of all Questrade accounts for the authenticated user.
+
+    Returns account information including:
+    - Account type (Margin, TFSA, RRSP, RESP, etc.)
+    - Account number
+    - Account status (Active, Suspended, etc.)
+    - Primary account flag
+    - Client account type (Individual, Joint, etc.)
+
+    Returns:
+        dict: Account information with structure:
+            {
+                'accounts': [
+                    {
+                        'type': 'Margin',
+                        'number': '123456',
+                        'status': 'Active',
+                        'isPrimary': True,
+                        'isBilling': True,
+                        'clientAccountType': 'Individual'
+                    },
+                    ...
+                ]
+            }
+
+    Raises:
+        ValueError: If API call fails or authentication is invalid.
+
+    Note:
+        Requires QUESTRADE_REFRESH_TOKEN environment variable to be set.
+    """
+    try:
+        client = get_questrade_client()
+        accounts = client.get_accounts()
+
+        logger.info(f"Retrieved {len(accounts.get('accounts', []))} Questrade accounts")
+        return accounts
+
+    except Exception as e:
+        logger.error(f"Error in get_questrade_accounts: {e}")
+        raise ValueError(f"Failed to retrieve Questrade accounts: {str(e)}")
+
+@mcp.tool()
+def get_questrade_positions(account_number: str) -> dict[str, Any]:
+    """
+    Get all positions (holdings/assets) for a specific Questrade account.
+
+    Retrieves detailed information about all open positions including:
+    - Symbol and symbol ID
+    - Open quantity
+    - Current market value and price
+    - Average entry price
+    - Profit/Loss (realized and unrealized)
+    - Total cost basis
+
+    Args:
+        account_number: The Questrade account number (e.g., "26598145")
+
+    Returns:
+        dict: Position information with structure:
+            {
+                'positions': [
+                    {
+                        'symbol': 'AAPL',
+                        'symbolId': 8049,
+                        'openQuantity': 100,
+                        'currentMarketValue': 15000.00,
+                        'currentPrice': 150.00,
+                        'averageEntryPrice': 140.00,
+                        'closedPnl': 0.0,
+                        'openPnl': 1000.00,
+                        'totalCost': 14000.00,
+                        'isRealTime': True,
+                        'isUnderReorg': False
+                    },
+                    ...
+                ]
+            }
+
+    Raises:
+        ValueError: If account_number is invalid or API call fails.
+
+    Note:
+        Requires QUESTRADE_REFRESH_TOKEN environment variable to be set.
+    """
+    if not account_number:
+        raise ValueError("account_number parameter is required")
+
+    try:
+        client = get_questrade_client()
+        positions = client.get_account_positions(account_number)
+
+        position_count = len(positions.get('positions', []))
+        logger.info(f"Retrieved {position_count} positions for account {account_number}")
+        return positions
+
+    except Exception as e:
+        logger.error(f"Error in get_questrade_positions for account {account_number}: {e}")
+        raise ValueError(f"Failed to retrieve positions for account {account_number}: {str(e)}")
+
+@mcp.tool()
+def get_questrade_balances(
+    account_number: str,
+    start_time: str | None = None
+) -> dict[str, Any]:
+    """
+    Get cash balances and account equity for a specific Questrade account.
+
+    Retrieves detailed balance information including:
+    - Cash available per currency (CAD, USD, etc.)
+    - Market value of holdings
+    - Total equity
+    - Buying power
+    - Maintenance excess
+    - Start-of-day balances (if available)
+
+    Args:
+        account_number: The Questrade account number (e.g., "26598145")
+        start_time: Optional start time for historical balances (ISO format: "2024-01-01T00:00:00-05:00")
+
+    Returns:
+        dict: Balance information with structure:
+            {
+                'perCurrencyBalances': [
+                    {
+                        'currency': 'CAD',
+                        'cash': 10000.00,
+                        'marketValue': 50000.00,
+                        'totalEquity': 60000.00,
+                        'buyingPower': 120000.00,
+                        'maintenanceExcess': 30000.00,
+                        'isRealTime': True
+                    },
+                    ...
+                ],
+                'combinedBalances': [
+                    {
+                        'currency': 'CAD',
+                        'cash': 10000.00,
+                        'marketValue': 50000.00,
+                        'totalEquity': 60000.00,
+                        'buyingPower': 120000.00,
+                        'maintenanceExcess': 30000.00,
+                        'isRealTime': True
+                    }
+                ],
+                'sodPerCurrencyBalances': [...],
+                'sodCombinedBalances': [...]
+            }
+
+    Raises:
+        ValueError: If account_number is invalid or API call fails.
+
+    Note:
+        Requires QUESTRADE_REFRESH_TOKEN environment variable to be set.
+    """
+    if not account_number:
+        raise ValueError("account_number parameter is required")
+
+    try:
+        client = get_questrade_client()
+        balances = client.get_account_balances(account_number, start_time)
+
+        logger.info(f"Retrieved balances for account {account_number}")
+        return balances
+
+    except Exception as e:
+        logger.error(f"Error in get_questrade_balances for account {account_number}: {e}")
+        raise ValueError(f"Failed to retrieve balances for account {account_number}: {str(e)}")
 
 
 

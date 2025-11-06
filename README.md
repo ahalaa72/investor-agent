@@ -17,6 +17,7 @@ The **investor-agent** is a Model Context Protocol (MCP) server that provides co
 - **Earnings Calendar:** Upcoming earnings announcements with date filtering
 - **Market Sentiment:** CNN Fear & Greed Index, Crypto Fear & Greed Index, and Google Trends sentiment analysis
 - **Technical Analysis:** SMA, EMA, RSI, MACD, BBANDS indicators (optional)
+- **Questrade Integration:** Account information, positions (assets), and cash balances (optional)
 
 The server integrates with [yfinance](https://pypi.org/project/yfinance/) for market data and automatically optimizes data volume for better performance.
 
@@ -41,6 +42,7 @@ This multi-layered approach ensures reliable data delivery while respecting API 
 ### Optional Dependencies
 
 - **TA-Lib C Library:** Required for technical indicators. Follow [official installation instructions](https://ta-lib.org/install/).
+- **Questrade API:** Required for Questrade account, position, and balance tools. See [Questrade API Getting Started](https://www.questrade.com/api/documentation/getting-started).
 
 ## Installation
 
@@ -53,7 +55,24 @@ uvx investor-agent
 # With technical indicators (requires TA-Lib)
 uvx "investor-agent[ta]"
 
+# With Questrade integration
+uvx "investor-agent[questrade]"
+
+# With all optional features
+uvx "investor-agent[ta,questrade]"
+
 ```
+
+### Questrade Setup
+
+To use Questrade features, you need to:
+
+1. Install with Questrade support: `uvx "investor-agent[questrade]"` or `uv pip install "investor-agent[questrade]"`
+2. Generate a refresh token from [Questrade API Portal](https://www.questrade.com/api/)
+3. Set the environment variable:
+   ```bash
+   export QUESTRADE_REFRESH_TOKEN="your_refresh_token_here"
+   ```
 
 ## Tools
 
@@ -70,6 +89,10 @@ uvx "investor-agent[ta]"
 - **`fetch_intraday_15m(stock, window=200)`** - Fetch 15-minute historical stock bars using Alpaca API. Returns CSV string with timestamp and close price data in EST timezone.
 - **`fetch_intraday_1h(stock, window=200)`** - Fetch 1-Hour historical stock bars using Alpaca API. Returns CSV string with timestamp and close price data in EST timezone.
 
+### Questrade Account Data (Optional)
+- **`get_questrade_accounts()`** - Get list of all Questrade accounts for the authenticated user. Returns account type (Margin, TFSA, RRSP, etc.), account number, status, and other account details. Requires QUESTRADE_REFRESH_TOKEN environment variable.
+- **`get_questrade_positions(account_number)`** - Get all positions (holdings/assets) for a specific Questrade account. Returns detailed information including symbol, quantity, current market value, entry price, and profit/loss. Requires QUESTRADE_REFRESH_TOKEN environment variable.
+- **`get_questrade_balances(account_number, start_time=None)`** - Get cash balances and account equity for a specific Questrade account. Returns per-currency balances (CAD, USD), market value, total equity, buying power, and maintenance excess. Requires QUESTRADE_REFRESH_TOKEN environment variable.
 
 ### Market Sentiment
 - **`get_cnn_fear_greed_index(indicators=None)`** - CNN Fear & Greed Index with selective indicator filtering. Available indicators: fear_and_greed, fear_and_greed_historical, put_call_options, market_volatility_vix, market_volatility_vix_50, junk_bond_demand, safe_haven_demand
