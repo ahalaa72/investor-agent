@@ -884,6 +884,7 @@ dependencies = [
     { name = "numpy" },
     { name = "pandas" },
     { name = "pytrends" },
+    { name = "questrade-api" },
     { name = "requests-cache" },
     { name = "scipy" },
     { name = "tenacity" },

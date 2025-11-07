@@ -8,8 +8,9 @@ error handling, logging, and retry logic consistent with the investor-agent patt
 import logging
 import os
 import sys
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
+from questrade_api import Questrade
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -24,22 +25,6 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[logging.StreamHandler(sys.stderr)]
 )
-
-# Try to import questrade_api
-try:
-    from questrade_api import Questrade
-    _questrade_available = True
-except ImportError:
-    _questrade_available = False
-    Questrade = None  # Define as None when not available
-    logger.warning(
-        "questrade-api package not available. Install it with: pip install questrade-api"
-    )
-
-if TYPE_CHECKING:
-    from questrade_api import Questrade as QuestradeType
-else:
-    QuestradeType = Any
 
 
 class QuestradeClient:
@@ -63,14 +48,8 @@ class QuestradeClient:
                          to load from QUESTRADE_REFRESH_TOKEN environment variable.
 
         Raises:
-            ImportError: If questrade-api package is not installed.
             ValueError: If no refresh token is provided or found in environment.
         """
-        if not _questrade_available:
-            raise ImportError(
-                "questrade-api package is required. Install with: pip install questrade-api"
-            )
-
         self.refresh_token = refresh_token or os.getenv("QUESTRADE_REFRESH_TOKEN")
         if not self.refresh_token:
             raise ValueError(
@@ -78,15 +57,15 @@ class QuestradeClient:
                 "environment variable or pass refresh_token parameter."
             )
 
-        self._client: Optional[QuestradeType] = None
+        self._client: Optional[Questrade] = None
         logger.info("QuestradeClient initialized")
 
-    def _get_client(self) -> QuestradeType:
+    def _get_client(self) -> Questrade:
         """
         Get or create the Questrade API client instance.
 
         Returns:
-            QuestradeType: The initialized Questrade API client.
+            Questrade: The initialized Questrade API client.
         """
         if self._client is None:
             try:
@@ -751,7 +730,6 @@ def get_questrade_client() -> QuestradeClient:
         QuestradeClient: The initialized client instance.
 
     Raises:
-        ImportError: If questrade-api package is not installed.
         ValueError: If refresh token is not configured.
     """
     global _questrade_client
