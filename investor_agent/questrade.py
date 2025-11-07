@@ -64,12 +64,29 @@ class QuestradeClient:
         """
         Get or create the Questrade API client instance.
 
+        The questrade-api library automatically manages token refresh and stores
+        updated tokens in ~/.questrade.json. On first use, we pass the manual
+        refresh token from the environment. On subsequent uses, the library
+        reads from the stored token file automatically.
+
         Returns:
             Questrade: The initialized Questrade API client.
         """
         if self._client is None:
             try:
-                self._client = Questrade(refresh_token=self.refresh_token)
+                # Check if token file already exists
+                token_file = os.path.expanduser("~/.questrade.json")
+
+                if os.path.exists(token_file):
+                    # Token file exists - let the library use stored tokens
+                    # Don't pass refresh_token to avoid reusing the manual token
+                    logger.info("Using stored Questrade tokens from ~/.questrade.json")
+                    self._client = Questrade()
+                else:
+                    # First time - use manual refresh token from environment
+                    logger.info("No stored tokens found, using manual refresh token from environment")
+                    self._client = Questrade(refresh_token=self.refresh_token)
+
                 logger.info("Questrade API client connected")
             except Exception as e:
                 logger.error(f"Failed to initialize Questrade client: {e}")
