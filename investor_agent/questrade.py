@@ -126,7 +126,12 @@ class QuestradeClient:
             logger.info("Fetching Questrade accounts")
             accounts = client.accounts
 
+            # Debug: Log what we actually received
+            logger.debug(f"API response type: {type(accounts)}")
+            logger.debug(f"API response: {accounts}")
+
             if not accounts or 'accounts' not in accounts:
+                logger.error(f"Invalid response format. Got: {accounts}")
                 raise ValueError("No accounts data returned from Questrade API")
 
             logger.info(f"Retrieved {len(accounts.get('accounts', []))} accounts")
