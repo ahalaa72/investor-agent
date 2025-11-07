@@ -89,10 +89,34 @@ To use Questrade features, you need to:
 - **`fetch_intraday_15m(stock, window=200)`** - Fetch 15-minute historical stock bars using Alpaca API. Returns CSV string with timestamp and close price data in EST timezone.
 - **`fetch_intraday_1h(stock, window=200)`** - Fetch 1-Hour historical stock bars using Alpaca API. Returns CSV string with timestamp and close price data in EST timezone.
 
-### Questrade Account Data (Optional)
-- **`get_questrade_accounts()`** - Get list of all Questrade accounts for the authenticated user. Returns account type (Margin, TFSA, RRSP, etc.), account number, status, and other account details. Requires QUESTRADE_REFRESH_TOKEN environment variable.
-- **`get_questrade_positions(account_number)`** - Get all positions (holdings/assets) for a specific Questrade account. Returns detailed information including symbol, quantity, current market value, entry price, and profit/loss. Requires QUESTRADE_REFRESH_TOKEN environment variable.
-- **`get_questrade_balances(account_number, start_time=None)`** - Get cash balances and account equity for a specific Questrade account. Returns per-currency balances (CAD, USD), market value, total equity, buying power, and maintenance excess. Requires QUESTRADE_REFRESH_TOKEN environment variable.
+### Questrade Integration (Optional)
+
+#### Account Data
+- **`get_questrade_accounts()`** - Get list of all Questrade accounts for the authenticated user. Returns account type (Margin, TFSA, RRSP, etc.), account number, status, and other account details.
+- **`get_questrade_positions(account_number)`** - Get all positions (holdings/assets) for a specific Questrade account. Returns detailed information including symbol, quantity, current market value, entry price, and profit/loss.
+- **`get_questrade_balances(account_number, start_time=None)`** - Get cash balances and account equity for a specific Questrade account. Returns per-currency balances (CAD, USD), market value, total equity, buying power, and maintenance excess.
+
+#### Market Data
+- **`get_questrade_quote(symbol)`** - Get real-time Level 1 market quote for a single symbol. Returns bid/ask prices, volumes, last trade price, and other quote data.
+- **`get_questrade_quotes(symbols)`** - Get real-time Level 1 market quotes for multiple symbols (list). Returns quote data for all requested symbols in a single call.
+- **`get_questrade_candles(symbol, interval, start_time, end_time)`** - Get historical OHLCV candle data for a symbol. Intervals: OneMinute, TwoMinutes, ThreeMinutes, FourMinutes, FiveMinutes, TenMinutes, FifteenMinutes, TwentyMinutes, HalfHour, OneHour, TwoHours, FourHours, OneDay, OneWeek, OneMonth, OneYear. Times in ISO 8601 format (YYYY-MM-DDTHH:MM:SS-05:00).
+- **`search_questrade_symbols(query, offset=0)`** - Search for symbols by name or description prefix. Returns matching symbols with details. Use offset for pagination.
+- **`get_questrade_symbol_info(symbols)`** - Get detailed information for one or more symbols (comma-separated). Returns symbol ID, description, security type, listing exchange, currency, and trading rules.
+- **`get_questrade_markets()`** - Get information about available trading markets and their current status (open/closed).
+
+#### Orders
+- **`get_questrade_orders(account_number, start_time=None, end_time=None, state_filter=None)`** - Get orders for a specific account. Filter by time range and state (All, Open, Closed). Returns order details including symbol, quantity, price, state, and timestamps.
+- **`get_questrade_order(account_number, order_id)`** - Get detailed information for a specific order by order ID.
+
+#### Historical Data
+- **`get_questrade_executions(account_number, start_time=None, end_time=None)`** - Get trade executions (fills) for an account within a time range. Returns execution price, quantity, commission, and settlement details.
+- **`get_questrade_activities(account_number, start_time=None, end_time=None)`** - Get account activities including deposits, withdrawals, dividends, fees, and other transactions within a time range.
+
+#### Options
+- **`get_questrade_options_chain(symbol)`** - Get the full options chain for an underlying symbol. Returns all available option expiries and strikes.
+- **`get_questrade_option_quotes(option_ids)`** - Get quotes with Greeks (delta, gamma, theta, vega, rho) for specific option IDs (list of integers).
+
+**Note:** All Questrade tools require QUESTRADE_REFRESH_TOKEN environment variable. See [Questrade Setup](#questrade-setup) for configuration details.
 
 ### Market Sentiment
 - **`get_cnn_fear_greed_index(indicators=None)`** - CNN Fear & Greed Index with selective indicator filtering. Available indicators: fear_and_greed, fear_and_greed_historical, put_call_options, market_volatility_vix, market_volatility_vix_50, junk_bond_demand, safe_haven_demand

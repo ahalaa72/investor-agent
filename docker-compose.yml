@@ -10,6 +10,11 @@ services:
     restart: unless-stopped
     stdin_open: true
     tty: true
-    # Optional: Mount code for development
-    # volumes:
-    #   - ./investor_agent:/app/investor_agent
+    volumes:
+      # Persist Questrade tokens across container restarts
+      - questrade-tokens:/root
+      # Optional: Mount code for development
+      # - ./investor_agent:/app/investor_agent
+
+volumes:
+  questrade-tokens:

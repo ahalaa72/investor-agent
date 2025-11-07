@@ -247,6 +247,476 @@ class QuestradeClient:
             logger.error(f"Error fetching balances for account {account_number}: {e}", exc_info=True)
             raise ValueError(f"Failed to retrieve balances for account {account_number}: {str(e)}")
 
+    @retry(
+        retry=retry_if_exception_type((ConnectionError, TimeoutError)),
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+        stop=stop_after_attempt(3),
+    )
+    def get_quote(self, symbol: str) -> Dict[str, Any]:
+        """
+        Get real-time Level 1 quote for a single symbol.
+
+        Args:
+            symbol: The symbol to get quote for (e.g., "AAPL", "TSLA").
+
+        Returns:
+            dict: Quote information including bid, ask, last price, volume, etc.
+
+        Raises:
+            ValueError: If symbol is invalid or API call fails.
+        """
+        if not symbol:
+            raise ValueError("symbol is required")
+
+        try:
+            client = self._get_client()
+            logger.info(f"Fetching quote for {symbol}")
+            quote = client.markets_quote(symbol)
+
+            if quote is None:
+                raise ValueError(f"No quote data returned for {symbol}")
+
+            logger.info(f"Retrieved quote for {symbol}")
+            return quote
+
+        except Exception as e:
+            logger.error(f"Error fetching quote for {symbol}: {e}", exc_info=True)
+            raise ValueError(f"Failed to retrieve quote for {symbol}: {str(e)}")
+
+    @retry(
+        retry=retry_if_exception_type((ConnectionError, TimeoutError)),
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+        stop=stop_after_attempt(3),
+    )
+    def get_quotes(self, symbols: List[str]) -> Dict[str, Any]:
+        """
+        Get real-time Level 1 quotes for multiple symbols.
+
+        Args:
+            symbols: List of symbols to get quotes for.
+
+        Returns:
+            dict: Quotes for all requested symbols.
+
+        Raises:
+            ValueError: If symbols are invalid or API call fails.
+        """
+        if not symbols:
+            raise ValueError("symbols list is required")
+
+        try:
+            client = self._get_client()
+            # Convert list to comma-separated string
+            symbols_str = ",".join(symbols)
+            logger.info(f"Fetching quotes for {len(symbols)} symbols")
+            quotes = client.markets_quotes(symbols_str)
+
+            if quotes is None:
+                raise ValueError(f"No quotes data returned")
+
+            logger.info(f"Retrieved quotes for {len(symbols)} symbols")
+            return quotes
+
+        except Exception as e:
+            logger.error(f"Error fetching quotes: {e}", exc_info=True)
+            raise ValueError(f"Failed to retrieve quotes: {str(e)}")
+
+    @retry(
+        retry=retry_if_exception_type((ConnectionError, TimeoutError)),
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+        stop=stop_after_attempt(3),
+    )
+    def get_candles(
+        self,
+        symbol: str,
+        interval: str,
+        start_time: str,
+        end_time: str
+    ) -> Dict[str, Any]:
+        """
+        Get historical OHLCV candle data for a symbol.
+
+        Args:
+            symbol: The symbol to get candles for.
+            interval: Candle interval (OneMinute, TwoMinutes, ThreeMinutes, FourMinutes,
+                     FiveMinutes, TenMinutes, FifteenMinutes, TwentyMinutes, HalfHour,
+                     OneHour, TwoHours, FourHours, OneDay, OneWeek, OneMonth, OneYear).
+            start_time: Start time in ISO format (e.g., "2024-01-01T00:00:00-05:00").
+            end_time: End time in ISO format.
+
+        Returns:
+            dict: Candle data with OHLCV values.
+
+        Raises:
+            ValueError: If parameters are invalid or API call fails.
+        """
+        if not symbol or not interval or not start_time or not end_time:
+            raise ValueError("symbol, interval, start_time, and end_time are required")
+
+        try:
+            client = self._get_client()
+            logger.info(f"Fetching candles for {symbol} ({interval})")
+            candles = client.markets_candles(symbol, interval, start_time, end_time)
+
+            if candles is None:
+                raise ValueError(f"No candle data returned for {symbol}")
+
+            logger.info(f"Retrieved candles for {symbol}")
+            return candles
+
+        except Exception as e:
+            logger.error(f"Error fetching candles for {symbol}: {e}", exc_info=True)
+            raise ValueError(f"Failed to retrieve candles for {symbol}: {str(e)}")
+
+    @retry(
+        retry=retry_if_exception_type((ConnectionError, TimeoutError)),
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+        stop=stop_after_attempt(3),
+    )
+    def search_symbols(self, query: str, offset: int = 0) -> Dict[str, Any]:
+        """
+        Search for symbols by name or description.
+
+        Args:
+            query: Search query string.
+            offset: Offset for pagination (default 0).
+
+        Returns:
+            dict: Search results with matching symbols.
+
+        Raises:
+            ValueError: If query is invalid or API call fails.
+        """
+        if not query:
+            raise ValueError("query is required")
+
+        try:
+            client = self._get_client()
+            logger.info(f"Searching symbols for: {query}")
+            results = client.symbols_search(query, offset)
+
+            if results is None:
+                raise ValueError(f"No search results returned for {query}")
+
+            logger.info(f"Found symbols matching: {query}")
+            return results
+
+        except Exception as e:
+            logger.error(f"Error searching symbols for {query}: {e}", exc_info=True)
+            raise ValueError(f"Failed to search symbols: {str(e)}")
+
+    @retry(
+        retry=retry_if_exception_type((ConnectionError, TimeoutError)),
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+        stop=stop_after_attempt(3),
+    )
+    def get_symbol_info(self, symbols: str) -> Dict[str, Any]:
+        """
+        Get detailed information for one or more symbols.
+
+        Args:
+            symbols: Single symbol or comma-separated list of symbols.
+
+        Returns:
+            dict: Detailed symbol information.
+
+        Raises:
+            ValueError: If symbols are invalid or API call fails.
+        """
+        if not symbols:
+            raise ValueError("symbols is required")
+
+        try:
+            client = self._get_client()
+            logger.info(f"Fetching symbol info for: {symbols}")
+            info = client.symbols(names=symbols)
+
+            if info is None:
+                raise ValueError(f"No symbol info returned for {symbols}")
+
+            logger.info(f"Retrieved symbol info for: {symbols}")
+            return info
+
+        except Exception as e:
+            logger.error(f"Error fetching symbol info for {symbols}: {e}", exc_info=True)
+            raise ValueError(f"Failed to retrieve symbol info: {str(e)}")
+
+    @retry(
+        retry=retry_if_exception_type((ConnectionError, TimeoutError)),
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+        stop=stop_after_attempt(3),
+    )
+    def get_markets(self) -> Dict[str, Any]:
+        """
+        Get information about available markets.
+
+        Returns:
+            dict: List of available markets and their details.
+
+        Raises:
+            ValueError: If API call fails.
+        """
+        try:
+            client = self._get_client()
+            logger.info("Fetching available markets")
+            markets = client.markets()
+
+            if markets is None:
+                raise ValueError("No markets data returned")
+
+            logger.info("Retrieved markets information")
+            return markets
+
+        except Exception as e:
+            logger.error(f"Error fetching markets: {e}", exc_info=True)
+            raise ValueError(f"Failed to retrieve markets: {str(e)}")
+
+    @retry(
+        retry=retry_if_exception_type((ConnectionError, TimeoutError)),
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+        stop=stop_after_attempt(3),
+    )
+    def get_account_orders(
+        self,
+        account_number: str,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+        state_filter: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Get orders for a specific account.
+
+        Args:
+            account_number: The account number.
+            start_time: Optional start time filter (ISO format).
+            end_time: Optional end time filter (ISO format).
+            state_filter: Optional state filter (All, Open, Closed).
+
+        Returns:
+            dict: List of orders.
+
+        Raises:
+            ValueError: If account_number is invalid or API call fails.
+        """
+        if not account_number:
+            raise ValueError("account_number is required")
+
+        try:
+            client = self._get_client()
+            logger.info(f"Fetching orders for account {account_number}")
+            orders = client.account_orders(account_number, startTime=start_time,
+                                          endTime=end_time, stateFilter=state_filter)
+
+            if orders is None:
+                raise ValueError(f"No orders data returned for account {account_number}")
+
+            order_count = len(orders.get('orders', []))
+            logger.info(f"Retrieved {order_count} orders for account {account_number}")
+            return orders
+
+        except Exception as e:
+            logger.error(f"Error fetching orders for account {account_number}: {e}", exc_info=True)
+            raise ValueError(f"Failed to retrieve orders: {str(e)}")
+
+    @retry(
+        retry=retry_if_exception_type((ConnectionError, TimeoutError)),
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+        stop=stop_after_attempt(3),
+    )
+    def get_account_order(self, account_number: str, order_id: str) -> Dict[str, Any]:
+        """
+        Get details for a specific order.
+
+        Args:
+            account_number: The account number.
+            order_id: The order ID.
+
+        Returns:
+            dict: Order details.
+
+        Raises:
+            ValueError: If parameters are invalid or API call fails.
+        """
+        if not account_number or not order_id:
+            raise ValueError("account_number and order_id are required")
+
+        try:
+            client = self._get_client()
+            logger.info(f"Fetching order {order_id} for account {account_number}")
+            order = client.account_order(account_number, order_id)
+
+            if order is None:
+                raise ValueError(f"No order data returned for order {order_id}")
+
+            logger.info(f"Retrieved order {order_id}")
+            return order
+
+        except Exception as e:
+            logger.error(f"Error fetching order {order_id}: {e}", exc_info=True)
+            raise ValueError(f"Failed to retrieve order: {str(e)}")
+
+    @retry(
+        retry=retry_if_exception_type((ConnectionError, TimeoutError)),
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+        stop=stop_after_attempt(3),
+    )
+    def get_account_executions(
+        self,
+        account_number: str,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Get trade executions for a specific account.
+
+        Args:
+            account_number: The account number.
+            start_time: Optional start time filter (ISO format).
+            end_time: Optional end time filter (ISO format).
+
+        Returns:
+            dict: List of trade executions.
+
+        Raises:
+            ValueError: If account_number is invalid or API call fails.
+        """
+        if not account_number:
+            raise ValueError("account_number is required")
+
+        try:
+            client = self._get_client()
+            logger.info(f"Fetching executions for account {account_number}")
+            executions = client.account_executions(account_number, startTime=start_time,
+                                                  endTime=end_time)
+
+            if executions is None:
+                raise ValueError(f"No executions data returned for account {account_number}")
+
+            execution_count = len(executions.get('executions', []))
+            logger.info(f"Retrieved {execution_count} executions for account {account_number}")
+            return executions
+
+        except Exception as e:
+            logger.error(f"Error fetching executions for account {account_number}: {e}", exc_info=True)
+            raise ValueError(f"Failed to retrieve executions: {str(e)}")
+
+    @retry(
+        retry=retry_if_exception_type((ConnectionError, TimeoutError)),
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+        stop=stop_after_attempt(3),
+    )
+    def get_account_activities(
+        self,
+        account_number: str,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Get account activities (deposits, withdrawals, fees, etc.).
+
+        Args:
+            account_number: The account number.
+            start_time: Optional start time filter (ISO format).
+            end_time: Optional end time filter (ISO format).
+
+        Returns:
+            dict: List of account activities.
+
+        Raises:
+            ValueError: If account_number is invalid or API call fails.
+        """
+        if not account_number:
+            raise ValueError("account_number is required")
+
+        try:
+            client = self._get_client()
+            logger.info(f"Fetching activities for account {account_number}")
+            activities = client.account_activities(account_number, startTime=start_time,
+                                                  endTime=end_time)
+
+            if activities is None:
+                raise ValueError(f"No activities data returned for account {account_number}")
+
+            activity_count = len(activities.get('activities', []))
+            logger.info(f"Retrieved {activity_count} activities for account {account_number}")
+            return activities
+
+        except Exception as e:
+            logger.error(f"Error fetching activities for account {account_number}: {e}", exc_info=True)
+            raise ValueError(f"Failed to retrieve activities: {str(e)}")
+
+    @retry(
+        retry=retry_if_exception_type((ConnectionError, TimeoutError)),
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+        stop=stop_after_attempt(3),
+    )
+    def get_options_chain(self, symbol: str) -> Dict[str, Any]:
+        """
+        Get options chain for a symbol.
+
+        Args:
+            symbol: The underlying symbol.
+
+        Returns:
+            dict: Options chain data.
+
+        Raises:
+            ValueError: If symbol is invalid or API call fails.
+        """
+        if not symbol:
+            raise ValueError("symbol is required")
+
+        try:
+            client = self._get_client()
+            logger.info(f"Fetching options chain for {symbol}")
+            options = client.symbol_options(symbol)
+
+            if options is None:
+                raise ValueError(f"No options data returned for {symbol}")
+
+            logger.info(f"Retrieved options chain for {symbol}")
+            return options
+
+        except Exception as e:
+            logger.error(f"Error fetching options for {symbol}: {e}", exc_info=True)
+            raise ValueError(f"Failed to retrieve options chain: {str(e)}")
+
+    @retry(
+        retry=retry_if_exception_type((ConnectionError, TimeoutError)),
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+        stop=stop_after_attempt(3),
+    )
+    def get_option_quotes(self, option_ids: List[int]) -> Dict[str, Any]:
+        """
+        Get quotes with Greeks for option symbols.
+
+        Args:
+            option_ids: List of option IDs.
+
+        Returns:
+            dict: Option quotes with Greeks data.
+
+        Raises:
+            ValueError: If option_ids are invalid or API call fails.
+        """
+        if not option_ids:
+            raise ValueError("option_ids list is required")
+
+        try:
+            client = self._get_client()
+            logger.info(f"Fetching option quotes for {len(option_ids)} options")
+            quotes = client.markets_options(option_ids)
+
+            if quotes is None:
+                raise ValueError("No option quotes returned")
+
+            logger.info(f"Retrieved option quotes for {len(option_ids)} options")
+            return quotes
+
+        except Exception as e:
+            logger.error(f"Error fetching option quotes: {e}", exc_info=True)
+            raise ValueError(f"Failed to retrieve option quotes: {str(e)}")
+
 
 # Singleton instance
 _questrade_client: Optional[QuestradeClient] = None
