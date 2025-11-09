@@ -510,8 +510,10 @@ class QuestradeClient:
 
         Args:
             account_number: The account number.
-            start_time: Optional start time filter (ISO format).
+            start_time: Optional start time filter (ISO format: YYYY-MM-DDTHH:MM:SS-05:00).
+                       Defaults to 30 days ago if not provided.
             end_time: Optional end time filter (ISO format).
+                     Defaults to current time if not provided.
             state_filter: Optional state filter (All, Open, Closed).
 
         Returns:
@@ -519,20 +521,39 @@ class QuestradeClient:
 
         Raises:
             ValueError: If account_number is invalid or API call fails.
+
+        Note:
+            If no date range is provided, defaults to last 30 days to avoid
+            API response size limits. For older data, provide explicit date range.
         """
         if not account_number:
             raise ValueError("account_number is required")
 
         try:
             client = self._get_client()
-            logger.info(f"Fetching orders for account {account_number}")
 
-            # Build kwargs dict with only non-None values
-            kwargs = {}
-            if start_time is not None:
-                kwargs['startTime'] = start_time
-            if end_time is not None:
-                kwargs['endTime'] = end_time
+            # Set default date range if not provided (to avoid "argument length exceeds limit" error)
+            from datetime import datetime, timedelta, timezone
+
+            if start_time is None:
+                # Default to 30 days ago
+                default_start = datetime.now(timezone.utc) - timedelta(days=30)
+                start_time = default_start.strftime('%Y-%m-%dT%H:%M:%S-05:00')
+                logger.info(f"No start_time provided, defaulting to 30 days ago: {start_time}")
+
+            if end_time is None:
+                # Default to current time
+                default_end = datetime.now(timezone.utc)
+                end_time = default_end.strftime('%Y-%m-%dT%H:%M:%S-05:00')
+                logger.info(f"No end_time provided, defaulting to current time: {end_time}")
+
+            logger.info(f"Fetching orders for account {account_number} from {start_time} to {end_time}")
+
+            # Build kwargs dict
+            kwargs = {
+                'startTime': start_time,
+                'endTime': end_time
+            }
             if state_filter is not None:
                 kwargs['stateFilter'] = state_filter
 
@@ -602,28 +623,49 @@ class QuestradeClient:
 
         Args:
             account_number: The account number.
-            start_time: Optional start time filter (ISO format).
+            start_time: Optional start time filter (ISO format: YYYY-MM-DDTHH:MM:SS-05:00).
+                       Defaults to 90 days ago if not provided.
             end_time: Optional end time filter (ISO format).
+                     Defaults to current time if not provided.
 
         Returns:
             dict: List of trade executions.
 
         Raises:
             ValueError: If account_number is invalid or API call fails.
+
+        Note:
+            If no date range is provided, defaults to last 90 days to avoid
+            API response size limits. For older data, provide explicit date range.
         """
         if not account_number:
             raise ValueError("account_number is required")
 
         try:
             client = self._get_client()
-            logger.info(f"Fetching executions for account {account_number}")
 
-            # Build kwargs dict with only non-None values
-            kwargs = {}
-            if start_time is not None:
-                kwargs['startTime'] = start_time
-            if end_time is not None:
-                kwargs['endTime'] = end_time
+            # Set default date range if not provided (to avoid "argument length exceeds limit" error)
+            from datetime import datetime, timedelta, timezone
+
+            if start_time is None:
+                # Default to 90 days ago
+                default_start = datetime.now(timezone.utc) - timedelta(days=90)
+                start_time = default_start.strftime('%Y-%m-%dT%H:%M:%S-05:00')
+                logger.info(f"No start_time provided, defaulting to 90 days ago: {start_time}")
+
+            if end_time is None:
+                # Default to current time
+                default_end = datetime.now(timezone.utc)
+                end_time = default_end.strftime('%Y-%m-%dT%H:%M:%S-05:00')
+                logger.info(f"No end_time provided, defaulting to current time: {end_time}")
+
+            logger.info(f"Fetching executions for account {account_number} from {start_time} to {end_time}")
+
+            # Build kwargs dict
+            kwargs = {
+                'startTime': start_time,
+                'endTime': end_time
+            }
 
             executions = client.account_executions(account_number, **kwargs)
 
@@ -654,28 +696,50 @@ class QuestradeClient:
 
         Args:
             account_number: The account number.
-            start_time: Optional start time filter (ISO format).
+            start_time: Optional start time filter (ISO format: YYYY-MM-DDTHH:MM:SS-05:00).
+                       Defaults to 30 days ago if not provided.
             end_time: Optional end time filter (ISO format).
+                     Defaults to current time if not provided.
 
         Returns:
             dict: List of account activities.
 
         Raises:
             ValueError: If account_number is invalid or API call fails.
+
+        Note:
+            If no date range is provided, defaults to last 30 days to avoid
+            API response size limits (error 1003: "Argument length exceeds imposed limit").
+            For older data, provide explicit date range in smaller chunks (e.g., 30-day periods).
         """
         if not account_number:
             raise ValueError("account_number is required")
 
         try:
             client = self._get_client()
-            logger.info(f"Fetching activities for account {account_number}")
 
-            # Build kwargs dict with only non-None values
-            kwargs = {}
-            if start_time is not None:
-                kwargs['startTime'] = start_time
-            if end_time is not None:
-                kwargs['endTime'] = end_time
+            # Set default date range if not provided (to avoid "argument length exceeds limit" error)
+            from datetime import datetime, timedelta, timezone
+
+            if start_time is None:
+                # Default to 30 days ago (activities can be more voluminous than executions)
+                default_start = datetime.now(timezone.utc) - timedelta(days=30)
+                start_time = default_start.strftime('%Y-%m-%dT%H:%M:%S-05:00')
+                logger.info(f"No start_time provided, defaulting to 30 days ago: {start_time}")
+
+            if end_time is None:
+                # Default to current time
+                default_end = datetime.now(timezone.utc)
+                end_time = default_end.strftime('%Y-%m-%dT%H:%M:%S-05:00')
+                logger.info(f"No end_time provided, defaulting to current time: {end_time}")
+
+            logger.info(f"Fetching activities for account {account_number} from {start_time} to {end_time}")
+
+            # Build kwargs dict
+            kwargs = {
+                'startTime': start_time,
+                'endTime': end_time
+            }
 
             activities = client.account_activities(account_number, **kwargs)
 
