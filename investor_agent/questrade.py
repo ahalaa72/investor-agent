@@ -5,9 +5,12 @@ This module provides a wrapper around the questrade-api package with proper
 error handling, logging, and retry logic consistent with the investor-agent patterns.
 """
 
+import json
 import logging
 import os
 import sys
+import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from questrade_api import Questrade
@@ -63,27 +66,49 @@ class QuestradeClient:
         """
         Get or create the Questrade API client instance.
 
-        Creates a fresh client for each request to ensure tokens are properly refreshed.
-        The questrade-api library handles token refresh automatically when instantiating
-        a new client - it checks ~/.questrade.json and refreshes expired access tokens.
+        Checks token expiration and forces refresh if needed. Access tokens expire
+        every 5 minutes, so we check the token file age and force a refresh if it's
+        older than 4 minutes to be safe.
 
         On first use, we pass the manual refresh token from the environment.
-        On subsequent uses, the library reads from ~/.questrade.json and auto-refreshes.
+        On subsequent uses, we check if tokens are expired and refresh if needed.
 
         Returns:
             Questrade: The initialized Questrade API client.
         """
         try:
-            # Check if token file already exists
-            token_file = os.path.expanduser("~/.questrade.json")
+            token_file_path = Path.home() / ".questrade.json"
 
-            if os.path.exists(token_file):
-                # Token file exists - create fresh client to handle token refresh
-                # The library will check if access token expired and refresh if needed
-                logger.info("Using stored Questrade tokens from ~/.questrade.json")
-                client = Questrade()
-                logger.info("Questrade API client connected")
-                return client
+            if token_file_path.exists():
+                # Check token file age (access tokens expire after 5 minutes)
+                file_age_seconds = time.time() - token_file_path.stat().st_mtime
+                file_age_minutes = file_age_seconds / 60
+
+                # If token file is older than 4 minutes, force refresh to be safe
+                if file_age_minutes > 4:
+                    logger.info(f"Token file is {file_age_minutes:.1f} minutes old, forcing refresh")
+
+                    # Read the refresh token from the file
+                    with open(token_file_path, 'r') as f:
+                        token_data = json.load(f)
+
+                    stored_refresh_token = token_data.get('refresh_token')
+
+                    if not stored_refresh_token:
+                        logger.error("No refresh token found in token file")
+                        raise ValueError("No refresh token found in stored token file")
+
+                    # Force refresh by passing the refresh token
+                    logger.info("Refreshing expired access token")
+                    client = Questrade(refresh_token=stored_refresh_token)
+                    logger.info("Questrade API client connected with refreshed tokens")
+                    return client
+                else:
+                    # Token is still fresh, use stored tokens
+                    logger.info(f"Using stored tokens (age: {file_age_minutes:.1f} min)")
+                    client = Questrade()
+                    logger.info("Questrade API client connected")
+                    return client
             else:
                 # First time - use manual refresh token from environment
                 logger.info("No stored tokens found, using manual refresh token from environment")
