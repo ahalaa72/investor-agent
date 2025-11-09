@@ -3,7 +3,7 @@
 ## Overview
 This document provides a comprehensive guide for using the investor-agent MCP server tools, organized by use case and workflow. Updated with all available tools including technical analysis capabilities and bootstrap analysis tools.
 
-**Last Updated:** November 3, 2025
+**Last Updated:** November 9, 2025
 
 ---
 
@@ -409,7 +409,8 @@ The comprehensive report framework ensures every analysis includes:
 5. [Options Trading](#options-trading)
 6. [Earnings & Events](#earnings--events)
 7. [Intraday Trading](#intraday-trading)
-8. [Common Workflows](#common-workflows)
+8. [Questrade Brokerage Integration](#questrade-brokerage-integration-new)
+9. [Common Workflows](#common-workflows)
 
 ---
 
@@ -964,6 +965,694 @@ fetch_intraday_1h(stock="AAPL", window=200)
 
 ---
 
+## Questrade Brokerage Integration ⭐ NEW
+
+### Overview
+
+The investor-agent now integrates directly with Questrade, allowing you to access your real brokerage account data, positions, orders, and trading history. This enables end-to-end trading workflows: from analysis to execution monitoring, all within the same platform.
+
+**Total Questrade Tools: 15**
+
+---
+
+### 🔐 Account & Portfolio Management
+
+#### Get All Accounts
+**Tool:** `get_questrade_accounts`
+
+**Example:**
+```
+get_questrade_accounts()
+```
+
+**Returns:**
+- Account numbers
+- Account types (TFSA, RRSP, Margin, Cash, etc.)
+- Account status
+- Client account type
+
+**Use Case:** Get a list of all your Questrade accounts to identify which account to query for positions, balances, or orders.
+
+---
+
+#### Get Account Positions
+**Tool:** `get_questrade_positions`
+
+**Example:**
+```
+get_questrade_positions(account_number="12345678")
+```
+
+**Returns:**
+- Symbol and symbol ID
+- Open quantity
+- Current market value
+- Current price
+- Average entry price
+- Closed P&L
+- Open P&L
+- Total cost
+- % day change
+
+**Use Case:** Review your current holdings, unrealized gains/losses, and position sizes.
+
+---
+
+#### Get Account Balances
+**Tool:** `get_questrade_balances`
+
+**Example:**
+```
+get_questrade_balances(account_number="12345678")
+```
+
+**Returns:**
+- Cash balances (CAD, USD)
+- Buying power
+- Maintenance excess
+- Market value
+- Total equity
+- Per-currency breakdown
+
+**Use Case:** Check available cash for new trades, monitor margin requirements, track total account value.
+
+---
+
+### 📊 Market Data & Research
+
+#### Get Single Quote
+**Tool:** `get_questrade_quote`
+
+**Example:**
+```
+get_questrade_quote(symbol="AAPL")
+```
+
+**Returns:**
+- Bid/Ask prices and sizes
+- Last trade price
+- High/Low for the day
+- Volume
+- Delay (0 for real-time, 15 for delayed)
+
+**Use Case:** Check current market price before placing an order or analyzing a position.
+
+---
+
+#### Get Multiple Quotes
+**Tool:** `get_questrade_quotes`
+
+**Example:**
+```
+get_questrade_quotes(symbols=["AAPL", "MSFT", "GOOGL", "NVDA"])
+```
+
+**Returns:** Same quote data as single quote, but for multiple symbols in one call.
+
+**Use Case:** Monitor a watchlist of stocks with a single API call for efficiency.
+
+**Pro Tip:** More efficient than calling get_questrade_quote multiple times.
+
+---
+
+#### Get Historical Candles (OHLCV Data)
+**Tool:** `get_questrade_candles`
+
+**Example:**
+```
+get_questrade_candles(
+    symbol="TSLA",
+    interval="OneHour",
+    start_time="2025-11-01T00:00:00-05:00",
+    end_time="2025-11-09T23:59:59-05:00"
+)
+```
+
+**Intervals:** "OneMinute", "FiveMinutes", "FifteenMinutes", "ThirtyMinutes", "OneHour", "OneDay", "OneWeek", "OneMonth"
+
+**Returns:**
+- Open, High, Low, Close
+- Volume
+- VWAP
+
+**Use Case:** Download historical price data for backtesting, charting, or technical analysis.
+
+**Pro Tip:** Use OneDay interval for daily charts, OneHour for intraday analysis.
+
+---
+
+#### Search Symbols
+**Tool:** `get_questrade_search_symbols`
+
+**Example:**
+```
+get_questrade_search_symbols(
+    prefix="AAPL",
+    offset=0
+)
+```
+
+**Returns:**
+- Symbol names matching the prefix
+- Symbol IDs
+- Descriptions
+
+**Use Case:** Find the exact symbol format Questrade uses (helpful for Canadian stocks with multiple exchanges).
+
+---
+
+#### Get Symbol Information
+**Tool:** `get_questrade_symbol_info`
+
+**Example:**
+```
+get_questrade_symbol_info(symbol="AAPL")
+```
+
+**Returns:**
+- Symbol ID
+- Security type (Stock, Option, etc.)
+- Listing exchange
+- Description
+- Currency
+- Trading halted status
+
+**Use Case:** Verify symbol details before trading, check if trading is halted.
+
+---
+
+#### Get Available Markets
+**Tool:** `get_questrade_markets`
+
+**Example:**
+```
+get_questrade_markets()
+```
+
+**Returns:**
+- List of all available markets/exchanges
+- Market names
+
+**Use Case:** Understand which markets you can access through Questrade.
+
+---
+
+### 📈 Orders & Executions
+
+#### Get Account Orders
+**Tool:** `get_questrade_orders`
+
+**Example 1 - All Recent Orders:**
+```
+get_questrade_orders(account_number="12345678")
+```
+
+**Example 2 - Filter by State:**
+```
+get_questrade_orders(
+    account_number="12345678",
+    state_filter="Closed"  # "Open", "Closed", or "All"
+)
+```
+
+**Example 3 - Date Range:**
+```
+get_questrade_orders(
+    account_number="12345678",
+    start_time="2025-11-01T00:00:00-05:00",
+    end_time="2025-11-09T23:59:59-05:00"
+)
+```
+
+**Returns:**
+- Order IDs
+- Symbols
+- Order types (Market, Limit, Stop)
+- Side (Buy/Sell)
+- Quantity and filled quantity
+- Limit price
+- Stop price
+- Order state (Pending, Accepted, Filled, Canceled)
+- Creation time
+
+**Use Case:** Track order status, review recent trading activity, monitor open orders.
+
+**Default:** Returns last 30 days if no dates specified.
+
+---
+
+#### Get Specific Order Details
+**Tool:** `get_questrade_order`
+
+**Example:**
+```
+get_questrade_order(
+    account_number="12345678",
+    order_id="987654321"
+)
+```
+
+**Returns:** Detailed information for a single order including all executions.
+
+**Use Case:** Investigate specific order fills, verify execution prices.
+
+---
+
+### 💰 Trading History & Analysis
+
+#### Get Trade Executions
+**Tool:** `get_questrade_executions`
+
+**Example:**
+```
+get_questrade_executions(
+    account_number="12345678",
+    start_time="2025-11-01T00:00:00-05:00",
+    end_time="2025-11-30T23:59:59-05:00"
+)
+```
+
+**Returns:**
+- Execution timestamps
+- Symbols traded
+- Quantities
+- Execution prices
+- Commission paid
+- Order IDs
+- Settlement date
+
+**Use Case:** Analyze trading costs, calculate realized P&L, track execution quality.
+
+**Default:** Returns last 90 days if no dates specified.
+
+**⚠️ IMPORTANT for Heavy Traders:** See "Month-by-Month Data Retrieval" section below.
+
+---
+
+#### Get Account Activities
+**Tool:** `get_questrade_activities`
+
+**Example:**
+```
+get_questrade_activities(
+    account_number="12345678",
+    start_time="2025-11-01T00:00:00-05:00",
+    end_time="2025-11-30T23:59:59-05:00"
+)
+```
+
+**Returns:**
+- Deposits and withdrawals
+- Dividends received
+- Interest charged/earned
+- Fees and commissions
+- Corporate actions
+- Transfers
+
+**Use Case:** Track cash flows, monitor dividend income, calculate total costs.
+
+**Default:** Returns last 30 days if no dates specified.
+
+**⚠️ IMPORTANT for Heavy Traders:** See "Month-by-Month Data Retrieval" section below.
+
+---
+
+### 🎯 Options Trading
+
+#### Get Options Chain
+**Tool:** `get_questrade_options_chain`
+
+**Example:**
+```
+get_questrade_options_chain(symbol="AAPL")
+```
+
+**Returns:**
+- All available option contracts for the underlying
+- Expiration dates
+- Strike prices
+- Option symbols
+
+**Use Case:** Browse available options contracts for a stock before trading options.
+
+---
+
+#### Get Option Quotes with Greeks
+**Tool:** `get_questrade_option_quotes`
+
+**Example:**
+```
+get_questrade_option_quotes(
+    option_ids=[12345, 12346, 12347],
+    filters=["optionType", "delta", "gamma", "theta", "vega"]
+)
+```
+
+**Returns:**
+- Bid/Ask prices
+- Greeks (Delta, Gamma, Theta, Vega, Rho)
+- Implied volatility
+- Open interest
+- Volume
+
+**Use Case:** Analyze options pricing, compare different strikes, assess risk with Greeks.
+
+**Pro Tip:** Get option IDs from get_questrade_options_chain first.
+
+---
+
+### 🔥 CRITICAL: Month-by-Month Data Retrieval for Heavy Traders
+
+#### The Problem
+
+Questrade API has response size limits. If you request too much data at once:
+- **Error 1003:** "Argument length exceeds imposed limit"
+- Common for accounts with:
+  - 100+ trades per month
+  - High-frequency trading
+  - Multiple years of history
+
+#### The Solution: Month-by-Month Retrieval
+
+**For Executions:**
+```
+Step 1: Define date ranges (monthly)
+months = [
+    ("2025-01-01T00:00:00-05:00", "2025-01-31T23:59:59-05:00"),  # January
+    ("2025-02-01T00:00:00-05:00", "2025-02-28T23:59:59-05:00"),  # February
+    ("2025-03-01T00:00:00-05:00", "2025-03-31T23:59:59-05:00"),  # March
+    # ... continue for each month
+]
+
+Step 2: Iterate and retrieve
+for start_time, end_time in months:
+    executions = get_questrade_executions(
+        account_number="12345678",
+        start_time=start_time,
+        end_time=end_time
+    )
+
+    # Process or store executions
+    # Combine with previous months' data
+```
+
+**For Activities:**
+```
+# Same pattern
+for start_time, end_time in months:
+    activities = get_questrade_activities(
+        account_number="12345678",
+        start_time=start_time,
+        end_time=end_time
+    )
+
+    # Process or store activities
+```
+
+**For Orders:**
+```
+# Orders have 30-day default, use monthly ranges for longer history
+for start_time, end_time in months:
+    orders = get_questrade_orders(
+        account_number="12345678",
+        start_time=start_time,
+        end_time=end_time
+    )
+
+    # Process or store orders
+```
+
+---
+
+### 📋 AI Agent Workflow: Complete Trading Analysis
+
+**Comprehensive workflow for analyzing Questrade account performance:**
+
+```
+Phase 1: Account Overview
+--------------------------
+1. get_questrade_accounts()
+   → Identify all accounts
+
+2. For each account:
+   - get_questrade_balances(account_number)
+   → Current cash, buying power, total equity
+
+   - get_questrade_positions(account_number)
+   → Current holdings and unrealized P&L
+
+Phase 2: Current Market Data
+-----------------------------
+3. Extract all symbols from positions
+
+4. get_questrade_quotes(symbols=[list_of_held_symbols])
+   → Current market prices for all holdings
+
+5. For each position:
+   - get_questrade_candles(symbol, interval="OneDay", last 6 months)
+   → Historical performance context
+
+Phase 3: Trading History (Month-by-Month for Heavy Traders)
+------------------------------------------------------------
+6. Define analysis period (e.g., last 12 months)
+
+7. Generate monthly date ranges
+
+8. For each month:
+   - get_questrade_executions(account_number, start_time, end_time)
+   → All trades executed
+
+   - get_questrade_activities(account_number, start_time, end_time)
+   → Dividends, fees, deposits, withdrawals
+
+   - get_questrade_orders(account_number, start_time, end_time)
+   → Order history and fills
+
+9. Combine all monthly data into complete history
+
+Phase 4: Performance Analysis
+------------------------------
+10. Calculate metrics:
+    - Total realized P&L (from executions)
+    - Total unrealized P&L (from positions)
+    - Total commissions paid (from executions and activities)
+    - Dividend income (from activities)
+    - Total deposits/withdrawals (from activities)
+    - Number of trades
+    - Win rate
+    - Average winner vs average loser
+    - Largest winner/loser
+
+11. Time-series analysis:
+    - Monthly P&L breakdown
+    - Trading frequency trends
+    - Commission costs over time
+
+Phase 5: Strategy Analysis
+---------------------------
+12. For profitable positions:
+    - Calculate holding period
+    - Analyze entry/exit quality
+    - Compare to technical indicators (using analyze_technical)
+
+13. For losing positions:
+    - Identify common mistakes
+    - Check if stopped out too early (using analyze_volatility_tool for ATR)
+
+14. Generate recommendations:
+    - Which holdings to keep/sell
+    - Position sizing adjustments
+    - Commission optimization
+```
+
+---
+
+### 🎯 AI Agent Prompt Templates
+
+**Template 1: Complete Account Analysis**
+
+```
+Analyze my Questrade trading account performance:
+
+1. Get all accounts and balances
+2. Review current positions with unrealized P&L
+3. Retrieve trading history for the last 12 months (MONTH BY MONTH)
+4. Calculate:
+   - Total realized P&L
+   - Total unrealized P&L
+   - Commission costs
+   - Dividend income
+   - Net deposits/withdrawals
+   - Win rate
+   - Best and worst trades
+5. Provide recommendations for current positions
+6. Identify trading patterns and areas for improvement
+
+Account number: [YOUR_ACCOUNT_NUMBER]
+```
+
+**Template 2: Position Review with Technical Analysis**
+
+```
+Review my Questrade positions and provide recommendations:
+
+1. Get current positions from account [ACCOUNT_NUMBER]
+2. For each position:
+   - Get current quote
+   - Run analyze_technical(symbol, period="6mo")
+   - Run analyze_trend_strength(symbol, period="6mo")
+   - Run find_support_resistance(symbol)
+   - Run analyze_volatility_tool(symbol) for stop recommendation
+   - Calculate unrealized P&L %
+3. Classify each position:
+   - HOLD (strong technical, leader)
+   - REDUCE (weakening technical)
+   - EXIT (technical breakdown)
+   - ADD (pullback to support in uptrend)
+4. Provide specific action plan with prices
+```
+
+**Template 3: Heavy Trading Analysis (Month-by-Month)**
+
+```
+Analyze my trading performance for 2025:
+
+IMPORTANT: Use month-by-month retrieval to avoid API limits
+
+1. For each month (January through November 2025):
+   - get_questrade_executions(account, start_time, end_time)
+   - get_questrade_activities(account, start_time, end_time)
+   - get_questrade_orders(account, start_time, end_time)
+
+2. Combine all monthly data
+
+3. Calculate monthly metrics:
+   - Trades per month
+   - P&L per month
+   - Commissions per month
+   - Win rate per month
+   - Average position hold time
+
+4. Identify:
+   - Best trading month (why?)
+   - Worst trading month (why?)
+   - Most traded symbols
+   - Most profitable symbols
+   - Costliest mistakes
+
+5. Provide recommendations to improve trading
+
+Account number: [YOUR_ACCOUNT_NUMBER]
+```
+
+**Template 4: Dividend Income Tracking**
+
+```
+Track dividend income for tax planning:
+
+1. get_questrade_activities(
+      account_number="[ACCOUNT]",
+      start_time="2025-01-01T00:00:00-05:00",
+      end_time="2025-12-31T23:59:59-05:00"
+   )
+
+2. Filter for dividend activities
+
+3. Summarize:
+   - Total dividend income
+   - By symbol
+   - By month
+   - Currency breakdown (CAD vs USD)
+
+4. Project annual dividend income based on current holdings
+```
+
+---
+
+### 🚨 Important Notes for AI Agents
+
+**1. Date Format:**
+- Always use ISO 8601 format with timezone: `YYYY-MM-DDTHH:MM:SS-05:00`
+- Eastern Time (ET) is `-05:00` or `-04:00` depending on DST
+- Examples:
+  - Start of day: `2025-11-01T00:00:00-05:00`
+  - End of day: `2025-11-30T23:59:59-05:00`
+
+**2. Default Date Ranges:**
+- `get_questrade_orders`: Last 30 days if no dates specified
+- `get_questrade_executions`: Last 90 days if no dates specified
+- `get_questrade_activities`: Last 30 days if no dates specified
+
+**3. Response Size Limits (Error 1003):**
+- If you get "Argument length exceeds imposed limit":
+  - **Break request into smaller time periods** (month-by-month)
+  - Reduce date range to 30 days maximum
+  - This is CRITICAL for heavy traders with hundreds of trades
+
+**4. Token Refresh:**
+- Access tokens expire every 5 minutes
+- Refresh tokens expire every 7 days
+- The system auto-refreshes tokens transparently
+- If you see "Access token is invalid", wait and retry
+
+**5. Account Numbers:**
+- Account numbers are sensitive - never log or expose them
+- Get from `get_questrade_accounts()` first
+- Use the correct account for each query
+
+**6. Symbol Format:**
+- Use standard ticker symbols (e.g., "AAPL", "TSLA")
+- For Canadian stocks, may need exchange suffix (e.g., "TD.TO")
+- Use `get_questrade_search_symbols()` if unsure
+
+**7. Combining with Other Tools:**
+- Use Questrade tools for YOUR portfolio data
+- Use other investor-agent tools for market analysis
+- Example workflow:
+  1. Get positions from Questrade
+  2. For each symbol, run analyze_technical(), analyze_volume_tool(), etc.
+  3. Make informed hold/sell/add decisions
+
+---
+
+### 💡 Pro Tips for AI Agents
+
+**Efficiency:**
+- Use `get_questrade_quotes(symbols=[list])` instead of multiple single quote calls
+- Batch symbol lookups when possible
+- Cache account numbers from initial `get_questrade_accounts()` call
+
+**Heavy Trading Accounts:**
+- ALWAYS use month-by-month retrieval for executions/activities
+- Start with smaller date ranges (1 week) if uncertain
+- Monitor for error 1003 and adjust range accordingly
+
+**Integration with Analysis Tools:**
+```
+# Get positions
+positions = get_questrade_positions(account_number)
+
+# For each position, run bootstrap analysis
+for position in positions:
+    symbol = position['symbol']
+
+    # Critical analysis
+    volatility = analyze_volatility_tool(symbol, period="6mo")
+    volume = analyze_volume_tool(symbol, period="3mo")
+    rs = calculate_relative_strength_tool(symbol, benchmark="SPY")
+
+    # Determine action based on analysis
+    if rs['score'] < 70:
+        recommendation = "REDUCE - No longer a leader"
+    elif volume['price_volume_confirmation'] == "Bearish Divergence":
+        recommendation = "REDUCE - Volume not supporting"
+    else:
+        stop_price = current_price - (2.5 * volatility['atr_14'])
+        recommendation = f"HOLD - Trail stop at ${stop_price:.2f}"
+```
+
+---
+
 ## Common Workflows
 
 ### 0. 🔥 Professional Pre-Trade Checklist (MANDATORY) ⭐ NEW
@@ -1318,7 +2007,7 @@ Phase 6: Post-Entry Management
 - analyze_trend_strength
 - detect_chart_patterns
 
-### 🔥 Bootstrap Analysis (4 tools) ⭐ NEW - CRITICAL
+### 🔥 Bootstrap Analysis (4 tools) ⭐ CRITICAL
 - analyze_volume_tool (VWAP, Volume Profile, OBV, MFI, A/D)
 - analyze_volatility_tool (ATR, Historical Vol, Beta, Stops)
 - calculate_relative_strength_tool (RS Score, Leader ID)
@@ -1331,6 +2020,30 @@ Phase 6: Post-Entry Management
 
 ### Options (1 tool)
 - get_options
+
+### 🏦 Questrade Brokerage (15 tools) ⭐ NEW
+**Account & Portfolio:**
+- get_questrade_accounts
+- get_questrade_positions
+- get_questrade_balances
+
+**Market Data:**
+- get_questrade_quote
+- get_questrade_quotes
+- get_questrade_candles
+- get_questrade_search_symbols
+- get_questrade_symbol_info
+- get_questrade_markets
+
+**Orders & Trading:**
+- get_questrade_orders
+- get_questrade_order
+- get_questrade_executions
+- get_questrade_activities
+
+**Options:**
+- get_questrade_options_chain
+- get_questrade_option_quotes
 
 ---
 
@@ -1379,13 +2092,14 @@ These tools enable fully automated technical analysis workflows without manual c
 
 ---
 
-## Total Available Tools: 24
+## Total Available Tools: 39
 
-**4** Market Sentiment Tools  
-**6** Fundamental Data Tools  
-**6** Technical Analysis Tools  
-**4** Bootstrap Analysis Tools (🔥 CRITICAL - NEW)  
-**3** Price Data Tools  
-**1** Options Tool  
+**4** Market Sentiment Tools
+**6** Fundamental Data Tools
+**6** Technical Analysis Tools
+**4** Bootstrap Analysis Tools (🔥 CRITICAL)
+**3** Price Data Tools
+**1** Options Tool
+**15** Questrade Brokerage Tools (⭐ NEW)  
 
 
