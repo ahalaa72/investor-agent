@@ -526,8 +526,17 @@ class QuestradeClient:
         try:
             client = self._get_client()
             logger.info(f"Fetching orders for account {account_number}")
-            orders = client.account_orders(account_number, startTime=start_time,
-                                          endTime=end_time, stateFilter=state_filter)
+
+            # Build kwargs dict with only non-None values
+            kwargs = {}
+            if start_time is not None:
+                kwargs['startTime'] = start_time
+            if end_time is not None:
+                kwargs['endTime'] = end_time
+            if state_filter is not None:
+                kwargs['stateFilter'] = state_filter
+
+            orders = client.account_orders(account_number, **kwargs)
 
             if orders is None:
                 raise ValueError(f"No orders data returned for account {account_number}")
@@ -608,8 +617,15 @@ class QuestradeClient:
         try:
             client = self._get_client()
             logger.info(f"Fetching executions for account {account_number}")
-            executions = client.account_executions(account_number, startTime=start_time,
-                                                  endTime=end_time)
+
+            # Build kwargs dict with only non-None values
+            kwargs = {}
+            if start_time is not None:
+                kwargs['startTime'] = start_time
+            if end_time is not None:
+                kwargs['endTime'] = end_time
+
+            executions = client.account_executions(account_number, **kwargs)
 
             if executions is None:
                 raise ValueError(f"No executions data returned for account {account_number}")
@@ -653,8 +669,15 @@ class QuestradeClient:
         try:
             client = self._get_client()
             logger.info(f"Fetching activities for account {account_number}")
-            activities = client.account_activities(account_number, startTime=start_time,
-                                                  endTime=end_time)
+
+            # Build kwargs dict with only non-None values
+            kwargs = {}
+            if start_time is not None:
+                kwargs['startTime'] = start_time
+            if end_time is not None:
+                kwargs['endTime'] = end_time
+
+            activities = client.account_activities(account_number, **kwargs)
 
             if activities is None:
                 raise ValueError(f"No activities data returned for account {account_number}")
