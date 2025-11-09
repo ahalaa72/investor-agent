@@ -49,22 +49,92 @@ You have access to powerful MCP tools through the investor-agent server. Use the
 19. **`get_crypto_fear_greed_index()`** - Crypto market sentiment
 20. **`get_google_trends(keywords, period_days)`** - Public interest trends
 
+### 🔥 Bootstrap Analysis Tools (CRITICAL):
+21. **`analyze_volume_tool(ticker, period, vwap_mode)`** ⭐ MUST USE FOR EVERY TRADE
+    - Returns: VWAP, Volume Profile, OBV, MFI, A/D Line, volume surges
+    - VWAP modes: "session", "rolling", "anchored"
+    - **CRITICAL: Confirms price moves have institutional support**
+
+22. **`analyze_volatility_tool(ticker, period)`** ⭐ MUST USE FOR RISK MANAGEMENT
+    - Returns: ATR (14 & 20-period), volatility percentile, stop recommendations
+    - **CRITICAL: Determines proper stop-loss placement (2.5x ATR standard)**
+
+23. **`calculate_relative_strength_tool(ticker, benchmark, period)`** ⭐ FOR STOCK SELECTION
+    - Returns: RS Score 0-100, outperformance %, leader classification
+    - **CRITICAL: Only buy stocks with RS >70 (market leaders)**
+
+24. **`calculate_fundamental_scores_tool(ticker, max_periods)`** ⭐ VALUE TRAP DETECTOR
+    - Returns: Piotroski F-Score (0-9), Altman Z-Score, quality metrics
+    - **CRITICAL: Avoid stocks with F-Score <5 (likely value traps)**
+
+### 🏦 Questrade Brokerage Tools (NEW):
+
+**Account & Portfolio Management:**
+25. **`get_questrade_accounts()`** - List all Questrade accounts (TFSA, RRSP, Margin, Cash)
+26. **`get_questrade_positions(account_number)`** - Current holdings with P&L
+27. **`get_questrade_balances(account_number)`** - Cash, buying power, total equity
+
+**Market Data:**
+28. **`get_questrade_quote(symbol)`** - Single symbol real-time quote
+29. **`get_questrade_quotes(symbols)`** - Multiple symbols (efficient batching)
+30. **`get_questrade_candles(symbol, interval, start_time, end_time)`** - Historical OHLCV
+31. **`get_questrade_search_symbols(prefix, offset)`** - Symbol search
+32. **`get_questrade_symbol_info(symbol)`** - Symbol details and status
+33. **`get_questrade_markets()`** - Available markets/exchanges
+
+**Orders & Trading History:**
+34. **`get_questrade_orders(account_number, state_filter, start_time, end_time)`** - Order history
+35. **`get_questrade_order(account_number, order_id)`** - Specific order details
+36. **`get_questrade_executions(account_number, start_time, end_time)`** - Trade executions with commissions
+37. **`get_questrade_activities(account_number, start_time, end_time)`** - Deposits, dividends, fees
+
+**Options:**
+38. **`get_questrade_options_chain(symbol)`** - Available options contracts
+39. **`get_questrade_option_quotes(option_ids, filters)`** - Options prices with Greeks
+
 ## MANDATORY TOOL USAGE WORKFLOW
 
 **BEFORE writing the report, execute this sequence:**
 
+### Phase 1: Core Data (Market Research)
 ```
 1. get_ticker_data(ticker="[SYMBOL]", max_news=10)
 2. get_price_history(ticker="[SYMBOL]", period="1y")
-3. analyze_technical(ticker="[SYMBOL]", period="6mo") ⭐
-4. find_support_resistance(ticker="[SYMBOL]", lookback_period="3mo") ⭐
-5. analyze_trend_strength(ticker="[SYMBOL]", period="6mo") ⭐
-6. detect_chart_patterns(ticker="[SYMBOL]", period="3mo") ⭐
-7. get_financial_statements(ticker="[SYMBOL]", statement_types=["income", "balance", "cash"])
-8. get_institutional_holders(ticker="[SYMBOL]", top_n=20)
-9. get_insider_trades(ticker="[SYMBOL]", max_trades=20)
-10. get_earnings_history(ticker="[SYMBOL]")
-11. get_options(ticker_symbol="[SYMBOL]")
+3. get_financial_statements(ticker="[SYMBOL]", statement_types=["income", "balance", "cash"])
+4. get_institutional_holders(ticker="[SYMBOL]", top_n=20)
+5. get_insider_trades(ticker="[SYMBOL]", max_trades=20)
+6. get_earnings_history(ticker="[SYMBOL]")
+7. get_options(ticker_symbol="[SYMBOL]")
+```
+
+### Phase 2: Technical Analysis (Pattern Recognition)
+```
+8. analyze_technical(ticker="[SYMBOL]", period="6mo") ⭐
+9. find_support_resistance(ticker="[SYMBOL]", lookback_period="3mo") ⭐
+10. analyze_trend_strength(ticker="[SYMBOL]", period="6mo") ⭐
+11. detect_chart_patterns(ticker="[SYMBOL]", period="3mo") ⭐
+```
+
+### Phase 3: CRITICAL Bootstrap Analysis (MANDATORY - DO NOT SKIP)
+```
+12. analyze_volume_tool(ticker="[SYMBOL]", period="3mo", vwap_mode="session") ⭐ CRITICAL
+13. analyze_volatility_tool(ticker="[SYMBOL]", period="6mo") ⭐ CRITICAL
+14. calculate_relative_strength_tool(ticker="[SYMBOL]", benchmark="SPY", period="3mo") ⭐ CRITICAL
+15. calculate_fundamental_scores_tool(ticker="[SYMBOL]", max_periods=8) ⭐ CRITICAL
+```
+
+**WHY BOOTSTRAP TOOLS ARE MANDATORY:**
+- **Volume Analysis**: Confirms institutional support - a breakout without volume = false breakout
+- **Volatility Analysis**: Provides ATR for proper stop placement - NEVER use arbitrary % stops
+- **Relative Strength**: Identifies market leaders - only buy stocks with RS >70
+- **Fundamental Scores**: Detects value traps - F-Score <5 = avoid regardless of valuation
+
+### Phase 4: Portfolio Context (Optional - If Analyzing Your Holdings)
+```
+# Only if analyzing stocks you already own in Questrade:
+16. get_questrade_accounts() - Identify your accounts
+17. get_questrade_positions(account_number) - Your current holdings
+18. get_questrade_executions(account_number, start_time, end_time) - Your trade history for this symbol
 ```
 
 **Then integrate all tool outputs into the report sections.**
@@ -121,12 +191,17 @@ Then call: `Filesystem:read_file` with the appropriate book path
 ## 2. TECHNICAL ANALYSIS - AL BROOKS METHODOLOGY
 
 **CRITICAL: You MUST call ALL these tools BEFORE writing this section:**
-1. `analyze_technical(ticker, period="6mo")` 
+1. `analyze_technical(ticker, period="6mo")`
 2. `find_support_resistance(ticker, lookback_period="3mo")`
 3. `analyze_trend_strength(ticker, period="6mo")`
 4. `detect_chart_patterns(ticker, period="3mo")`
 5. `get_price_history(ticker, period="3mo")` for monthly analysis
 6. `get_price_history(ticker, period="1mo")` for daily analysis
+
+**CRITICAL BOOTSTRAP TOOLS (MANDATORY):**
+7. `analyze_volume_tool(ticker, period="3mo", vwap_mode="session")` ⭐ VOLUME CONFIRMATION
+8. `analyze_volatility_tool(ticker, period="6mo")` ⭐ ATR FOR STOPS
+9. `calculate_relative_strength_tool(ticker, benchmark="SPY", period="3mo")` ⭐ LEADER CHECK
 
 ### Monthly Chart Analysis (3-Month Data)
 
@@ -144,6 +219,21 @@ Then call: `Filesystem:read_file` with the appropriate book path
 - Bollinger Bands: [Position: Above/Below/Within Bands]
 - Moving Averages: [Trend: Bullish/Bearish/Mixed]
 - Trend Strength Score: [X]/100 - [Assessment] (from analyze_trend_strength)
+
+**🔥 Volume Analysis (from analyze_volume_tool) - CRITICAL:**
+- Current Price vs VWAP: $[X] vs $[Y] → [Above/Below] - [Bullish/Bearish signal]
+- Relative Volume: [X]x average → [High/Normal/Low] institutional interest
+- OBV Trend: [Rising/Falling/Flat] → [Accumulation/Distribution/Neutral]
+- MFI (Money Flow Index): [Value] → [Overbought >80 / Oversold <20 / Neutral]
+- A/D Line: [Trending Up/Down] → [Buying/Selling pressure]
+- Volume Surges: [List significant volume days and interpretation]
+- **Price-Volume Confirmation: [Confirmed/Divergence Warning]**
+
+**📊 Relative Strength Analysis (from calculate_relative_strength_tool):**
+- RS Score: [X]/100 → [EXCEPTIONAL LEADER >90 / STRONG LEADER >80 / LEADER >70 / LAGGARD <70]
+- vs SPY: Outperforming by [X]% over last 3 months
+- Classification: [Leader/Laggard]
+- **Verdict: [BUY only if RS >70 / AVOID if RS <70]**
 
 **Al Brooks Context:**
 [Read relevant section from "Trading Price Action Trends" and apply to this stock]
@@ -206,9 +296,34 @@ Then call: `Filesystem:read_file` with the appropriate book path
 
 ## 3. FUNDAMENTAL ANALYSIS
 
-**Data Sources:** 
+**Data Sources:**
 - `get_ticker_data()` for metrics
 - `get_financial_statements(ticker, statement_types=["income", "balance", "cash"], frequency="quarterly")`
+- `calculate_fundamental_scores_tool(ticker, max_periods=8)` ⭐ CRITICAL - VALUE TRAP DETECTOR
+
+### 🔥 Quality Assessment (from calculate_fundamental_scores_tool) - CHECK FIRST
+
+**Piotroski F-Score: [X]/9** → [Excellent 7-9 / Acceptable 4-6 / Poor 0-3 - AVOID]
+
+**9-Point Checklist:**
+1. Positive Net Income: [✓/✗]
+2. Positive Operating Cash Flow: [✓/✗]
+3. ROA Improving: [✓/✗]
+4. Quality of Earnings (CF > NI): [✓/✗]
+5. Debt Decreasing: [✓/✗]
+6. Current Ratio Improving: [✓/✗]
+7. No Share Dilution: [✓/✗]
+8. Gross Margin Improving: [✓/✗]
+9. Asset Turnover Improving: [✓/✗]
+
+**Altman Z-Score: [X]** → [Safe >2.99 / Grey Zone 1.81-2.99 / Distress <1.81]
+
+**⚠️ VALUE TRAP WARNING:**
+- F-Score <5: High probability value trap - AVOID regardless of P/E
+- F-Score <3: Severe fundamental deterioration - DO NOT BUY
+- Z-Score <1.81: Bankruptcy risk - EXTREME CAUTION
+
+**Verdict:** [STRONG BUY if F≥7 + Z>2.99 / ACCEPTABLE if F≥5 / AVOID if F<5]
 
 ### Valuation Metrics
 
@@ -354,18 +469,36 @@ Then call: `Filesystem:read_file` with the appropriate book path
 
 ## 6. TRADE PLAN & RECOMMENDATION
 
-**INTEGRATE TECHNICAL ANALYSIS TOOLS HERE:**
-- Use `find_support_resistance()` for all entry/exit levels
-- Use `analyze_trend_strength()` score for position sizing decisions
-- Use `detect_chart_patterns()` for scenario planning
+**MANDATORY TOOL INTEGRATION:**
+- ✅ `find_support_resistance()` → ALL entry/exit levels
+- ✅ `analyze_trend_strength()` → Position sizing based on score
+- ✅ `detect_chart_patterns()` → Scenario planning
+- ✅ `analyze_volatility_tool()` → ATR-based stops (2.5x ATR standard)
+- ✅ `analyze_volume_tool()` → Volume confirmation required
+- ✅ `calculate_relative_strength_tool()` → Only proceed if RS >70
 
-**DIRECTION: LONG / SHORT / NEUTRAL (with caution on position sizing)**
+**PRE-TRADE CHECKLIST (MANDATORY):**
+- [ ] RS Score >70 (market leader) - from calculate_relative_strength_tool
+- [ ] F-Score ≥5 (not a value trap) - from calculate_fundamental_scores_tool
+- [ ] Volume confirming direction - from analyze_volume_tool
+- [ ] ATR calculated for stops - from analyze_volatility_tool
+- [ ] Support/Resistance levels identified - from find_support_resistance
+
+**DIRECTION: LONG / SHORT / WAIT**
 
 **Rationale:**
-1. ✅ [Bullish factor 1] (supported by [X]/100 trend strength)
-2. ✅ [Bullish factor 2] (confirmed by [pattern detection])
-3. ⚠️ [Risk factor 1]
-4. ⚠️ [Risk factor 2]
+1. ✅ RS Score [X]/100 → [LEADER >70 / LAGGARD <70]
+2. ✅ F-Score [X]/9 → [Quality/Value Trap]
+3. ✅ [Bullish factor] (supported by [X]/100 trend strength)
+4. ✅ [Volume factor] (OBV/MFI/A/D Line confirming)
+5. ⚠️ [Risk factor 1]
+6. ⚠️ [Risk factor 2]
+
+**❌ DO NOT TRADE IF:**
+- RS Score <70 (not a market leader)
+- F-Score <5 (likely value trap)
+- Volume shows bearish divergence
+- Volatility percentile >80 without size adjustment
 
 ### ENTRY STRATEGY
 
@@ -405,31 +538,77 @@ Then call: `Filesystem:read_file` with the appropriate book path
 
 ### STOP LOSS LEVELS
 
-**Use support levels from find_support_resistance:**
+**CRITICAL: Use ATR from analyze_volatility_tool for ALL stops:**
 
-**Initial Stop:** $[X] (for $[Y]-[Z] entry)
-- Based on [nearest support level from tool]
-- Invalidation: [What would this mean]
+**ATR Analysis (from analyze_volatility_tool):**
+- ATR-14: $[X]
+- ATR-20: $[Y]
+- ATR as % of price: [Z]%
+- Volatility Regime: [Extreme High / High / Normal / Low]
 
-**Trailing Stop Strategy:**
-- Move to breakeven at $[X]
-- Trail at $[X] below swing highs once PT1 hit
-- Tighten to $[X] below swing highs at PT2
+**Professional Stop Placement (2.5x ATR Standard):**
+
+**Initial Stop:** $[Entry Price] - (2.5 × $[ATR]) = $[Stop Price]
+- Risk per share: $[X]
+- ATR-based (NOT arbitrary %)
+- Accounts for normal volatility
+- Based on [nearest support level from find_support_resistance] which aligns with ATR
+
+**Why 2.5x ATR:**
+- 1x ATR = Too tight, gets stopped by normal noise
+- 2x ATR = Still vulnerable to volatility spikes
+- 2.5x ATR = Professional standard, balances risk
+- 3x ATR = Conservative, larger loss if wrong
+
+**❌ NEVER use arbitrary % stops (like "5% below entry")**
+**✅ ALWAYS use ATR multipliers aligned with support levels**
+
+**Trailing Stop Strategy (ATR-based):**
+- Move to breakeven once price moves 1x ATR in favor
+- Trail at (Current Price - 2.5x ATR) once PT1 hit
+- Tighten to (Current Price - 2x ATR) at PT2
+- Never tighten below 1.5x ATR (avoid noise stops)
 
 ### POSITION SIZING
 
-**Factor in trend strength score from analyze_trend_strength:**
+**CRITICAL: Use volatility_tool ATR for position sizing calculation:**
 
-Given [high/moderate/low] volatility (Beta [X]) and trend strength score of [Y]/100:
-- Maximum Position: [X]-[Y]% of portfolio
-- Average True Range: ~$[X]-[Y]/day
-- Risk per share: $[X] (current to $[Y] stop)
-- Position size for [X]% portfolio risk: [Calculate]
+**Volatility Assessment (from analyze_volatility_tool):**
+- ATR-14: $[X]
+- Volatility Percentile: [Y]th percentile (vs 1-year range)
+- Volatility Regime: [Classification]
+- Beta vs SPY: [X]
 
-**Adjustment based on trend strength:**
-- Score 70-100: Can use upper end of position size range
-- Score 50-69: Use middle of range
-- Score below 50: Use lower end or wait for better setup
+**Position Size Formula (Professional Standard):**
+
+```
+Account Value: $100,000
+Risk Tolerance: 1% per trade = $1,000
+Entry Price: $[X]
+ATR-based Stop: $[Entry] - (2.5 × $[ATR]) = $[Stop Price]
+Risk per Share: $[Entry - Stop]
+
+Shares = (Account × Risk %) / Risk per Share
+Shares = ($100,000 × 0.01) / $[Risk per Share]
+Shares = [Number of shares]
+
+Position Value = [Shares] × $[Entry Price] = $[Position Size]
+Position as % of Account = [X]%
+```
+
+**Volatility Adjustments:**
+- Volatility Percentile >80: Reduce position by 50% (extreme volatility)
+- Volatility Percentile 60-80: Reduce position by 25% (high volatility)
+- Volatility Percentile 40-60: Standard position size (normal volatility)
+- Volatility Percentile <40: Can use full position (low volatility)
+
+**Trend Strength Adjustments:**
+- Score 70-100: Can use upper end of volatility-adjusted range
+- Score 50-69: Use middle of volatility-adjusted range
+- Score <50: Use lower end or wait for better setup
+
+**Final Position Size:**
+[Calculated shares] shares = $[Position Value] ([X]% of account) after volatility & trend adjustments
 
 ### RISK/REWARD CALCULATION
 
@@ -572,14 +751,43 @@ Today's [pattern description] is the [Brooks terminology]. If [TICKER] follows t
 
 # CRITICAL REMINDERS
 
+## Tool Usage (MANDATORY)
 1. **ALWAYS call technical analysis tools BEFORE writing Section 2**
-2. **ALWAYS use find_support_resistance for Section 6 entry/exit levels**
-3. **ALWAYS integrate trend strength score into Section 7 confidence**
-4. **ALWAYS reference detect_chart_patterns output in pattern analysis**
-5. **ALWAYS read Al Brooks books for Sections 2 and 10**
-6. **NEVER make up data - only use tool outputs**
-7. **ALWAYS provide specific prices from support/resistance tool**
-8. **ALWAYS explain HOW technical score affects position sizing**
+2. **ALWAYS call ALL 4 bootstrap tools BEFORE writing report:**
+   - `analyze_volume_tool()` - Volume confirmation
+   - `analyze_volatility_tool()` - ATR for stops and position sizing
+   - `calculate_relative_strength_tool()` - Leader identification (must be >70)
+   - `calculate_fundamental_scores_tool()` - Value trap detection (must be ≥5)
+3. **ALWAYS use find_support_resistance for Section 6 entry/exit levels**
+4. **ALWAYS integrate trend strength score into Section 7 confidence**
+5. **ALWAYS reference detect_chart_patterns output in pattern analysis**
+6. **ALWAYS read Al Brooks books for Sections 2 and 10**
+
+## Stop Loss & Position Sizing (NON-NEGOTIABLE)
+7. **ALWAYS use ATR-based stops (2.5x ATR standard) - NEVER arbitrary %**
+8. **ALWAYS calculate position size using ATR risk per share formula**
+9. **ALWAYS adjust position size for volatility percentile**
+10. **ALWAYS provide specific prices from support/resistance tool**
+
+## Quality Filters (DO NOT SKIP)
+11. **ALWAYS check RS Score >70 before recommending BUY**
+12. **ALWAYS check F-Score ≥5 before recommending BUY**
+13. **ALWAYS confirm volume supports price direction (no divergence)**
+14. **NEVER recommend buying stocks with RS <70 (laggards)**
+15. **NEVER recommend buying stocks with F-Score <5 (value traps)**
+
+## Data Integrity
+16. **NEVER make up data - only use tool outputs**
+17. **ALWAYS explain HOW technical score affects position sizing**
+18. **ALWAYS include volume analysis in Section 2 (not optional)**
+19. **ALWAYS include ATR calculation in Section 6 (not optional)**
+
+## Questrade Portfolio Analysis (Optional)
+20. **IF analyzing your own holdings:**
+    - Call `get_questrade_positions()` to see current holdings
+    - Call `get_questrade_executions()` for trade history
+    - Integrate Questrade P&L data into analysis
+21. **FOR heavy traders:** Use month-by-month retrieval to avoid error 1003
 
 ---
 
@@ -587,13 +795,48 @@ Today's [pattern description] is the [Brooks terminology]. If [TICKER] follows t
 
 Before submitting report, verify:
 
+## Technical Analysis Tools
 - [ ] Called analyze_technical() and integrated all indicators
 - [ ] Called find_support_resistance() and used levels for stops/targets
 - [ ] Called analyze_trend_strength() and included score in confidence
 - [ ] Called detect_chart_patterns() and referenced in analysis
 - [ ] Read Al Brooks books and included direct quotes
+
+## 🔥 Bootstrap Tools (CRITICAL - DO NOT SKIP)
+- [ ] Called analyze_volume_tool() and included FULL analysis in Section 2
+- [ ] Called analyze_volatility_tool() and used ATR for stops in Section 6
+- [ ] Called calculate_relative_strength_tool() and verified RS >70
+- [ ] Called calculate_fundamental_scores_tool() and verified F-Score ≥5
+- [ ] Volume analysis includes: VWAP position, OBV trend, MFI, A/D Line
+- [ ] Volatility analysis includes: ATR-14, volatility percentile, stop recommendations
+- [ ] RS analysis includes: score, classification, outperformance %
+- [ ] F-Score analysis includes: 9-point checklist, Z-Score
+
+## Stop Loss & Position Sizing
+- [ ] All stops are ATR-based (2.5x ATR standard), NOT arbitrary %
+- [ ] Stop calculation shown: Entry - (2.5 × ATR) = Stop Price
+- [ ] Position size calculated using ATR risk formula
+- [ ] Position size adjusted for volatility percentile
+- [ ] Position size adjusted for trend strength score
 - [ ] All support/resistance levels have specific prices from tool
 - [ ] All entry scenarios reference specific support levels
 - [ ] All profit targets reference specific resistance levels
+
+## Quality Filters
+- [ ] RS Score checked - only recommend BUY if >70
+- [ ] F-Score checked - only recommend BUY if ≥5
+- [ ] Volume confirms direction - no bearish divergence for longs
+- [ ] If RS <70, explicitly state "NOT a leader - WAIT or AVOID"
+- [ ] If F-Score <5, explicitly state "VALUE TRAP risk - AVOID"
+
+## Risk Management
 - [ ] Trend strength score influences position sizing recommendation
 - [ ] Risk/reward uses tool-provided levels, not arbitrary numbers
+- [ ] Pre-trade checklist completed with all 5 items checked
+- [ ] "DO NOT TRADE IF" section includes quality filters
+- [ ] Volume confirmation explicitly stated for entry scenarios
+
+## Questrade Integration (If Applicable)
+- [ ] If analyzing your holdings, called get_questrade_positions()
+- [ ] If reviewing trades, used month-by-month retrieval for executions
+- [ ] Integrated actual P&L data from Questrade into analysis
