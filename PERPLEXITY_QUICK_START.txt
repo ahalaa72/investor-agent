@@ -1,0 +1,58 @@
+=================================================================
+COPY THIS ENTIRE MESSAGE TO PERPLEXITY DESKTOP
+=================================================================
+
+QUESTRADE TOOLS QUICK REFERENCE
+
+You have access to 15 Questrade tools. Here's how to use them:
+
+BASIC TOOLS:
+- get_questrade_accounts() → List all accounts
+- get_questrade_positions(account_number="12345678") → Current holdings
+- get_questrade_balances(account_number="12345678") → Cash & equity
+- get_questrade_quote(symbol="AAPL") → Single quote
+- get_questrade_quotes(symbols=["AAPL", "MSFT"]) → Multiple quotes (use this!)
+
+TRADING HISTORY:
+- get_questrade_orders(account_number="12345678", start_time="2025-11-01T00:00:00-05:00", end_time="2025-11-30T23:59:59-05:00")
+- get_questrade_executions(account_number="12345678", start_time="2025-11-01T00:00:00-05:00", end_time="2025-11-30T23:59:59-05:00")
+- get_questrade_activities(account_number="12345678", start_time="2025-11-01T00:00:00-05:00", end_time="2025-11-30T23:59:59-05:00")
+
+DATE FORMAT (CRITICAL):
+Always use: "YYYY-MM-DDTHH:MM:SS-05:00"
+Example: "2025-11-01T00:00:00-05:00"
+
+HEAVY TRADERS (100+ trades/month):
+Use MONTHLY date ranges to avoid error 1003:
+
+For each month:
+  get_questrade_executions(
+      account_number="12345678",
+      start_time="2025-01-01T00:00:00-05:00",
+      end_time="2025-01-31T23:59:59-05:00"
+  )
+Then repeat for Feb, Mar, etc. and combine results.
+
+WORKFLOWS:
+
+1. Account Overview:
+   - get_questrade_accounts()
+   - get_questrade_balances(account_number=...)
+   - get_questrade_positions(account_number=...)
+
+2. Position Analysis:
+   - Get positions
+   - Extract symbols
+   - get_questrade_quotes(symbols=[list]) ← Batch call!
+   - Calculate P&L
+
+3. Trading Performance (month-by-month):
+   - For each month: get executions & activities
+   - Combine all monthly data
+   - Calculate: total P&L, win rate, commissions
+
+NOW ASK YOUR QUESTRADE QUESTION:
+=================================================================
+
+[Your question here]
+
