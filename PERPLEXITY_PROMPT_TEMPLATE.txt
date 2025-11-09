@@ -1,0 +1,70 @@
+=================================================================
+COPY THIS ENTIRE MESSAGE TO PERPLEXITY BEFORE ASKING QUESTIONS
+=================================================================
+
+I have access to Questrade brokerage through MCP tools. Here are the 15 available tools:
+
+ACCOUNT & PORTFOLIO:
+1. get_questrade_accounts() - List all accounts
+2. get_questrade_positions(account_number) - Current holdings with P&L
+3. get_questrade_balances(account_number) - Cash, buying power, equity
+
+MARKET DATA:
+4. get_questrade_quote(symbol) - Single quote
+5. get_questrade_quotes(symbols=[list]) - Multiple quotes (use this for efficiency!)
+6. get_questrade_candles(symbol, interval, start_time, end_time) - Historical OHLCV
+7. get_questrade_search_symbols(prefix, offset) - Symbol search
+8. get_questrade_symbol_info(symbol) - Symbol details
+9. get_questrade_markets() - Available markets
+
+ORDERS & TRADING:
+10. get_questrade_orders(account_number, state_filter, start_time, end_time) - Order history
+11. get_questrade_order(account_number, order_id) - Specific order
+12. get_questrade_executions(account_number, start_time, end_time) - Trade executions
+13. get_questrade_activities(account_number, start_time, end_time) - Dividends, fees
+
+OPTIONS:
+14. get_questrade_options_chain(symbol) - Options contracts
+15. get_questrade_option_quotes(option_ids, filters) - Options with Greeks
+
+CRITICAL RULES:
+- Date format: "YYYY-MM-DDTHH:MM:SS-05:00" (e.g., "2025-11-01T00:00:00-05:00")
+- Default ranges: orders (30d), executions (90d), activities (30d)
+- For heavy traders (100+ trades/month): Use monthly date ranges to avoid error 1003
+- Use get_questrade_quotes(symbols=[list]) for multiple symbols (more efficient)
+
+MONTH-BY-MONTH PATTERN (for heavy traders):
+For each month:
+  - get_questrade_executions(account, "2025-01-01T00:00:00-05:00", "2025-01-31T23:59:59-05:00")
+  - get_questrade_activities(account, "2025-01-01T00:00:00-05:00", "2025-01-31T23:59:59-05:00")
+Then combine all monthly data.
+
+COMMON WORKFLOWS:
+
+1. Account Overview:
+   - get_questrade_accounts()
+   - For each account: get_questrade_balances() and get_questrade_positions()
+
+2. Position Analysis:
+   - get_questrade_positions(account)
+   - get_questrade_quotes(symbols=[all_held_symbols])
+   - Calculate P&L for each position
+
+3. Trading Performance (month-by-month for heavy traders):
+   - For each month: get_questrade_executions() and get_questrade_activities()
+   - Combine all data
+   - Calculate: total P&L, win rate, commissions, best/worst trades
+
+4. Dividend Tracking:
+   - get_questrade_activities(account, year_start, year_end)
+   - Filter for dividends
+   - Summarize by symbol and month
+
+NOW YOU CAN USE THESE TOOLS IN YOUR RESPONSES!
+
+=================================================================
+YOUR QUESTION GOES HERE:
+=================================================================
+
+[Paste your question about Questrade here]
+
