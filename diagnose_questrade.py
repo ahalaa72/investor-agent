@@ -68,12 +68,18 @@ def test_token_configuration():
     print(f"✅ QUESTRADE_REFRESH_TOKEN is set")
     print(f"   Token length: {token_len} characters")
 
-    if token_len < 100:
-        print(f"   ⚠️  WARNING: Token seems too short (expected 300-400+ chars)")
-        print(f"   This may be an invalid token")
+    # Note: Questrade tokens can vary in length (some are 30+ chars, others 300-400+)
+    # Both short and long tokens can be valid depending on token generation method
+    if token_len < 20:
+        print(f"   ⚠️  WARNING: Token seems very short (< 20 chars)")
+        print(f"   This is likely invalid - verify you copied the complete token")
         return False
+    elif token_len < 100:
+        print(f"   ℹ️  Note: Short token detected (valid for some Questrade token types)")
+        print(f"   ✅ Token length is acceptable")
+    else:
+        print(f"   ✅ Token length looks good (standard long token)")
 
-    print(f"   ✅ Token length looks reasonable")
     return True
 
 
