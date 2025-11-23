@@ -39,6 +39,7 @@ ta = [
 bridge = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.32.0",
+    "python-dotenv>=1.1.1",
 ]
 
 [dependency-groups]
@@ -50,6 +51,7 @@ dev = [
 [project.scripts]
 investor-agent = "investor_agent.server:mcp.run"
 investor-agent-bridge = "investor_agent.bridge:app"
+investor-agent-pinggy = "investor_agent.pinggy_wrapper:app"
 
 [build-system]
 requires = ["hatchling", "hatch-vcs"]

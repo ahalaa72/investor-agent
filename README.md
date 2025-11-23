@@ -143,6 +143,61 @@ For available model providers and identifiers, see the [pydantic-ai documentatio
 npx @modelcontextprotocol/inspector uvx investor-agent
 ```
 
+## Remote Access via Pinggy Tunnel
+
+The investor-agent can be accessed remotely over the internet using Pinggy tunnels. This allows you to:
+
+- Access your MCP server from anywhere
+- Integrate with remote workflows and automation tools (n8n, Zapier, etc.)
+- Share financial analysis capabilities across distributed systems
+- Build web applications that leverage the MCP tools
+
+### Quick Start
+
+```bash
+# 1. Start the Pinggy wrapper
+./start_pinggy.sh
+
+# The script will:
+# - Start the FastAPI server locally
+# - Optionally create a Pinggy tunnel
+# - Provide you with a public HTTPS URL
+```
+
+### Manual Setup
+
+```bash
+# 1. Configure environment
+export MCP_API_KEY="your-secure-api-key"
+
+# 2. Start the server
+python -m investor_agent.pinggy_wrapper
+
+# 3. Create Pinggy tunnel (in another terminal)
+ssh -p 443 -R0:localhost:8000 a.pinggy.io
+```
+
+### Security Features
+
+- **API Key Authentication** - Secure endpoints with custom API keys
+- **Rate Limiting** - Configurable request limits (default: 100 calls/hour)
+- **CORS Support** - Enable cross-origin requests for web clients
+- **HTTPS** - Automatic SSL/TLS via Pinggy
+
+### Example API Call
+
+```bash
+curl -X POST "https://your-url.a.pinggy.io/call" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-api-key" \
+  -d '{
+    "tool_name": "get_market_movers",
+    "arguments": {"category": "gainers", "count": 5}
+  }'
+```
+
+For complete setup instructions, API documentation, and integration examples, see [PINGGY_SETUP.md](PINGGY_SETUP.md).
+
 ## License
 
 MIT License. See [LICENSE](LICENSE) file for details.
