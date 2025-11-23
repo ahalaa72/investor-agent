@@ -196,7 +196,28 @@ curl -X POST "https://your-url.a.pinggy.io/call" \
   }'
 ```
 
-For complete setup instructions, API documentation, and integration examples, see [PINGGY_SETUP.md](PINGGY_SETUP.md).
+### Docker Deployment
+
+Run with Docker for easier deployment and mobile app integration:
+
+```bash
+# 1. Configure environment
+cp .env.template .env
+# Edit .env and set MCP_API_KEY and other credentials
+
+# 2. Start with Docker Compose
+docker-compose up investor-agent-pinggy
+
+# 3. Optionally enable auto-tunnel by setting in .env:
+# ENABLE_PINGGY_TUNNEL=true
+```
+
+Access at: `http://localhost:8000` or via the Pinggy tunnel URL shown in logs.
+
+**Documentation:**
+- Full setup guide: [PINGGY_SETUP.md](PINGGY_SETUP.md)
+- Quick reference: [PINGGY_QUICKSTART.md](PINGGY_QUICKSTART.md)
+- Docker guide: [DOCKER_PINGGY.md](DOCKER_PINGGY.md)
 
 ## License
 

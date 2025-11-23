@@ -32,7 +32,23 @@ The script will:
 - ✓ Optionally create a Pinggy tunnel
 - ✓ Provide usage instructions
 
-### Option 2: Manual Setup
+### Option 2: Using Docker (Easiest for Production)
+
+```bash
+# 1. Configure your environment
+cp .env.template .env
+# Edit .env and add your API keys
+
+# 2. Start with Docker Compose
+docker-compose up investor-agent-pinggy
+
+# 3. Optionally enable auto-tunnel in .env:
+# ENABLE_PINGGY_TUNNEL=true
+```
+
+See [DOCKER_PINGGY.md](DOCKER_PINGGY.md) for complete Docker documentation.
+
+### Option 3: Manual Setup
 
 ```bash
 # 1. Install dependencies

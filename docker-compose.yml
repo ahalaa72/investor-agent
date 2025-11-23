@@ -1,4 +1,5 @@
 services:
+  # Original MCP server (for local/Claude Desktop use)
   investor-agent:
     build:
       context: .
@@ -13,3 +14,32 @@ services:
     # Optional: Mount code for development
     # volumes:
     #   - ./investor_agent:/app/investor_agent
+
+  # Pinggy wrapper (for remote access via web/mobile apps)
+  investor-agent-pinggy:
+    build:
+      context: .
+      dockerfile: Dockerfile.pinggy
+    image: investor-agent-pinggy:latest
+    container_name: investor-agent-pinggy
+    env_file:
+      - .env
+    environment:
+      - ENABLE_PINGGY_TUNNEL=${ENABLE_PINGGY_TUNNEL:-false}
+      - PINGGY_HOST=0.0.0.0
+      - PINGGY_PORT=8000
+      - PINGGY_SUBDOMAIN=${PINGGY_SUBDOMAIN:-}
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    stdin_open: true
+    tty: true
+    # Optional: Mount code for development
+    # volumes:
+    #   - ./investor_agent:/app/investor_agent
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
