@@ -11,15 +11,25 @@ This guide helps you choose the right deployment setup based on your use case.
 │     ├─ Yes → See: Setup A (Local MCP)                        │
 │     └─ No  → Continue...                                      │
 │                                                                │
-│  2. Call from mobile app or web API?                         │
+│  2. Use Claude from your mobile/tablet with MCP tools?       │
+│     ├─ Yes → See: Setup D (Claude API Proxy) 🌟              │
+│     └─ No  → Continue...                                      │
+│                                                                │
+│  3. Build custom mobile app calling MCP tools directly?      │
 │     ├─ Yes → See: Setup B (Pinggy Remote Access)            │
 │     └─ No  → Continue...                                      │
 │                                                                │
-│  3. Use both Claude Desktop AND mobile app?                   │
+│  4. Use both Claude Desktop AND mobile app?                   │
 │     └─ Yes → See: Setup C (Both Services)                    │
 │                                                                │
 └────────────────────────────────────────────────────────────────┘
 ```
+
+**Important Notes:**
+- ❌ Claude Mobile app does NOT support MCP natively
+- ❌ Claude Web (claude.ai) does NOT support MCP
+- ✅ Setup D lets you use Claude from mobile WITH MCP tools (via Claude API)
+- ✅ Setup B is for building YOUR OWN mobile app
 
 ---
 
@@ -360,20 +370,156 @@ curl -H "X-API-Key: your-api-key" \
 
 ---
 
+## Setup D: Claude API Proxy (Use Claude from Mobile with MCP) 🌟
+
+**Use this when:** You want to use Claude from your mobile device/browser AND have access to MCP tools.
+
+**⚠️ Important:** This requires a Claude API key and will incur API usage costs (~$0.002-0.005 per query).
+
+### 📁 Files to Use
+- **Python Script:** `claude_proxy_service.py`
+- **Mobile UI (optional):** `mobile_chat.html`
+- **Claude Config:** Not needed ❌ (this uses Claude API, not Desktop)
+
+### 🚀 How to Run
+
+```bash
+# 1. Configure environment
+cp .env.template .env
+
+# 2. Edit .env and set:
+ANTHROPIC_API_KEY=sk-ant-your-key-here  # REQUIRED! Get from console.anthropic.com
+MCP_API_KEY=your-secure-key            # Optional but recommended
+CLAUDE_PROXY_PORT=8001                 # Optional, defaults to 8001
+ALPACA_API_KEY=...                     # For MCP tools
+QUESTRADE_REFRESH_TOKEN=...            # For MCP tools
+
+# 3. Start the proxy service
+python claude_proxy_service.py
+
+# 4. Create Pinggy tunnel
+ssh -p 443 -R0:localhost:8001 a.pinggy.io
+# Note the HTTPS URL you get
+```
+
+### 📱 Access from Mobile
+
+**Option 1: Use Mobile Chat Interface**
+
+1. Open `mobile_chat.html` in your mobile browser
+2. Click ⚙️ Settings
+3. Enter your Pinggy URL: `https://your-url.a.pinggy.io`
+4. Enter API key if you set MCP_API_KEY
+5. Save and start chatting!
+
+**Option 2: Build Your Own App**
+
+```javascript
+// Your mobile app (React Native, Flutter, etc.)
+const response = await fetch('https://your-pinggy-url.a.pinggy.io/chat', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'X-API-Key': 'your-api-key'
+  },
+  body: JSON.stringify({
+    message: "What are today's top stock gainers?",
+    conversation_history: [],
+    model: 'claude-3-5-sonnet-20241022'
+  })
+});
+
+const data = await response.json();
+console.log(data.response);          // Claude's answer
+console.log(data.tool_calls_made);   // MCP tools that were called
+```
+
+### ✅ How to Verify
+
+**Test locally first:**
+```bash
+# Check health
+curl http://localhost:8001/health
+
+# List available tools
+curl http://localhost:8001/tools
+
+# Test chat
+curl -X POST http://localhost:8001/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "What is Apple stock price?"}'
+```
+
+**Test via Pinggy:**
+```bash
+curl https://your-url.a.pinggy.io/health
+```
+
+### 📊 What You Can Do
+- ✅ Use Claude from your mobile device
+- ✅ Claude has access to ALL 28 MCP tools
+- ✅ Claude automatically calls tools when needed
+- ✅ Works from anywhere (not just your home WiFi)
+- ✅ Mobile-friendly chat interface included
+- ⚠️ Requires Claude API key (costs money)
+- ⚠️ Laptop must be running for MCP tools to work
+
+### 💰 Cost Estimate
+
+Claude API usage (approximate):
+- Simple query: ~$0.001
+- Query with 1-2 tool calls: ~$0.002-0.003
+- Complex query with multiple tools: ~$0.005-0.010
+
+Example: 100 queries/day = ~$0.20-0.50/day
+
+See: https://www.anthropic.com/pricing
+
+### 🔍 How It Works
+
+```
+Mobile Browser/App
+    ↓ "What are top gainers?"
+Claude API Proxy (your laptop)
+    ↓ Calls get_market_movers()
+MCP Server
+    ↓ Returns stock data
+Claude API Proxy
+    ↓ Sends data to Claude API
+Anthropic's Servers
+    ↓ Claude analyzes data
+    ↓ Returns formatted answer
+Mobile Browser/App
+    ✓ Shows "Here are today's top gainers: ..."
+```
+
+### 📖 Full Documentation
+
+See **[CLAUDE_MOBILE_SOLUTION.md](CLAUDE_MOBILE_SOLUTION.md)** for:
+- Detailed setup instructions
+- Security best practices
+- Troubleshooting guide
+- Alternative solutions comparison
+
+---
+
 ## 📋 Quick Reference Table
 
-| Feature | Setup A<br>(Local MCP) | Setup B<br>(Pinggy API) | Setup C<br>(Both) |
-|---------|------------------------|-------------------------|-------------------|
-| **Dockerfile** | `Dockerfile` | `Dockerfile.pinggy` | Both |
-| **Service** | `investor-agent` | `investor-agent-pinggy` | Both |
-| **Claude Config** | ✅ Required | ❌ Not needed | ✅ Required |
-| **Claude Desktop** | ✅ Yes | ❌ No | ✅ Yes |
-| **Mobile Apps** | ❌ No | ✅ Yes | ✅ Yes |
-| **Web API** | ❌ No | ✅ Yes | ✅ Yes |
-| **Pinggy Tunnel** | ❌ No | ✅ Yes | ✅ Yes |
-| **MCP_API_KEY** | Not needed | ✅ Required | ✅ Required |
-| **Port Exposed** | None | 8000 | 8000 |
-| **Resource Usage** | Low | Medium | High |
+| Feature | Setup A<br>(Local MCP) | Setup B<br>(Pinggy API) | Setup C<br>(Both) | Setup D<br>(Claude API Proxy) |
+|---------|------------------------|-------------------------|-------------------|-------------------------------|
+| **Dockerfile** | `Dockerfile` | `Dockerfile.pinggy` | Both | None (Python script) |
+| **Service** | `investor-agent` | `investor-agent-pinggy` | Both | `claude_proxy_service.py` |
+| **Claude Config** | ✅ Required | ❌ Not needed | ✅ Required | ❌ Not needed |
+| **Claude Desktop** | ✅ Yes | ❌ No | ✅ Yes | ❌ No |
+| **Claude from Mobile** | ❌ No | ❌ No | ❌ No | ✅ Yes 🌟 |
+| **Custom Mobile Apps** | ❌ No | ✅ Yes | ✅ Yes | ✅ Yes |
+| **Web API** | ❌ No | ✅ Yes | ✅ Yes | ✅ Yes |
+| **Pinggy Tunnel** | ❌ No | ✅ Yes | ✅ Yes | ✅ Yes |
+| **MCP_API_KEY** | Not needed | ✅ Required | ✅ Required | Optional |
+| **ANTHROPIC_API_KEY** | ❌ No | ❌ No | ❌ No | ✅ Required |
+| **Port Exposed** | None | 8000 | 8000 | 8001 |
+| **API Costs** | Free | Free | Free | ~$0.20-0.50/day |
+| **Resource Usage** | Low | Medium | High | Low |
 
 ---
 

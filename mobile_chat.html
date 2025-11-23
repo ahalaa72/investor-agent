@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Investor Agent Chat</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .header {
+            background: rgba(255, 255, 255, 0.95);
+            padding: 15px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 20px;
+            color: #333;
+        }
+
+        .header p {
+            font-size: 12px;
+            color: #666;
+            margin-top: 5px;
+        }
+
+        .chat-container {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        .message {
+            max-width: 80%;
+            padding: 12px 16px;
+            border-radius: 18px;
+            word-wrap: break-word;
+            animation: slideIn 0.3s ease;
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .user-message {
+            background: #007AFF;
+            color: white;
+            align-self: flex-end;
+            border-bottom-right-radius: 4px;
+        }
+
+        .assistant-message {
+            background: rgba(255, 255, 255, 0.95);
+            color: #333;
+            align-self: flex-start;
+            border-bottom-left-radius: 4px;
+        }
+
+        .tool-call {
+            font-size: 11px;
+            color: #666;
+            font-style: italic;
+            margin-top: 5px;
+            padding: 5px;
+            background: rgba(0,0,0,0.05);
+            border-radius: 4px;
+        }
+
+        .input-container {
+            background: rgba(255, 255, 255, 0.95);
+            padding: 15px;
+            display: flex;
+            gap: 10px;
+            box-shadow: 0 -2px 10px rgba(0,0,0,0.1);
+        }
+
+        #messageInput {
+            flex: 1;
+            padding: 12px 16px;
+            border: 2px solid #ddd;
+            border-radius: 24px;
+            font-size: 16px;
+            outline: none;
+            transition: border-color 0.3s;
+        }
+
+        #messageInput:focus {
+            border-color: #007AFF;
+        }
+
+        #sendButton {
+            background: #007AFF;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 24px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+
+        #sendButton:hover {
+            background: #0056b3;
+        }
+
+        #sendButton:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 10px;
+            color: white;
+            font-size: 14px;
+        }
+
+        .loading.active {
+            display: block;
+        }
+
+        .error {
+            background: #ff3b30;
+            color: white;
+            padding: 12px;
+            border-radius: 8px;
+            text-align: center;
+            margin: 10px 20px;
+        }
+
+        .config-panel {
+            background: rgba(255, 255, 255, 0.95);
+            padding: 15px;
+            margin: 10px;
+            border-radius: 10px;
+            display: none;
+        }
+
+        .config-panel.show {
+            display: block;
+        }
+
+        .config-panel input {
+            width: 100%;
+            padding: 10px;
+            margin: 5px 0;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            font-size: 14px;
+        }
+
+        .config-panel button {
+            width: 100%;
+            padding: 10px;
+            margin-top: 10px;
+            background: #34C759;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+
+        .settings-button {
+            position: absolute;
+            top: 15px;
+            right: 15px;
+            background: #007AFF;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 16px;
+            font-size: 14px;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>💼 Investor Agent</h1>
+        <p>Chat with Claude using real-time market data</p>
+        <button class="settings-button" onclick="toggleConfig()">⚙️ Settings</button>
+    </div>
+
+    <div class="config-panel" id="configPanel">
+        <h3>Configuration</h3>
+        <input type="text" id="apiUrl" placeholder="API URL (e.g., https://xxx.a.pinggy.io)">
+        <input type="password" id="apiKey" placeholder="API Key (optional)">
+        <button onclick="saveConfig()">Save</button>
+    </div>
+
+    <div class="loading" id="loading">Claude is thinking...</div>
+
+    <div class="chat-container" id="chatContainer">
+        <div class="message assistant-message">
+            👋 Hi! I'm your Investor Agent powered by Claude. I have access to real-time market data and can help you with:
+            <ul style="margin-top: 10px; padding-left: 20px;">
+                <li>Stock analysis and ticker data</li>
+                <li>Market movers (gainers, losers)</li>
+                <li>Options data</li>
+                <li>Financial statements</li>
+                <li>Technical analysis</li>
+                <li>Market sentiment</li>
+            </ul>
+            <p style="margin-top: 10px;">Ask me anything about stocks or the market!</p>
+        </div>
+    </div>
+
+    <div class="input-container">
+        <input
+            type="text"
+            id="messageInput"
+            placeholder="Ask about stocks..."
+            onkeypress="handleKeyPress(event)"
+        >
+        <button id="sendButton" onclick="sendMessage()">Send</button>
+    </div>
+
+    <script>
+        let conversationHistory = [];
+        let apiUrl = localStorage.getItem('apiUrl') || 'http://localhost:8001';
+        let apiKey = localStorage.getItem('apiKey') || '';
+
+        function toggleConfig() {
+            const panel = document.getElementById('configPanel');
+            panel.classList.toggle('show');
+            if (panel.classList.contains('show')) {
+                document.getElementById('apiUrl').value = apiUrl;
+                document.getElementById('apiKey').value = apiKey;
+            }
+        }
+
+        function saveConfig() {
+            apiUrl = document.getElementById('apiUrl').value;
+            apiKey = document.getElementById('apiKey').value;
+            localStorage.setItem('apiUrl', apiUrl);
+            localStorage.setItem('apiKey', apiKey);
+            toggleConfig();
+            showMessage('Settings saved!', 'assistant');
+        }
+
+        function handleKeyPress(event) {
+            if (event.key === 'Enter') {
+                sendMessage();
+            }
+        }
+
+        function showMessage(content, role, toolCalls = []) {
+            const container = document.getElementById('chatContainer');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${role}-message`;
+
+            // Format content with line breaks
+            const formattedContent = content.replace(/\n/g, '<br>');
+            messageDiv.innerHTML = formattedContent;
+
+            // Add tool calls if any
+            if (toolCalls && toolCalls.length > 0) {
+                const toolDiv = document.createElement('div');
+                toolDiv.className = 'tool-call';
+                toolDiv.textContent = `🔧 Used tools: ${toolCalls.join(', ')}`;
+                messageDiv.appendChild(toolDiv);
+            }
+
+            container.appendChild(messageDiv);
+            container.scrollTop = container.scrollHeight;
+        }
+
+        function showError(message) {
+            const container = document.getElementById('chatContainer');
+            const errorDiv = document.createElement('div');
+            errorDiv.className = 'error';
+            errorDiv.textContent = `❌ Error: ${message}`;
+            container.appendChild(errorDiv);
+            container.scrollTop = container.scrollHeight;
+        }
+
+        function setLoading(isLoading) {
+            const loading = document.getElementById('loading');
+            const sendButton = document.getElementById('sendButton');
+            const messageInput = document.getElementById('messageInput');
+
+            loading.classList.toggle('active', isLoading);
+            sendButton.disabled = isLoading;
+            messageInput.disabled = isLoading;
+        }
+
+        async function sendMessage() {
+            const input = document.getElementById('messageInput');
+            const message = input.value.trim();
+
+            if (!message) return;
+
+            // Show user message
+            showMessage(message, 'user');
+            input.value = '';
+
+            // Show loading
+            setLoading(true);
+
+            try {
+                // Prepare headers
+                const headers = {
+                    'Content-Type': 'application/json'
+                };
+
+                if (apiKey) {
+                    headers['X-API-Key'] = apiKey;
+                }
+
+                // Call API
+                const response = await fetch(`${apiUrl}/chat`, {
+                    method: 'POST',
+                    headers: headers,
+                    body: JSON.stringify({
+                        message: message,
+                        conversation_history: conversationHistory
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`API error: ${response.status} ${response.statusText}`);
+                }
+
+                const data = await response.json();
+
+                // Update conversation history
+                conversationHistory = data.conversation_history || [];
+
+                // Show assistant response
+                showMessage(data.response, 'assistant', data.tool_calls_made);
+
+            } catch (error) {
+                console.error('Error:', error);
+                showError(error.message);
+            } finally {
+                setLoading(false);
+            }
+        }
+
+        // Initialize
+        window.onload = function() {
+            // Check if config is needed
+            if (!apiUrl || apiUrl === 'http://localhost:8001') {
+                setTimeout(() => {
+                    const shouldConfigure = confirm('Would you like to configure the API URL? (Required if not running locally)');
+                    if (shouldConfigure) {
+                        toggleConfig();
+                    }
+                }, 1000);
+            }
+        };
+    </script>
+</body>
+</html>
