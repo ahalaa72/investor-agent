@@ -102,7 +102,11 @@ To use Questrade features, you need to:
 ### Technical Analysis
 - **`calculate_technical_indicator(ticker, indicator, period="1y", timeperiod=14, fastperiod=12, slowperiod=26, signalperiod=9, nbdev=2, matype=0, num_results=100)`** - Calculate technical indicators (SMA, EMA, RSI, MACD, BBANDS) with configurable parameters and result limiting. Returns dictionary with price_data and indicator_data as CSV strings. matype values: 0=SMA, 1=EMA, 2=WMA, 3=DEMA, 4=TEMA, 5=TRIMA, 6=KAMA, 7=MAMA, 8=T3. Requires TA-Lib library.
 
-## Usage with MCP Clients
+## Deployment Options
+
+**🚀 Not sure which setup to use?** See **[DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md)** for a complete decision tree and configuration guide.
+
+### For Claude Desktop (Local)
 
 Add to your `claude_desktop_config.json`:
 
@@ -116,6 +120,10 @@ Add to your `claude_desktop_config.json`:
   }
 }
 ```
+
+### For Mobile/Web Apps (Remote via Pinggy)
+
+See the [Remote Access via Pinggy Tunnel](#remote-access-via-pinggy-tunnel) section below.
 
 ## Local Testing
 
