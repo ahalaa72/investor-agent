@@ -106,6 +106,20 @@ To use Questrade features, you need to:
 
 **🚀 Not sure which setup to use?** See **[DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md)** for a complete decision tree and configuration guide.
 
+### 🌟 Recommended: Docker Dual-Mode Setup
+
+Want to use **both Claude Desktop AND Claude from mobile** with full MCP access?
+
+👉 See **[DOCKER_DUAL_MODE_SETUP.md](DOCKER_DUAL_MODE_SETUP.md)** for the complete Docker-based setup!
+
+**Features:**
+- ✅ Use Claude Desktop locally (FREE)
+- ✅ Use Claude from mobile/web with MCP tools (~$2-5/month)
+- ✅ Both modes work simultaneously
+- ✅ Easy deployment with `docker-compose`
+- ✅ Auto-restarts and health checks
+- ✅ Consistent environment with Docker containers
+
 ### For Claude Desktop (Local)
 
 Add to your `claude_desktop_config.json`:

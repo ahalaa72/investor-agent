@@ -22,6 +22,9 @@ This guide helps you choose the right deployment setup based on your use case.
 │  4. Use both Claude Desktop AND mobile app?                   │
 │     └─ Yes → See: Setup C (Both Services)                    │
 │                                                                │
+│  5. Use both Claude Desktop AND Claude from mobile?          │
+│     └─ Yes → See: DOCKER_DUAL_MODE_SETUP.md 🐳 🌟           │
+│                                                                │
 └────────────────────────────────────────────────────────────────┘
 ```
 
@@ -30,6 +33,7 @@ This guide helps you choose the right deployment setup based on your use case.
 - ❌ Claude Web (claude.ai) does NOT support MCP
 - ✅ Setup D lets you use Claude from mobile WITH MCP tools (via Claude API)
 - ✅ Setup B is for building YOUR OWN mobile app
+- ✅ **DOCKER_DUAL_MODE_SETUP.md** shows how to run Claude Desktop + Mobile simultaneously with Docker 🐳
 
 ---
 
@@ -383,6 +387,8 @@ curl -H "X-API-Key: your-api-key" \
 
 ### 🚀 How to Run
 
+#### Option 1: With Docker (Recommended) 🐳
+
 ```bash
 # 1. Configure environment
 cp .env.template .env
@@ -394,10 +400,36 @@ CLAUDE_PROXY_PORT=8001                 # Optional, defaults to 8001
 ALPACA_API_KEY=...                     # For MCP tools
 QUESTRADE_REFRESH_TOKEN=...            # For MCP tools
 
-# 3. Start the proxy service
+# 3. Start the proxy service with Docker
+docker-compose up -d investor-agent-claude-proxy
+
+# 4. Verify it's running
+docker-compose ps
+docker-compose logs investor-agent-claude-proxy
+
+# 5. Create Pinggy tunnel
+ssh -p 443 -R0:localhost:8001 a.pinggy.io
+# Note the HTTPS URL you get
+```
+
+**To run BOTH Claude Desktop AND Mobile with Docker:**
+See **[DOCKER_DUAL_MODE_SETUP.md](DOCKER_DUAL_MODE_SETUP.md)** for complete guide! 🌟
+
+#### Option 2: Without Docker
+
+```bash
+# 1. Configure environment
+cp .env.template .env
+
+# 2. Edit .env (same as above)
+
+# 3. Install dependencies
+pip install -e ".[bridge]"
+
+# 4. Start the proxy service
 python claude_proxy_service.py
 
-# 4. Create Pinggy tunnel
+# 5. Create Pinggy tunnel
 ssh -p 443 -R0:localhost:8001 a.pinggy.io
 # Note the HTTPS URL you get
 ```
@@ -505,21 +537,22 @@ See **[CLAUDE_MOBILE_SOLUTION.md](CLAUDE_MOBILE_SOLUTION.md)** for:
 
 ## 📋 Quick Reference Table
 
-| Feature | Setup A<br>(Local MCP) | Setup B<br>(Pinggy API) | Setup C<br>(Both) | Setup D<br>(Claude API Proxy) |
-|---------|------------------------|-------------------------|-------------------|-------------------------------|
-| **Dockerfile** | `Dockerfile` | `Dockerfile.pinggy` | Both | None (Python script) |
-| **Service** | `investor-agent` | `investor-agent-pinggy` | Both | `claude_proxy_service.py` |
-| **Claude Config** | ✅ Required | ❌ Not needed | ✅ Required | ❌ Not needed |
-| **Claude Desktop** | ✅ Yes | ❌ No | ✅ Yes | ❌ No |
-| **Claude from Mobile** | ❌ No | ❌ No | ❌ No | ✅ Yes 🌟 |
-| **Custom Mobile Apps** | ❌ No | ✅ Yes | ✅ Yes | ✅ Yes |
-| **Web API** | ❌ No | ✅ Yes | ✅ Yes | ✅ Yes |
-| **Pinggy Tunnel** | ❌ No | ✅ Yes | ✅ Yes | ✅ Yes |
-| **MCP_API_KEY** | Not needed | ✅ Required | ✅ Required | Optional |
-| **ANTHROPIC_API_KEY** | ❌ No | ❌ No | ❌ No | ✅ Required |
-| **Port Exposed** | None | 8000 | 8000 | 8001 |
-| **API Costs** | Free | Free | Free | ~$0.20-0.50/day |
-| **Resource Usage** | Low | Medium | High | Low |
+| Feature | Setup A<br>(Local MCP) | Setup B<br>(Pinggy API) | Setup C<br>(Both) | Setup D<br>(Claude API Proxy) | **Docker Dual-Mode** 🐳 🌟 |
+|---------|------------------------|-------------------------|-------------------|-------------------------------|------------------------------|
+| **Dockerfile** | `Dockerfile` | `Dockerfile.pinggy` | Both | `Dockerfile.claude-proxy` | `Dockerfile` + `Dockerfile.claude-proxy` |
+| **Service** | `investor-agent` | `investor-agent-pinggy` | Both | `investor-agent-claude-proxy` | Both MCP + Claude Proxy |
+| **Claude Config** | ✅ Required | ❌ Not needed | ✅ Required | ❌ Not needed | ✅ Required (for Desktop) |
+| **Claude Desktop** | ✅ Yes | ❌ No | ✅ Yes | ❌ No | ✅ Yes |
+| **Claude from Mobile** | ❌ No | ❌ No | ❌ No | ✅ Yes 🌟 | ✅ Yes 🌟 |
+| **Custom Mobile Apps** | ❌ No | ✅ Yes | ✅ Yes | ✅ Yes | ✅ Yes |
+| **Web API** | ❌ No | ✅ Yes | ✅ Yes | ✅ Yes | ✅ Yes |
+| **Pinggy Tunnel** | ❌ No | ✅ Yes | ✅ Yes | ✅ Yes | ✅ Yes |
+| **MCP_API_KEY** | Not needed | ✅ Required | ✅ Required | Optional | Optional |
+| **ANTHROPIC_API_KEY** | ❌ No | ❌ No | ❌ No | ✅ Required | ✅ Required (for mobile) |
+| **Port Exposed** | None | 8000 | 8000 | 8001 | 8001 |
+| **API Costs** | Free | Free | Free | ~$0.20-0.50/day | ~$0.20-0.50/day |
+| **Resource Usage** | Low | Medium | High | Low | Medium |
+| **Documentation** | This guide | This guide | This guide | This guide + CLAUDE_MOBILE_SOLUTION.md | **DOCKER_DUAL_MODE_SETUP.md** |
 
 ---
 

@@ -43,3 +43,29 @@ services:
       timeout: 10s
       retries: 3
       start_period: 5s
+
+  # Claude API Proxy (for mobile access with Claude intelligence)
+  investor-agent-claude-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile.claude-proxy
+    image: investor-agent-claude-proxy:latest
+    container_name: investor-agent-claude-proxy
+    env_file:
+      - .env
+    environment:
+      - CLAUDE_PROXY_PORT=8001
+      - CLAUDE_RESPONSE_MODE=${CLAUDE_RESPONSE_MODE:-balanced}
+    ports:
+      - "8001:8001"
+    restart: unless-stopped
+    # Optional: Mount code for development
+    # volumes:
+    #   - ./investor_agent:/app/investor_agent
+    #   - ./claude_proxy_service.py:/app/claude_proxy_service.py
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
