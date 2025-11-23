@@ -43,6 +43,45 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 MCP_API_KEY = os.getenv("MCP_API_KEY", "")
 PORT = int(os.getenv("CLAUDE_PROXY_PORT", "8001"))
 
+# Response configuration
+RESPONSE_MODE = os.getenv("CLAUDE_RESPONSE_MODE", "balanced")  # concise, balanced, detailed
+MAX_TOKENS_MAP = {
+    "concise": 1024,
+    "balanced": 2048,
+    "detailed": 4096
+}
+
+# System prompt that defines Claude's role and behavior
+SYSTEM_PROMPT = """You are an expert financial analyst with access to real-time market data and financial analysis tools. Your role is to:
+
+1. **Understand user questions** about stocks, markets, and investments
+2. **Use the available tools** to fetch current, accurate data when needed
+3. **Provide clear, actionable insights** based on the data
+4. **Be concise but thorough** - give the essential information without unnecessary elaboration
+
+Guidelines for tool usage:
+- Use tools proactively when you need current market data
+- Call multiple tools if needed to answer comprehensively
+- Always explain what the data shows, don't just present raw numbers
+- If asked for analysis, provide context and interpretation
+
+Response style based on mode:
+- **Concise**: Brief, to-the-point answers (2-3 paragraphs max)
+- **Balanced**: Standard analysis with key insights (3-5 paragraphs)
+- **Detailed**: Comprehensive analysis with context (full analysis)
+
+Current response mode: {response_mode}
+
+Available data sources:
+- Real-time stock prices and market data
+- Options chains and derivatives data
+- Financial statements (income, balance sheet, cash flow)
+- Technical indicators and chart patterns
+- Market sentiment indicators
+- Institutional holdings and insider trades
+- Earnings calendar and analyst recommendations
+"""
+
 if not ANTHROPIC_API_KEY:
     raise ValueError("ANTHROPIC_API_KEY must be set in .env file")
 
@@ -80,12 +119,22 @@ class ChatRequest(BaseModel):
         default="claude-3-5-sonnet-20241022",
         description="Claude model to use"
     )
-    max_tokens: int = Field(default=4096, description="Max tokens in response")
+    response_mode: str = Field(
+        default=None,
+        description="Response length: 'concise', 'balanced', or 'detailed'. Uses CLAUDE_RESPONSE_MODE env if not set."
+    )
+    max_tokens: int = Field(
+        default=None,
+        description="Max tokens (auto-set based on response_mode if not provided)"
+    )
 
 class ChatResponse(BaseModel):
     response: str
     tool_calls_made: List[str] = []
     conversation_history: List[ChatMessage]
+    usage: Optional[Dict[str, int]] = None
+    estimated_cost: Optional[float] = None
+    response_mode: str = "balanced"
 
 # Security
 async def verify_api_key(x_api_key: Optional[str] = Header(None)):
@@ -126,6 +175,9 @@ async def call_mcp_tool(tool_name: str, arguments: Dict[str, Any]) -> Any:
 
 def get_available_tools() -> List[Dict[str, Any]]:
     """Get list of available MCP tools in Claude API format"""
+    import inspect
+    from typing import get_type_hints
+
     tools = server.mcp._tool_manager._tools if hasattr(server.mcp, '_tool_manager') else {}
 
     if isinstance(tools, dict):
@@ -135,19 +187,70 @@ def get_available_tools() -> List[Dict[str, Any]]:
 
     claude_tools = []
     for tool in tools_list:
+        # Get function signature for parameter schema
+        func = tool.fn
+        sig = inspect.signature(func)
+
+        properties = {}
+        required = []
+
+        for param_name, param in sig.parameters.items():
+            # Skip self and cls
+            if param_name in ('self', 'cls'):
+                continue
+
+            param_schema = {"type": "string"}  # Default
+
+            # Try to infer type from annotation
+            if param.annotation != inspect.Parameter.empty:
+                ann = param.annotation
+                if ann == int or ann == "int":
+                    param_schema["type"] = "integer"
+                elif ann == float or ann == "float":
+                    param_schema["type"] = "number"
+                elif ann == bool or ann == "bool":
+                    param_schema["type"] = "boolean"
+                elif hasattr(ann, "__origin__"):
+                    origin = getattr(ann, "__origin__", None)
+                    if origin == list:
+                        param_schema["type"] = "array"
+                    elif origin == dict:
+                        param_schema["type"] = "object"
+
+            properties[param_name] = param_schema
+
+            # Add to required if no default value
+            if param.default == inspect.Parameter.empty:
+                required.append(param_name)
+
         # Convert MCP tool to Claude API tool format
         claude_tool = {
             "name": tool.name,
-            "description": tool.description or f"MCP tool: {tool.name}",
+            "description": tool.description or inspect.getdoc(func) or f"Financial analysis tool: {tool.name}",
             "input_schema": {
                 "type": "object",
-                "properties": {},
-                "required": []
+                "properties": properties,
+                "required": required
             }
         }
         claude_tools.append(claude_tool)
 
     return claude_tools
+
+def estimate_cost(usage: Dict[str, int], model: str = "claude-3-5-sonnet-20241022") -> float:
+    """Estimate cost based on token usage"""
+    # Pricing for Claude 3.5 Sonnet (as of 2024)
+    # https://www.anthropic.com/pricing
+    input_cost_per_million = 3.0  # $3 per million input tokens
+    output_cost_per_million = 15.0  # $15 per million output tokens
+
+    input_tokens = usage.get("input_tokens", 0)
+    output_tokens = usage.get("output_tokens", 0)
+
+    input_cost = (input_tokens / 1_000_000) * input_cost_per_million
+    output_cost = (output_tokens / 1_000_000) * output_cost_per_million
+
+    return input_cost + output_cost
 
 # API Endpoints
 @app.get("/", tags=["Status"])
@@ -192,6 +295,16 @@ async def chat(request: ChatRequest, api_key: str = Depends(verify_api_key)):
     ```
     """
     try:
+        # Determine response mode and max tokens
+        response_mode = request.response_mode or RESPONSE_MODE
+        if response_mode not in MAX_TOKENS_MAP:
+            response_mode = "balanced"
+
+        max_tokens = request.max_tokens or MAX_TOKENS_MAP[response_mode]
+
+        # Build system prompt with current response mode
+        system_prompt = SYSTEM_PROMPT.format(response_mode=response_mode)
+
         # Build conversation history
         messages = request.conversation_history + [
             {"role": "user", "content": request.message}
@@ -205,10 +318,12 @@ async def chat(request: ChatRequest, api_key: str = Depends(verify_api_key)):
 
         # Call Claude API with tool use
         logger.info(f"Calling Claude API with message: {request.message}")
+        logger.info(f"Response mode: {response_mode}, Max tokens: {max_tokens}")
 
         response = claude_client.messages.create(
             model=request.model,
-            max_tokens=request.max_tokens,
+            max_tokens=max_tokens,
+            system=system_prompt,
             tools=tools,
             messages=messages
         )
@@ -250,7 +365,8 @@ async def chat(request: ChatRequest, api_key: str = Depends(verify_api_key)):
             # Get Claude's response with tool results
             response = claude_client.messages.create(
                 model=request.model,
-                max_tokens=request.max_tokens,
+                max_tokens=max_tokens,
+                system=system_prompt,
                 tools=tools,
                 messages=messages
             )
@@ -264,10 +380,22 @@ async def chat(request: ChatRequest, api_key: str = Depends(verify_api_key)):
         # Update conversation history
         messages.append({"role": "assistant", "content": final_response})
 
+        # Get usage and cost information
+        usage_dict = {
+            "input_tokens": response.usage.input_tokens,
+            "output_tokens": response.usage.output_tokens
+        }
+        cost = estimate_cost(usage_dict, request.model)
+
+        logger.info(f"Usage: {usage_dict}, Estimated cost: ${cost:.4f}")
+
         return ChatResponse(
             response=final_response,
             tool_calls_made=tool_calls_made,
-            conversation_history=messages
+            conversation_history=messages,
+            usage=usage_dict,
+            estimated_cost=cost,
+            response_mode=response_mode
         )
 
     except Exception as e:
