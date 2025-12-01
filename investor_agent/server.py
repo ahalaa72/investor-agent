@@ -6,7 +6,7 @@ import os
 import datetime
 import logging
 import sys
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from io import StringIO
 from typing import Literal, Any
 
@@ -61,6 +61,34 @@ def api_retry(func):
         ),
         after=after_log(logger, logging.WARNING)
     )(func)
+
+# Timeout configuration
+DEFAULT_FUTURE_TIMEOUT = 30.0  # seconds
+
+def safe_future_result(future, timeout: float = DEFAULT_FUTURE_TIMEOUT, default=None, context: str = ""):
+    """
+    Safely get result from a future with timeout and exception handling.
+
+    Prevents server crashes from hanging API calls by catching timeouts
+    and exceptions, logging them, and returning a default value.
+
+    Args:
+        future: The Future object to get result from
+        timeout: Maximum seconds to wait (default: 30)
+        default: Value to return on failure (default: None)
+        context: Description for logging (e.g., "fetching ticker info")
+
+    Returns:
+        The future result or default value on failure
+    """
+    try:
+        return future.result(timeout=timeout)
+    except FuturesTimeoutError:
+        logger.error(f"Timeout after {timeout}s: {context}")
+        return default
+    except Exception as e:
+        logger.error(f"Exception in {context}: {type(e).__name__}: {e}")
+        return default
 
 # HTTP client utility
 def create_async_client(headers: dict | None = None) -> httpx.AsyncClient:
@@ -299,7 +327,7 @@ def get_ticker_data(
         calendar_future = executor.submit(yf_call, ticker, "get_calendar")
         news_future = executor.submit(yf_call, ticker, "get_news")
 
-        info = info_future.result()
+        info = safe_future_result(info_future, context=f"fetching info for {ticker}")
         if not info:
             raise ValueError(f"No information available for {ticker}")
 
@@ -320,7 +348,7 @@ def get_ticker_data(
         result: dict[str, Any] = {"basic_info": basic_info}
 
         # Process calendar
-        calendar = calendar_future.result()
+        calendar = safe_future_result(calendar_future, context=f"fetching calendar for {ticker}")
         if calendar:
             result["calendar"] = [
                 {"event": key, "value": value.isoformat() if hasattr(value, 'isoformat') else value}
@@ -328,7 +356,7 @@ def get_ticker_data(
             ]
 
         # Process news
-        news_items = news_future.result()
+        news_items = safe_future_result(news_future, context=f"fetching news for {ticker}")
         if news_items:
             news_items = news_items[:max_news]  # Apply limit
             news_data = []
@@ -351,11 +379,11 @@ def get_ticker_data(
         recommendations_future = executor.submit(yf_call, ticker, "get_recommendations")
         upgrades_future = executor.submit(yf_call, ticker, "get_upgrades_downgrades")
 
-        recommendations = recommendations_future.result()
+        recommendations = safe_future_result(recommendations_future, context=f"fetching recommendations for {ticker}")
         if isinstance(recommendations, pd.DataFrame) and not recommendations.empty:
             result["recommendations"] = to_clean_csv(recommendations.head(max_recommendations))
 
-        upgrades = upgrades_future.result()
+        upgrades = safe_future_result(upgrades_future, context=f"fetching upgrades for {ticker}")
         if isinstance(upgrades, pd.DataFrame) and not upgrades.empty:
             upgrades = upgrades.sort_index(ascending=False) if hasattr(upgrades, 'sort_index') else upgrades
             result["upgrades_downgrades"] = to_clean_csv(upgrades.head(max_upgrades))
@@ -395,15 +423,15 @@ def get_options(
         if not valid_expirations:
             raise ValueError(f"No options found for {ticker_symbol} within specified date range")
 
-        # Parallel fetch with error handling
+        # Parallel fetch with error handling and timeout
         with ThreadPoolExecutor() as executor:
-            chains = [
-                chain.assign(expiryDate=expiry)
-                for chain, expiry in zip(
-                    executor.map(lambda exp: get_options_chain(ticker_symbol, exp, option_type), valid_expirations),
-                    valid_expirations
-                ) if chain is not None
-            ]
+            futures = [(executor.submit(get_options_chain, ticker_symbol, exp, option_type), exp)
+                       for exp in valid_expirations]
+            chains = []
+            for future, expiry in futures:
+                chain = safe_future_result(future, context=f"options chain {ticker_symbol} {expiry}")
+                if chain is not None:
+                    chains.append(chain.assign(expiryDate=expiry))
 
         if not chains:
             raise ValueError(f"No options found for {ticker_symbol} matching criteria")
@@ -469,7 +497,7 @@ def get_financial_statements(
 
         results = {}
         for stmt_type, future in futures.items():
-            df = future.result()
+            df = safe_future_result(future, context=f"{stmt_type} statement for {ticker}")
             if df is None or df.empty:
                 raise ValueError(f"No {stmt_type} statement data found for {ticker}")
 
@@ -491,8 +519,8 @@ def get_institutional_holders(ticker: str, top_n: int = 20) -> dict[str, Any]:
         inst_future = executor.submit(yf_call, ticker, "get_institutional_holders")
         fund_future = executor.submit(yf_call, ticker, "get_mutualfund_holders")
 
-        inst_holders = inst_future.result()
-        fund_holders = fund_future.result()
+        inst_holders = safe_future_result(inst_future, context=f"institutional holders for {ticker}")
+        fund_holders = safe_future_result(fund_future, context=f"mutual fund holders for {ticker}")
 
     # Limit results
     inst_holders = inst_holders.head(top_n) if isinstance(inst_holders, pd.DataFrame) else None
