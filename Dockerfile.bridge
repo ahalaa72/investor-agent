@@ -31,7 +31,11 @@ RUN /root/.local/bin/uv pip install --system \
     "yfinance[nospam]>=0.2.66" \
     "fastapi>=0.115.0" \
     "uvicorn[standard]>=0.32.0" \
-    "python-dotenv>=1.1.1"
+    "python-dotenv>=1.1.1" \
+    scikit-learn>=1.3.0 \
+    scipy>=1.11.0 \
+    statsmodels>=0.14.0 \
+    TA-Lib
 
 # Copy the investor_agent package
 COPY investor_agent ./investor_agent

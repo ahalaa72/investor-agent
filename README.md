@@ -6,7 +6,30 @@
 
 ## Overview
 
-The **investor-agent** is a Model Context Protocol (MCP) server that provides comprehensive financial insights and analysis to Large Language Models. It leverages real-time market data, fundamental and technical analysis to deliver:
+The **investor-agent** is a Model Context Protocol (MCP) server that provides comprehensive financial insights and analysis to Large Language Models. It implements a **9-Phase Institutional Analysis Framework** for professional-grade stock analysis.
+
+### Objectives
+
+1. **Generate Institutional-Grade Reports** - Comprehensive analysis following the 9-phase framework
+2. **Context-Informed Probability Assessment** - Al Brooks price action with ML-enhanced signals
+3. **Data Integrity** - All numbers traced to specific tool outputs, zero fabrication
+4. **Real Money Discipline** - Position sizing, risk management, and validation
+
+### 9-Phase Institutional Framework
+
+| Phase | Weight | Description |
+|-------|--------|-------------|
+| 1. Fundamentals | 19.6% | F-Score, Z-Score, quality metrics |
+| 2. Catalysts | 15.2% | Earnings, events, timing |
+| 3. Options Flow | 13.4% | Put/Call ratio, gamma, unusual activity |
+| 4. Insider Trading | 4.5% | Cluster buying/selling patterns |
+| 5. Institutions | 4.5% | 13F holdings, accumulation/distribution |
+| 6. Technical | 17.9% | ML signals (9.8%) + Indicators (8.1%) |
+| 7. Market Context | 5.3% | Fear/Greed, sector analysis |
+| 8. Al Brooks | 19.6% | Context-informed price action |
+| 9. Historical | 0% | Confirmation only, not weighted |
+
+### Capabilities
 
 - **Market Movers:** Top gainers, losers, and most active stocks with support for different market sessions
 - **Ticker Analysis:** Company overview, news, metrics, analyst recommendations, and upgrades/downgrades
@@ -16,7 +39,8 @@ The **investor-agent** is a Model Context Protocol (MCP) server that provides co
 - **Ownership Analysis:** Institutional holders and insider trading activity
 - **Earnings Calendar:** Upcoming earnings announcements with date filtering
 - **Market Sentiment:** CNN Fear & Greed Index, Crypto Fear & Greed Index, and Google Trends sentiment analysis
-- **Technical Analysis:** SMA, EMA, RSI, MACD, BBANDS indicators (optional)
+- **Technical Analysis:** RSI, MACD, BBANDS, EMA/VWAP confluence, support/resistance, trend strength
+- **ML-Enhanced Analysis:** Triple-barrier backtesting, feature importance, historical similarity matching
 - **Questrade Integration:** Account information, positions (assets), and cash balances (optional)
 
 The server integrates with [yfinance](https://pypi.org/project/yfinance/) for market data and automatically optimizes data volume for better performance.
@@ -123,8 +147,24 @@ To use Questrade features, you need to:
 - **`get_crypto_fear_greed_index()`** - Current Crypto Fear & Greed Index with value, classification, and timestamp
 - **`get_google_trends(keywords, period_days=7)`** - Google Trends relative search interest for market-related keywords. Requires a list of keywords to track (e.g., ["stock market crash", "bull market", "recession", "inflation"]). Returns relative search interest scores that can be used as sentiment indicators.
 
-### Technical Analysis
-- **`calculate_technical_indicator(ticker, indicator, period="1y", timeperiod=14, fastperiod=12, slowperiod=26, signalperiod=9, nbdev=2, matype=0, num_results=100)`** - Calculate technical indicators (SMA, EMA, RSI, MACD, BBANDS) with configurable parameters and result limiting. Returns dictionary with price_data and indicator_data as CSV strings. matype values: 0=SMA, 1=EMA, 2=WMA, 3=DEMA, 4=TEMA, 5=TRIMA, 6=KAMA, 7=MAMA, 8=T3. Requires TA-Lib library.
+### Technical Analysis (Requires TA-Lib)
+- **`calculate_technical_indicator(ticker, indicator, period="1y", timeperiod=14, fastperiod=12, slowperiod=26, signalperiod=9, nbdev=2, matype=0, num_results=100)`** - Calculate technical indicators (SMA, EMA, RSI, MACD, BBANDS) with configurable parameters and result limiting. Returns dictionary with price_data and indicator_data as CSV strings. matype values: 0=SMA, 1=EMA, 2=WMA, 3=DEMA, 4=TEMA, 5=TRIMA, 6=KAMA, 7=MAMA, 8=T3.
+- **`analyze_technical(ticker, period="6mo", include_ml_analysis=True)`** - Comprehensive technical analysis including RSI, MACD, Bollinger Bands, EMA/VWAP confluence, volume confirmation, and optional ML probability layer.
+- **`find_support_resistance(ticker, lookback_period="3mo")`** - Identify key support and resistance levels based on recent price action using local extrema detection.
+- **`screen_stocks_technical(tickers, rsi_below=None, rsi_above=None, macd_bullish=None, above_sma_50=None, above_sma_200=None)`** - Screen multiple stocks based on technical criteria.
+- **`compare_technical(tickers, period="3mo")`** - Compare technical indicators across multiple stocks for relative analysis.
+- **`analyze_trend_strength(ticker, period="6mo", include_statistical_confidence=True)`** - Analyze trend strength with t-statistic, p-value, and confidence intervals.
+- **`detect_chart_patterns(ticker, period="3mo")`** - Detect common chart patterns (head and shoulders, double tops/bottoms, triangles, wedges).
+- **`analyze_volume_tool(ticker, period="3mo", include_quality_score=True)`** - Volume analysis including OBV, MFI, volume surges, and accumulation/distribution.
+- **`analyze_volatility_tool(ticker, period="6mo")`** - Volatility analysis with ATR, Bollinger Bands width, and historical volatility.
+- **`calculate_relative_strength_tool(ticker, benchmark="SPY", period="3mo")`** - Calculate relative strength score (0-100) vs benchmark.
+- **`calculate_fundamental_scores_tool(ticker, max_periods=8)`** - Calculate Piotroski F-Score (0-9) and Altman Z-Score for fundamental quality assessment.
+
+### ML-Enhanced Analysis (Requires TA-Lib)
+- **`analyze_ml_enhanced(ticker, period="6mo")`** - ML-enhanced technical analysis with triple-barrier success rates, trend-scanning confidence, and Kelly sizing.
+- **`find_similar_historical_setups(ticker, lookback_period="2y", similarity_threshold=0.80)`** - Find similar historical setups matching current conditions for pattern-based probability analysis.
+- **`validate_strategy_robustness(ticker, n_trials=100)`** - Test if trading results are statistically robust using deflated Sharpe ratio and probability of overfitting.
+- **`calculate_feature_importance_analysis(ticker, period="6mo", forward_window=10)`** - Identify which technical indicators predict returns for a specific stock.
 
 ## Usage with MCP Clients
 
