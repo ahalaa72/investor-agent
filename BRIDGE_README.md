@@ -321,3 +321,26 @@ Contributions welcome! Please open issues or pull requests.
 ---
 
 **Questions?** Open an issue or check the main [README.md](README.md) for more information.
+   "investor-agent": {
+      "command": "docker",
+      "args": [
+        "exec",
+        "-i",
+        "investor-agent-mcp",
+        "python",
+        "-m",
+        "investor_agent.server"
+      ]
+    },
+
+
+      "mcpServers": {
+    "MCP_DOCKER": {
+      "command": "docker",
+      "args": [
+        "mcp",
+        "gateway",
+        "run"
+      ]
+    },
+ 

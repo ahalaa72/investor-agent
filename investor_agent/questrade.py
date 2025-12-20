@@ -21,6 +21,12 @@ from tenacity import (
     wait_exponential,
 )
 
+# Import token security for auto-encryption
+try:
+    from investor_agent.token_security import encrypt_token_file, CRYPTO_AVAILABLE
+except ImportError:
+    CRYPTO_AVAILABLE = False
+
 # Set up logging
 logger = logging.getLogger(__name__)
 logging.basicConfig(
@@ -102,6 +108,7 @@ class QuestradeClient:
                     logger.info("Refreshing expired access token")
                     client = Questrade(refresh_token=stored_refresh_token)
                     logger.info("Questrade API client connected with refreshed tokens")
+                    self._auto_encrypt_token()  # Re-encrypt after refresh
                     return client
                 else:
                     # Token is still fresh, use stored tokens
@@ -114,11 +121,37 @@ class QuestradeClient:
                 logger.info("No stored tokens found, using manual refresh token from environment")
                 client = Questrade(refresh_token=self.refresh_token)
                 logger.info("Questrade API client connected")
+                self._auto_encrypt_token()  # Encrypt new token
                 return client
 
         except Exception as e:
             logger.error(f"Failed to initialize Questrade client: {e}")
             raise ValueError(f"Failed to connect to Questrade API: {str(e)}")
+
+    def _auto_encrypt_token(self):
+        """
+        Auto-encrypt the token file if password is available from Docker entrypoint.
+
+        This is called after token refresh to keep tokens encrypted at rest.
+        The password file is created by docker-entrypoint.sh when decrypting.
+        """
+        if not CRYPTO_AVAILABLE:
+            return
+
+        password_file = Path("/tmp/.questrade_password")
+        token_file = Path.home() / ".questrade.json"
+
+        if not password_file.exists() or not token_file.exists():
+            return
+
+        try:
+            with open(password_file, 'r') as f:
+                password = f.read().strip()
+
+            if password and encrypt_token_file(password, delete_plaintext=False):
+                logger.info("Token auto-encrypted after refresh")
+        except Exception as e:
+            logger.warning(f"Auto-encryption failed (non-fatal): {e}")
 
     @retry(
         retry=retry_if_exception_type((ConnectionError, TimeoutError)),
@@ -320,7 +353,8 @@ class QuestradeClient:
         try:
             client = self._get_client()
             logger.info(f"Fetching quote for {symbol}")
-            quote = client.markets_quote(symbol)
+            # questrade-api uses markets_quotes with ids keyword argument
+            quote = client.markets_quotes(ids=str(symbol))
 
             if quote is None:
                 raise ValueError(f"No quote data returned for {symbol}")
@@ -405,7 +439,8 @@ class QuestradeClient:
         try:
             client = self._get_client()
             logger.info(f"Fetching candles for {symbol} ({interval})")
-            candles = client.markets_candles(symbol, interval, start_time, end_time)
+            # questrade-api uses keyword arguments for candles
+            candles = client.markets_candles(symbol, startTime=start_time, endTime=end_time, interval=interval)
 
             if candles is None:
                 raise ValueError(f"No candle data returned for {symbol}")
@@ -442,7 +477,8 @@ class QuestradeClient:
         try:
             client = self._get_client()
             logger.info(f"Searching symbols for: {query}")
-            results = client.symbols_search(query, offset)
+            # questrade-api uses keyword argument for prefix
+            results = client.symbols_search(prefix=query)
 
             if results is None:
                 raise ValueError(f"No search results returned for {query}")
@@ -508,7 +544,8 @@ class QuestradeClient:
         try:
             client = self._get_client()
             logger.info("Fetching available markets")
-            markets = client.markets()
+            # questrade-api returns markets as a property, not a method
+            markets = client.markets
 
             if markets is None:
                 raise ValueError("No markets data returned")

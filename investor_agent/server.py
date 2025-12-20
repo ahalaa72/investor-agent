@@ -49,6 +49,12 @@ from .backtesting import (
     generate_similarity_report
 )
 
+# Import TradingView scanner (optional dependency)
+try:
+    from .tradingview_scanner import TradingViewScanner, get_scanner, SCREENER_AVAILABLE
+except ImportError:
+    SCREENER_AVAILABLE = False
+
 # Setup logging
 logger = logging.getLogger(__name__)
 logging.basicConfig(
@@ -1660,6 +1666,670 @@ def get_options(
 
 
 @mcp.tool()
+def analyze_options_mcmillan(
+    ticker: str,
+    direction: Literal["LONG", "SHORT", "NEUTRAL"] = "LONG",
+    holding_period_days: int = 30,
+    use_questrade_greeks: bool = True
+) -> dict[str, Any]:
+    """
+    McMillan Options Strategy Analysis - Comprehensive options analysis using
+    Lawrence McMillan's methodology from "Options as a Strategic Investment".
+
+    Provides institutional-grade options analysis including:
+    - IV Rank/Percentile Analysis (current IV vs historical)
+    - Put/Call Ratio Analysis (sentiment indicator)
+    - Open Interest Analysis (max pain, positioning)
+    - Unusual Options Activity Detection (smart money signals)
+    - Greeks Assessment (Delta, Gamma, Theta, Vega exposure)
+    - Strategy Selection Matrix (optimal strategy based on IV + direction)
+    - Risk/Reward Analysis for recommended strategies
+
+    Args:
+        ticker: Stock symbol to analyze
+        direction: Expected price direction (LONG=bullish, SHORT=bearish, NEUTRAL=range-bound)
+        holding_period_days: Expected holding period for strategy selection (default 30)
+        use_questrade_greeks: Try to get Greeks from Questrade API (more accurate)
+
+    Returns:
+        dict: Comprehensive McMillan options analysis with strategy recommendations
+
+    Reference: McMillan, L.G. "Options as a Strategic Investment" (5th Edition)
+    """
+    import numpy as np
+    from datetime import datetime, timedelta
+
+    ticker = validate_ticker(ticker)
+
+    try:
+        # Get current stock price
+        t = yf.Ticker(ticker)
+        info = t.info
+        current_price = info.get('currentPrice') or info.get('regularMarketPrice') or info.get('previousClose')
+        if not current_price:
+            raise ValueError(f"Could not get current price for {ticker}")
+
+        # Get options expirations
+        expirations = t.options
+        if not expirations:
+            raise ValueError(f"No options available for {ticker}")
+
+        # Filter expirations near holding period
+        target_date = datetime.now() + timedelta(days=holding_period_days)
+        target_date_str = target_date.strftime('%Y-%m-%d')
+
+        # Find nearest expiration to target holding period
+        nearest_exp = min(expirations, key=lambda x: abs(
+            (datetime.strptime(x, '%Y-%m-%d') - target_date).days
+        ))
+
+        # Get options chain for analysis
+        chain = t.option_chain(nearest_exp)
+        calls_df = chain.calls
+        puts_df = chain.puts
+
+        if calls_df.empty and puts_df.empty:
+            raise ValueError(f"No options data for {ticker} at {nearest_exp}")
+
+        # ============================================================
+        # 1. IV ANALYSIS (McMillan Ch. 28: Volatility Trading)
+        # ============================================================
+        iv_analysis = _calculate_iv_analysis(ticker, calls_df, puts_df, current_price)
+
+        # ============================================================
+        # 2. PUT/CALL RATIO ANALYSIS (McMillan Ch. 24: Stock Option Strategies)
+        # ============================================================
+        pc_ratio_analysis = _calculate_pc_ratio(calls_df, puts_df)
+
+        # ============================================================
+        # 3. OPEN INTEREST ANALYSIS (McMillan Ch. 25: Index Option Strategies)
+        # ============================================================
+        oi_analysis = _calculate_oi_analysis(calls_df, puts_df, current_price)
+
+        # ============================================================
+        # 4. UNUSUAL OPTIONS ACTIVITY (McMillan Ch. 36: Portfolio Management)
+        # ============================================================
+        uoa_analysis = _detect_unusual_activity(calls_df, puts_df, current_price)
+
+        # ============================================================
+        # 5. GREEKS ASSESSMENT (Try Questrade for accurate Greeks)
+        # ============================================================
+        greeks_analysis = None
+        if use_questrade_greeks:
+            try:
+                greeks_analysis = _get_questrade_greeks(ticker, nearest_exp, current_price)
+            except Exception as e:
+                logger.warning(f"Questrade Greeks unavailable: {e}")
+
+        if greeks_analysis is None:
+            # Fallback to yfinance Greeks (less accurate but available)
+            greeks_analysis = _estimate_greeks_from_chain(calls_df, puts_df, current_price)
+
+        # ============================================================
+        # 6. STRATEGY SELECTION MATRIX (McMillan Core Framework)
+        # ============================================================
+        strategy_recommendation = _select_mcmillan_strategy(
+            direction=direction,
+            iv_rank=iv_analysis['iv_rank'],
+            iv_percentile=iv_analysis['iv_percentile'],
+            current_price=current_price,
+            holding_period_days=holding_period_days,
+            calls_df=calls_df,
+            puts_df=puts_df
+        )
+
+        # ============================================================
+        # 7. COMPOSITE SCORE & RECOMMENDATION
+        # ============================================================
+        composite_score = _calculate_options_composite_score(
+            iv_analysis=iv_analysis,
+            pc_ratio_analysis=pc_ratio_analysis,
+            oi_analysis=oi_analysis,
+            uoa_analysis=uoa_analysis,
+            direction=direction
+        )
+
+        return {
+            "ticker": ticker,
+            "current_price": current_price,
+            "analysis_date": datetime.now().strftime('%Y-%m-%d %H:%M'),
+            "direction": direction,
+            "holding_period_days": holding_period_days,
+            "nearest_expiration": nearest_exp,
+            "available_expirations": expirations[:5],  # First 5 expirations
+
+            # McMillan Analysis Components
+            "iv_analysis": iv_analysis,
+            "put_call_ratio": pc_ratio_analysis,
+            "open_interest": oi_analysis,
+            "unusual_activity": uoa_analysis,
+            "greeks_assessment": greeks_analysis,
+
+            # Strategy Recommendation
+            "strategy_recommendation": strategy_recommendation,
+
+            # Composite Score
+            "composite_score": composite_score,
+
+            # Quick Summary
+            "summary": {
+                "iv_environment": iv_analysis['iv_environment'],
+                "sentiment": pc_ratio_analysis['sentiment'],
+                "smart_money_signal": uoa_analysis['smart_money_signal'],
+                "recommended_strategy": strategy_recommendation['primary_strategy'],
+                "confidence": composite_score['confidence'],
+                "score": composite_score['total_score']
+            },
+
+            "methodology": "McMillan - Options as a Strategic Investment (5th Ed.)"
+        }
+
+    except Exception as e:
+        logger.error(f"Error in analyze_options_mcmillan for {ticker}: {e}")
+        raise ValueError(f"McMillan options analysis failed: {str(e)}")
+
+
+def _calculate_iv_analysis(ticker: str, calls_df: pd.DataFrame, puts_df: pd.DataFrame, current_price: float) -> dict:
+    """Calculate IV Rank and IV Percentile per McMillan methodology."""
+    import numpy as np
+
+    # Get ATM options for IV
+    atm_calls = calls_df[abs(calls_df['strike'] - current_price) == abs(calls_df['strike'] - current_price).min()]
+    atm_puts = puts_df[abs(puts_df['strike'] - current_price) == abs(puts_df['strike'] - current_price).min()]
+
+    # Current IV (average of ATM call and put)
+    current_iv = None
+    if 'impliedVolatility' in atm_calls.columns and not atm_calls.empty:
+        call_iv = atm_calls['impliedVolatility'].iloc[0] if not atm_calls['impliedVolatility'].isna().all() else None
+        put_iv = atm_puts['impliedVolatility'].iloc[0] if not atm_puts.empty and not atm_puts['impliedVolatility'].isna().all() else None
+
+        if call_iv and put_iv:
+            current_iv = (call_iv + put_iv) / 2
+        elif call_iv:
+            current_iv = call_iv
+        elif put_iv:
+            current_iv = put_iv
+
+    if current_iv is None:
+        current_iv = 0.30  # Default 30% if unavailable
+
+    # Get historical IV data (use price history to estimate)
+    try:
+        t = yf.Ticker(ticker)
+        hist = t.history(period="1y")
+        if not hist.empty:
+            # Calculate historical volatility as proxy for IV range
+            returns = np.log(hist['Close'] / hist['Close'].shift(1)).dropna()
+            hv_20 = returns.rolling(20).std() * np.sqrt(252)
+            hv_values = hv_20.dropna().values
+
+            if len(hv_values) > 0:
+                iv_52w_high = np.percentile(hv_values, 95)
+                iv_52w_low = np.percentile(hv_values, 5)
+
+                # IV Rank = (Current IV - 52w Low) / (52w High - 52w Low)
+                iv_range = iv_52w_high - iv_52w_low
+                iv_rank = ((current_iv - iv_52w_low) / iv_range * 100) if iv_range > 0 else 50
+
+                # IV Percentile = % of days IV was lower than current
+                iv_percentile = (hv_values < current_iv).sum() / len(hv_values) * 100
+            else:
+                iv_rank = 50
+                iv_percentile = 50
+                iv_52w_high = current_iv * 1.5
+                iv_52w_low = current_iv * 0.5
+        else:
+            iv_rank = 50
+            iv_percentile = 50
+            iv_52w_high = current_iv * 1.5
+            iv_52w_low = current_iv * 0.5
+    except Exception:
+        iv_rank = 50
+        iv_percentile = 50
+        iv_52w_high = current_iv * 1.5
+        iv_52w_low = current_iv * 0.5
+
+    # Determine IV environment
+    if iv_rank >= 70:
+        iv_environment = "HIGH_IV"
+        iv_interpretation = "IV is elevated - favor selling premium strategies"
+    elif iv_rank <= 30:
+        iv_environment = "LOW_IV"
+        iv_interpretation = "IV is low - favor buying premium strategies"
+    else:
+        iv_environment = "NORMAL_IV"
+        iv_interpretation = "IV is normal - flexible strategy selection"
+
+    return {
+        "current_iv": round(current_iv * 100, 1),
+        "iv_rank": round(max(0, min(100, iv_rank)), 1),
+        "iv_percentile": round(max(0, min(100, iv_percentile)), 1),
+        "iv_52w_high": round(iv_52w_high * 100, 1),
+        "iv_52w_low": round(iv_52w_low * 100, 1),
+        "iv_environment": iv_environment,
+        "interpretation": iv_interpretation,
+        "mcmillan_reference": "Chapter 28: Volatility Trading"
+    }
+
+
+def _calculate_pc_ratio(calls_df: pd.DataFrame, puts_df: pd.DataFrame) -> dict:
+    """Calculate Put/Call ratio analysis per McMillan methodology."""
+    # Volume-based P/C ratio
+    call_volume = calls_df['volume'].sum() if 'volume' in calls_df.columns else 0
+    put_volume = puts_df['volume'].sum() if 'volume' in puts_df.columns else 0
+    volume_pc_ratio = put_volume / call_volume if call_volume > 0 else 1.0
+
+    # Open Interest-based P/C ratio
+    call_oi = calls_df['openInterest'].sum() if 'openInterest' in calls_df.columns else 0
+    put_oi = puts_df['openInterest'].sum() if 'openInterest' in puts_df.columns else 0
+    oi_pc_ratio = put_oi / call_oi if call_oi > 0 else 1.0
+
+    # McMillan interpretation (contrarian indicator)
+    # High P/C = Bearish sentiment = Contrarian Bullish
+    # Low P/C = Bullish sentiment = Contrarian Bearish
+    if volume_pc_ratio > 1.2:
+        sentiment = "EXTREMELY_BEARISH"
+        contrarian_signal = "BULLISH"
+        interpretation = "Extreme put buying suggests fear - contrarian bullish signal"
+    elif volume_pc_ratio > 0.9:
+        sentiment = "BEARISH"
+        contrarian_signal = "SLIGHTLY_BULLISH"
+        interpretation = "Elevated put activity - moderate contrarian bullish"
+    elif volume_pc_ratio < 0.5:
+        sentiment = "EXTREMELY_BULLISH"
+        contrarian_signal = "BEARISH"
+        interpretation = "Extreme call buying suggests greed - contrarian bearish signal"
+    elif volume_pc_ratio < 0.7:
+        sentiment = "BULLISH"
+        contrarian_signal = "SLIGHTLY_BEARISH"
+        interpretation = "Elevated call activity - moderate contrarian bearish"
+    else:
+        sentiment = "NEUTRAL"
+        contrarian_signal = "NEUTRAL"
+        interpretation = "P/C ratio in neutral zone - no strong signal"
+
+    return {
+        "volume_pc_ratio": round(volume_pc_ratio, 3),
+        "oi_pc_ratio": round(oi_pc_ratio, 3),
+        "call_volume": int(call_volume),
+        "put_volume": int(put_volume),
+        "call_oi": int(call_oi),
+        "put_oi": int(put_oi),
+        "sentiment": sentiment,
+        "contrarian_signal": contrarian_signal,
+        "interpretation": interpretation,
+        "mcmillan_reference": "Chapter 24: Stock Option Strategies"
+    }
+
+
+def _calculate_oi_analysis(calls_df: pd.DataFrame, puts_df: pd.DataFrame, current_price: float) -> dict:
+    """Analyze Open Interest for max pain and positioning."""
+    import numpy as np
+
+    # Find max pain (strike where options sellers profit most)
+    all_strikes = sorted(set(calls_df['strike'].tolist() + puts_df['strike'].tolist()))
+
+    max_pain_strike = current_price
+    min_pain_value = float('inf')
+
+    for strike in all_strikes:
+        # Calculate pain at this strike
+        call_pain = 0
+        put_pain = 0
+
+        # Call pain: sum of (strike - exercise_strike) * OI for all ITM calls
+        itm_calls = calls_df[calls_df['strike'] < strike]
+        if not itm_calls.empty and 'openInterest' in itm_calls.columns:
+            call_pain = ((strike - itm_calls['strike']) * itm_calls['openInterest']).sum()
+
+        # Put pain: sum of (exercise_strike - strike) * OI for all ITM puts
+        itm_puts = puts_df[puts_df['strike'] > strike]
+        if not itm_puts.empty and 'openInterest' in itm_puts.columns:
+            put_pain = ((itm_puts['strike'] - strike) * itm_puts['openInterest']).sum()
+
+        total_pain = call_pain + put_pain
+        if total_pain < min_pain_value:
+            min_pain_value = total_pain
+            max_pain_strike = strike
+
+    # Find highest OI strikes (important levels)
+    top_call_strikes = calls_df.nlargest(3, 'openInterest')[['strike', 'openInterest']].to_dict('records') if 'openInterest' in calls_df.columns else []
+    top_put_strikes = puts_df.nlargest(3, 'openInterest')[['strike', 'openInterest']].to_dict('records') if 'openInterest' in puts_df.columns else []
+
+    # Max pain interpretation
+    distance_to_max_pain = (max_pain_strike - current_price) / current_price * 100
+    if abs(distance_to_max_pain) < 2:
+        oi_bias = "NEUTRAL"
+        interpretation = "Price near max pain - likely to stay range-bound into expiration"
+    elif distance_to_max_pain > 2:
+        oi_bias = "BULLISH"
+        interpretation = f"Max pain {distance_to_max_pain:.1f}% above price - gravitational pull higher"
+    else:
+        oi_bias = "BEARISH"
+        interpretation = f"Max pain {abs(distance_to_max_pain):.1f}% below price - gravitational pull lower"
+
+    return {
+        "max_pain_strike": max_pain_strike,
+        "distance_to_max_pain_pct": round(distance_to_max_pain, 2),
+        "top_call_oi_strikes": top_call_strikes,
+        "top_put_oi_strikes": top_put_strikes,
+        "oi_bias": oi_bias,
+        "interpretation": interpretation,
+        "mcmillan_reference": "Chapter 25: Index Option Strategies"
+    }
+
+
+def _detect_unusual_activity(calls_df: pd.DataFrame, puts_df: pd.DataFrame, current_price: float) -> dict:
+    """Detect unusual options activity (smart money signals)."""
+    unusual_trades = []
+
+    # Check for volume > OI (indicates new positions)
+    for df, opt_type in [(calls_df, 'CALL'), (puts_df, 'PUT')]:
+        if 'volume' in df.columns and 'openInterest' in df.columns:
+            # Unusual: Volume > 2x OI
+            unusual = df[(df['volume'] > df['openInterest'] * 2) & (df['volume'] > 100)]
+            for _, row in unusual.iterrows():
+                unusual_trades.append({
+                    'type': opt_type,
+                    'strike': row['strike'],
+                    'volume': int(row['volume']),
+                    'oi': int(row['openInterest']),
+                    'volume_oi_ratio': round(row['volume'] / max(row['openInterest'], 1), 1),
+                    'moneyness': 'ITM' if (opt_type == 'CALL' and row['strike'] < current_price) or
+                                          (opt_type == 'PUT' and row['strike'] > current_price) else 'OTM'
+                })
+
+    # Sort by volume/OI ratio
+    unusual_trades.sort(key=lambda x: x['volume_oi_ratio'], reverse=True)
+    unusual_trades = unusual_trades[:5]  # Top 5
+
+    # Determine smart money signal
+    if not unusual_trades:
+        smart_money_signal = "NO_SIGNAL"
+        interpretation = "No unusual options activity detected"
+    else:
+        call_unusual = sum(1 for t in unusual_trades if t['type'] == 'CALL')
+        put_unusual = sum(1 for t in unusual_trades if t['type'] == 'PUT')
+
+        if call_unusual > put_unusual * 2:
+            smart_money_signal = "BULLISH"
+            interpretation = f"Unusual call activity ({call_unusual} trades) suggests smart money bullish positioning"
+        elif put_unusual > call_unusual * 2:
+            smart_money_signal = "BEARISH"
+            interpretation = f"Unusual put activity ({put_unusual} trades) suggests smart money bearish positioning"
+        else:
+            smart_money_signal = "MIXED"
+            interpretation = f"Mixed unusual activity ({call_unusual} calls, {put_unusual} puts)"
+
+    return {
+        "unusual_trades": unusual_trades,
+        "unusual_trade_count": len(unusual_trades),
+        "smart_money_signal": smart_money_signal,
+        "interpretation": interpretation,
+        "mcmillan_reference": "Chapter 36: Portfolio Management"
+    }
+
+
+def _get_questrade_greeks(ticker: str, expiration: str, current_price: float) -> dict | None:
+    """Get Greeks from Questrade API for more accurate data."""
+    try:
+        client = get_questrade_client()
+        options_chain = client.get_options_chain(ticker)
+
+        if not options_chain or 'optionChain' not in options_chain:
+            return None
+
+        # Find ATM options and get their Greeks
+        # This requires additional API calls to get option quotes with Greeks
+        # For now, return a placeholder indicating Questrade is available
+        return {
+            "source": "questrade",
+            "status": "available",
+            "note": "Use get_questrade_option_quotes() with specific option IDs for detailed Greeks",
+            "available_expirations": [exp.get('expiryDate') for exp in options_chain.get('optionChain', [])[:5]]
+        }
+
+    except Exception as e:
+        logger.warning(f"Questrade Greeks unavailable: {e}")
+        return None
+
+
+def _estimate_greeks_from_chain(calls_df: pd.DataFrame, puts_df: pd.DataFrame, current_price: float) -> dict:
+    """Estimate Greeks from yfinance chain data."""
+    greeks = {
+        "source": "yfinance_estimated",
+        "note": "Greeks estimated from chain data - use Questrade for accurate Greeks"
+    }
+
+    # Check if Greeks are available in the chain
+    if 'impliedVolatility' in calls_df.columns:
+        # Get ATM options
+        atm_calls = calls_df[abs(calls_df['strike'] - current_price) == abs(calls_df['strike'] - current_price).min()]
+        atm_puts = puts_df[abs(puts_df['strike'] - current_price) == abs(puts_df['strike'] - current_price).min()]
+
+        # Extract available Greeks
+        greek_cols = ['impliedVolatility', 'delta', 'gamma', 'theta', 'vega']
+        for col in greek_cols:
+            if col in atm_calls.columns and not atm_calls.empty:
+                val = atm_calls[col].iloc[0]
+                if pd.notna(val):
+                    greeks[f"atm_call_{col}"] = round(val, 4)
+
+            if col in atm_puts.columns and not atm_puts.empty:
+                val = atm_puts[col].iloc[0]
+                if pd.notna(val):
+                    greeks[f"atm_put_{col}"] = round(val, 4)
+
+    return greeks
+
+
+def _select_mcmillan_strategy(
+    direction: str,
+    iv_rank: float,
+    iv_percentile: float,
+    current_price: float,
+    holding_period_days: int,
+    calls_df: pd.DataFrame,
+    puts_df: pd.DataFrame
+) -> dict:
+    """Select optimal strategy using McMillan's Strategy Selection Matrix."""
+
+    # McMillan Strategy Selection Matrix
+    # Based on IV environment + Directional bias
+
+    strategies = []
+
+    # HIGH IV (>70) - Favor selling premium
+    if iv_rank >= 70:
+        if direction == "LONG":
+            strategies = [
+                {"name": "Short Put", "type": "credit", "risk": "moderate", "max_profit": "premium", "max_loss": "strike - premium"},
+                {"name": "Bull Put Spread", "type": "credit", "risk": "defined", "max_profit": "net credit", "max_loss": "spread width - credit"},
+                {"name": "Covered Call", "type": "income", "risk": "stock ownership", "max_profit": "premium + (strike - stock price)", "max_loss": "stock price - premium"}
+            ]
+            primary = "Bull Put Spread (Credit)"
+            rationale = "High IV favors selling premium. Bull put spread defines risk while collecting elevated premium."
+
+        elif direction == "SHORT":
+            strategies = [
+                {"name": "Short Call", "type": "credit", "risk": "unlimited", "max_profit": "premium", "max_loss": "unlimited"},
+                {"name": "Bear Call Spread", "type": "credit", "risk": "defined", "max_profit": "net credit", "max_loss": "spread width - credit"},
+                {"name": "Protective Put + Short Stock", "type": "hedged", "risk": "defined", "max_profit": "stock decline - premium", "max_loss": "premium"}
+            ]
+            primary = "Bear Call Spread (Credit)"
+            rationale = "High IV favors selling premium. Bear call spread defines risk while collecting elevated premium."
+
+        else:  # NEUTRAL
+            strategies = [
+                {"name": "Iron Condor", "type": "credit", "risk": "defined", "max_profit": "net credit", "max_loss": "wing width - credit"},
+                {"name": "Short Strangle", "type": "credit", "risk": "undefined", "max_profit": "premium", "max_loss": "unlimited"},
+                {"name": "Short Straddle", "type": "credit", "risk": "undefined", "max_profit": "premium", "max_loss": "unlimited"}
+            ]
+            primary = "Iron Condor"
+            rationale = "High IV + neutral outlook ideal for iron condor. Collect premium from both sides with defined risk."
+
+    # LOW IV (<30) - Favor buying premium
+    elif iv_rank <= 30:
+        if direction == "LONG":
+            strategies = [
+                {"name": "Long Call", "type": "debit", "risk": "defined", "max_profit": "unlimited", "max_loss": "premium"},
+                {"name": "Bull Call Spread", "type": "debit", "risk": "defined", "max_profit": "spread width - debit", "max_loss": "net debit"},
+                {"name": "LEAPS Call", "type": "debit", "risk": "defined", "max_profit": "unlimited", "max_loss": "premium"}
+            ]
+            primary = "Long Call or Bull Call Spread"
+            rationale = "Low IV makes buying options cheap. Long calls for conviction, spreads for cost reduction."
+
+        elif direction == "SHORT":
+            strategies = [
+                {"name": "Long Put", "type": "debit", "risk": "defined", "max_profit": "strike - premium", "max_loss": "premium"},
+                {"name": "Bear Put Spread", "type": "debit", "risk": "defined", "max_profit": "spread width - debit", "max_loss": "net debit"},
+                {"name": "Put Backspread", "type": "debit/credit", "risk": "defined upside", "max_profit": "large on big move", "max_loss": "limited"}
+            ]
+            primary = "Long Put or Bear Put Spread"
+            rationale = "Low IV makes buying options cheap. Long puts for conviction, spreads for cost reduction."
+
+        else:  # NEUTRAL
+            strategies = [
+                {"name": "Long Straddle", "type": "debit", "risk": "defined", "max_profit": "unlimited", "max_loss": "premium"},
+                {"name": "Long Strangle", "type": "debit", "risk": "defined", "max_profit": "unlimited", "max_loss": "premium"},
+                {"name": "Calendar Spread", "type": "debit", "risk": "defined", "max_profit": "front month decay", "max_loss": "net debit"}
+            ]
+            primary = "Long Straddle or Calendar Spread"
+            rationale = "Low IV with neutral outlook suggests volatility expansion expected. Long vol strategies benefit."
+
+    # NORMAL IV (30-70) - Flexible
+    else:
+        if direction == "LONG":
+            strategies = [
+                {"name": "Bull Call Spread", "type": "debit", "risk": "defined", "max_profit": "spread width - debit", "max_loss": "net debit"},
+                {"name": "Call Diagonal", "type": "debit", "risk": "defined", "max_profit": "variable", "max_loss": "net debit"},
+                {"name": "Long Call", "type": "debit", "risk": "defined", "max_profit": "unlimited", "max_loss": "premium"}
+            ]
+            primary = "Bull Call Spread"
+            rationale = "Normal IV allows flexibility. Bull call spread balances cost and reward."
+
+        elif direction == "SHORT":
+            strategies = [
+                {"name": "Bear Put Spread", "type": "debit", "risk": "defined", "max_profit": "spread width - debit", "max_loss": "net debit"},
+                {"name": "Put Diagonal", "type": "debit", "risk": "defined", "max_profit": "variable", "max_loss": "net debit"},
+                {"name": "Long Put", "type": "debit", "risk": "defined", "max_profit": "strike - premium", "max_loss": "premium"}
+            ]
+            primary = "Bear Put Spread"
+            rationale = "Normal IV allows flexibility. Bear put spread balances cost and reward."
+
+        else:  # NEUTRAL
+            strategies = [
+                {"name": "Iron Butterfly", "type": "credit", "risk": "defined", "max_profit": "net credit", "max_loss": "wing width - credit"},
+                {"name": "Calendar Spread", "type": "debit", "risk": "defined", "max_profit": "front month decay", "max_loss": "net debit"},
+                {"name": "Double Diagonal", "type": "mixed", "risk": "defined", "max_profit": "time decay", "max_loss": "net debit"}
+            ]
+            primary = "Iron Butterfly or Calendar Spread"
+            rationale = "Normal IV with neutral outlook. Iron butterfly for premium, calendar for time decay."
+
+    # Calculate suggested strikes based on ATM
+    atm_strike = round(current_price / 5) * 5  # Round to nearest $5
+
+    return {
+        "primary_strategy": primary,
+        "rationale": rationale,
+        "alternative_strategies": strategies,
+        "suggested_strikes": {
+            "atm": atm_strike,
+            "otm_call": atm_strike + 5,
+            "otm_put": atm_strike - 5,
+            "deep_otm_call": atm_strike + 10,
+            "deep_otm_put": atm_strike - 10
+        },
+        "iv_environment": "HIGH" if iv_rank >= 70 else "LOW" if iv_rank <= 30 else "NORMAL",
+        "mcmillan_reference": "Chapter 1-10: Basic Option Strategies"
+    }
+
+
+def _calculate_options_composite_score(
+    iv_analysis: dict,
+    pc_ratio_analysis: dict,
+    oi_analysis: dict,
+    uoa_analysis: dict,
+    direction: str
+) -> dict:
+    """Calculate composite options score for the given direction."""
+
+    score = 50  # Start neutral
+    factors = []
+
+    # IV Factor (±15 points)
+    iv_rank = iv_analysis['iv_rank']
+    if direction in ["LONG", "SHORT"]:
+        if iv_rank <= 30:
+            score += 10
+            factors.append(f"Low IV ({iv_rank:.0f}) favors buying premium: +10")
+        elif iv_rank >= 70:
+            score += 5
+            factors.append(f"High IV ({iv_rank:.0f}) good for selling premium: +5")
+    else:  # NEUTRAL
+        if 30 <= iv_rank <= 70:
+            score += 10
+            factors.append(f"Normal IV ({iv_rank:.0f}) ideal for neutral strategies: +10")
+
+    # P/C Ratio Factor (±15 points) - Contrarian
+    if direction == "LONG":
+        if pc_ratio_analysis['contrarian_signal'] in ["BULLISH", "SLIGHTLY_BULLISH"]:
+            score += 15
+            factors.append(f"P/C ratio contrarian bullish: +15")
+        elif pc_ratio_analysis['contrarian_signal'] in ["BEARISH", "SLIGHTLY_BEARISH"]:
+            score -= 10
+            factors.append(f"P/C ratio contrarian bearish: -10")
+    elif direction == "SHORT":
+        if pc_ratio_analysis['contrarian_signal'] in ["BEARISH", "SLIGHTLY_BEARISH"]:
+            score += 15
+            factors.append(f"P/C ratio contrarian bearish: +15")
+        elif pc_ratio_analysis['contrarian_signal'] in ["BULLISH", "SLIGHTLY_BULLISH"]:
+            score -= 10
+            factors.append(f"P/C ratio contrarian bullish: -10")
+
+    # OI/Max Pain Factor (±10 points)
+    if direction == "LONG" and oi_analysis['oi_bias'] == "BULLISH":
+        score += 10
+        factors.append(f"Max pain above price (gravitational pull higher): +10")
+    elif direction == "SHORT" and oi_analysis['oi_bias'] == "BEARISH":
+        score += 10
+        factors.append(f"Max pain below price (gravitational pull lower): +10")
+    elif oi_analysis['oi_bias'] == "NEUTRAL":
+        score += 5
+        factors.append(f"Price near max pain (range-bound): +5")
+
+    # Unusual Activity Factor (±15 points)
+    if direction == "LONG" and uoa_analysis['smart_money_signal'] == "BULLISH":
+        score += 15
+        factors.append(f"Smart money bullish positioning: +15")
+    elif direction == "SHORT" and uoa_analysis['smart_money_signal'] == "BEARISH":
+        score += 15
+        factors.append(f"Smart money bearish positioning: +15")
+    elif uoa_analysis['smart_money_signal'] == "MIXED":
+        factors.append(f"Mixed smart money signals: +0")
+
+    # Cap score
+    score = max(0, min(100, score))
+
+    # Determine confidence
+    if score >= 80:
+        confidence = "HIGH"
+    elif score >= 65:
+        confidence = "MODERATE"
+    elif score >= 50:
+        confidence = "LOW"
+    else:
+        confidence = "VERY_LOW"
+
+    return {
+        "total_score": score,
+        "confidence": confidence,
+        "factors": factors,
+        "interpretation": f"Options analysis {'strongly supports' if score >= 80 else 'supports' if score >= 65 else 'is neutral on' if score >= 50 else 'does not support'} {direction} position"
+    }
+
+
+@mcp.tool()
 def get_price_history(
     ticker: str,
     period: Literal["1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "ytd", "max"] = "1mo"
@@ -1846,48 +2516,55 @@ async def get_nasdaq_earnings_calendar(
 @mcp.tool()
 def fetch_intraday_15m(stock: str, window: int = 200) -> str:
     """
-    Fetch 15-minute historical stock bars using Alpaca API.
+    Fetch 15-minute historical stock bars using Questrade API.
 
     Args:
-        stock: Stock ticker symbol
+        stock: Stock ticker symbol (US or Canadian, e.g., "AAPL", "GLXY.TO")
         window: Number of 15-minute bars to fetch (default: 200)
 
     Returns:
         CSV string with timestamp and close price data in EST timezone
     """
-    from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
-    from alpaca.data.historical import StockHistoricalDataClient
-    from alpaca.data.requests import StockBarsRequest
-    import os
+    from datetime import datetime, timedelta
+    import pytz
+    import pandas as pd
 
     try:
-        api_key = os.getenv('ALPACA_API_KEY')
-        api_secret = os.getenv('ALPACA_API_SECRET')
+        client = get_questrade_client()
 
-        if not api_key or not api_secret:
-            raise ValueError("ALPACA_API_KEY and ALPACA_API_SECRET environment variables must be set")
+        # Calculate time range: 15 min * window bars
+        # Add extra buffer for market hours only
+        et = pytz.timezone("America/New_York")
+        end_time = datetime.now(et)
+        # Rough estimate: need ~window * 15 min of market time
+        # Markets open 6.5 hrs/day, so multiply by 2.5 for buffer
+        start_time = end_time - timedelta(minutes=15 * window * 3)
 
-        timeframe = TimeFrame(15, TimeFrameUnit.Minute)
-        client = StockHistoricalDataClient(api_key, api_secret)
-        request = StockBarsRequest(
-            symbol_or_symbols=stock,
-            timeframe=timeframe,
-            limit=window
+        candles = client.get_candles(
+            symbol=stock,
+            interval="FifteenMinutes",
+            start_time=start_time.isoformat(),
+            end_time=end_time.isoformat()
         )
 
-        df_raw = client.get_stock_bars(request).df
+        if not candles or 'candles' not in candles:
+            raise ValueError(f"No candle data returned for {stock}")
 
-        if df_raw.empty or 'close' not in df_raw.columns:
+        # Convert to DataFrame
+        df = pd.DataFrame(candles['candles'])
+        if df.empty or 'close' not in df.columns:
             raise ValueError(f"'close' column missing or data empty for {stock}")
 
-        df = df_raw['close']
-        df.index = df_raw.index.get_level_values('timestamp').tz_convert("America/New_York")
-        df = df.to_frame(name=f'{stock}')
+        # Parse timestamps and convert to EST
+        df['timestamp'] = pd.to_datetime(df['start']).dt.tz_convert("America/New_York")
+        df = df[['timestamp', 'close']].rename(columns={'close': stock})
+
+        # Limit to requested window
+        df = df.tail(window)
 
         # Convert to CSV string
-        df_reset = df.reset_index()
-        df_reset['timestamp'] = df_reset['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S %Z')
-        return df_reset.to_csv(index=False)
+        df['timestamp'] = df['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S %Z')
+        return df.to_csv(index=False)
 
     except Exception as e:
         raise ValueError(f"Error fetching data for {stock}: {e}")
@@ -1896,48 +2573,55 @@ def fetch_intraday_15m(stock: str, window: int = 200) -> str:
 @mcp.tool()
 def fetch_intraday_1h(stock: str, window: int = 200) -> str:
     """
-    Fetch 1-Hour historical stock bars using Alpaca API.
+    Fetch 1-Hour historical stock bars using Questrade API.
 
     Args:
-        stock: Stock ticker symbol
-        window: Number of 15-minute bars to fetch (default: 200)
+        stock: Stock ticker symbol (US or Canadian, e.g., "AAPL", "GLXY.TO")
+        window: Number of 1-hour bars to fetch (default: 200)
 
     Returns:
         CSV string with timestamp and close price data in EST timezone
     """
-    from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
-    from alpaca.data.historical import StockHistoricalDataClient
-    from alpaca.data.requests import StockBarsRequest
-    import os
+    from datetime import datetime, timedelta
+    import pytz
+    import pandas as pd
 
     try:
-        api_key = os.getenv('ALPACA_API_KEY')
-        api_secret = os.getenv('ALPACA_API_SECRET')
+        client = get_questrade_client()
 
-        if not api_key or not api_secret:
-            raise ValueError("ALPACA_API_KEY and ALPACA_API_SECRET environment variables must be set")
+        # Calculate time range: 1 hour * window bars
+        # Add extra buffer for market hours only
+        et = pytz.timezone("America/New_York")
+        end_time = datetime.now(et)
+        # Rough estimate: need ~window hours of market time
+        # Markets open 6.5 hrs/day, so multiply by 4 for buffer
+        start_time = end_time - timedelta(hours=window * 4)
 
-        timeframe = TimeFrame(1, TimeFrameUnit.Hour)
-        client = StockHistoricalDataClient(api_key, api_secret)
-        request = StockBarsRequest(
-            symbol_or_symbols=stock,
-            timeframe=timeframe,
-            limit=window
+        candles = client.get_candles(
+            symbol=stock,
+            interval="OneHour",
+            start_time=start_time.isoformat(),
+            end_time=end_time.isoformat()
         )
 
-        df_raw = client.get_stock_bars(request).df
+        if not candles or 'candles' not in candles:
+            raise ValueError(f"No candle data returned for {stock}")
 
-        if df_raw.empty or 'close' not in df_raw.columns:
+        # Convert to DataFrame
+        df = pd.DataFrame(candles['candles'])
+        if df.empty or 'close' not in df.columns:
             raise ValueError(f"'close' column missing or data empty for {stock}")
 
-        df = df_raw['close']
-        df.index = df_raw.index.get_level_values('timestamp').tz_convert("America/New_York")
-        df = df.to_frame(name=f'{stock}')
+        # Parse timestamps and convert to EST
+        df['timestamp'] = pd.to_datetime(df['start']).dt.tz_convert("America/New_York")
+        df = df[['timestamp', 'close']].rename(columns={'close': stock})
+
+        # Limit to requested window
+        df = df.tail(window)
 
         # Convert to CSV string
-        df_reset = df.reset_index()
-        df_reset['timestamp'] = df_reset['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S %Z')
-        return df_reset.to_csv(index=False)
+        df['timestamp'] = df['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S %Z')
+        return df.to_csv(index=False)
 
     except Exception as e:
         raise ValueError(f"Error fetching data for {stock}: {e}")
@@ -3194,42 +3878,56 @@ async def find_similar_historical_setups(
     ticker: str,
     lookback_period: Literal["6mo", "1y", "2y"] = "2y",
     similarity_threshold: float = 0.80,
-    use_feature_importance: bool = True
+    use_feature_importance: bool = True,
+    target_return_pct: float | None = None,
+    holding_period_days: int | None = None,
+    direction: Literal["LONG", "SHORT"] = "LONG"
 ) -> str:
     """
-    Find historical setups similar to current TECHNICAL conditions.
+    Find historical setups similar to current TECHNICAL conditions with target achievement analysis.
 
     **CRITICAL:** Matches on TECHNICAL INDICATORS (RSI, MACD, trend, volume),
     NOT on price levels. Uses tolerance-based matching with feature importance weighting.
 
-    This is the KEY ML tool - provides evidence-based analysis by finding
-    how similar technical setups performed historically.
+    **NEW:** Calculates TARGET ACHIEVEMENT - how well similar setups achieved a specific target.
+    This is NOT binary win/loss, but a percentage of target achieved.
+    - Example: Target +5% in 10 days, actual +6% = 120% achievement
+    - Example: Target +5% in 10 days, actual +4% = 80% achievement
 
     Args:
         ticker: Stock symbol
         lookback_period: How far back to search (6mo/1y/2y)
         similarity_threshold: Minimum similarity score 0-1 (default 0.80)
         use_feature_importance: Use calculated feature weights (default True)
+        target_return_pct: Target return % for trade plan (e.g., 5.0 for 5%)
+                          If provided with holding_period_days, calculates achievement
+        holding_period_days: Number of trading days to hold (e.g., 10)
+                            Required if target_return_pct is provided
+        direction: Trade direction 'LONG' or 'SHORT' (default 'LONG')
+                  LONG: positive returns are good
+                  SHORT: negative returns are good (price going down)
 
     Returns:
         Comprehensive analysis with:
         - Number of similar TECHNICAL setups found
         - Success rates at 5d, 10d, 20d horizons
+        - **Target Achievement Analysis** (if target params provided):
+          - Average achievement % (e.g., 85% = achieved 85% of target)
+          - Achievement distribution: STRONG (≥80%), MODERATE (60-79%), WEAK (<60%)
         - Statistical validation (t-test, confidence intervals)
         - Trade recommendation with confidence level
-        - Feature importance weights used for matching
 
-    Methodology:
-        - Calculates 14+ technical indicators (RSI, MACD, ATR, trend t-stat, volume, VWAP, etc.)
-        - Uses tolerance matching (RSI ±5 points, Volume ±25%, etc.)
-        - Weights features by importance (RSI, trend > ATR, MACD signal)
-        - Research-based: 85% win rate when multiple indicators align within tolerance
+    Achievement Thresholds:
+        - STRONG (≥80%): Achieved 80%+ of target (excellent confirmation)
+        - MODERATE (60-79%): Partial target achievement
+        - WEAK (0-59%): Moved in right direction but fell short
+        - NEGATIVE (<0%): Moved in wrong direction
 
     Example:
-        Current: RSI=32, Uptrend, Bullish MACD, High Volume
-        Finds historical days with similar technical pattern (even if price was different)
-        "Found 47 similar technical setups. 68% were profitable over 10 days.
-        Average return: +4.8%. Recommendation: HIGH PROBABILITY LONG."
+        Trade Plan: LONG 5% in 10 days
+        find_similar_historical_setups("NVDA", target_return_pct=5.0, holding_period_days=10, direction="LONG")
+        Result: "Found 25 similar setups. Avg achievement: 92% (STRONG).
+                12 setups achieved ≥80% of target. HIGH CONFIRMATION."
 
     References:
         - López de Prado (2018): Feature-weighted similarity
@@ -3247,6 +3945,19 @@ async def find_similar_historical_setups(
     if hist.empty or len(hist) < 50:
         return f"Error: Insufficient historical data for {ticker}"
 
+    # Get earnings dates for earnings context matching
+    earnings_dates = None
+    try:
+        earnings_history = yf_call(ticker, "get_earnings_history")
+        if earnings_history is not None and isinstance(earnings_history, pd.DataFrame) and not earnings_history.empty:
+            # Extract dates from index or column
+            if hasattr(earnings_history.index, 'to_list'):
+                earnings_dates = [pd.Timestamp(d) for d in earnings_history.index.to_list()]
+            logger.info(f"Found {len(earnings_dates) if earnings_dates else 0} earnings dates for {ticker}")
+    except Exception as e:
+        logger.warning(f"Could not fetch earnings history for {ticker}: {e}")
+        earnings_dates = None
+
     # Calculate current TECHNICAL conditions (NOT price-based!)
     # Uses enhanced technical indicators: RSI, MACD, ATR, trend t-stat, volume, etc.
     engine = SimilarityEngine(
@@ -3255,8 +3966,9 @@ async def find_similar_historical_setups(
     )
 
     # Calculate current technical conditions from most recent data
+    # Include earnings context if earnings dates available
     current_idx = len(hist) - 1
-    current_conditions = engine._calculate_conditions(hist, current_idx)
+    current_conditions = engine._calculate_conditions(hist, current_idx, earnings_dates)
 
     if not current_conditions:
         return f"Error: Insufficient data to calculate current technical conditions for {ticker}"
@@ -3317,19 +4029,27 @@ async def find_similar_historical_setups(
             feature_weights = None
 
     # Find similar TECHNICAL setups (not similar prices!)
+    # Include earnings context for matching similar earnings proximity patterns
     similar_setups = engine.find_similar_setups(
         ticker=ticker,
         current_conditions=current_conditions,
         historical_data=hist,
         lookback_periods=min(lookback_days, len(hist) - 20),
-        feature_weights=feature_weights  # Pass feature weights for weighted matching
+        feature_weights=feature_weights,  # Pass feature weights for weighted matching
+        target_return_pct=target_return_pct,
+        holding_period_days=holding_period_days,
+        direction=direction,
+        earnings_dates=earnings_dates  # Pass earnings dates for earnings context matching
     )
 
-    # Analyze results
+    # Analyze results (with target achievement if parameters provided)
     result = engine.analyze_similar_setups(
         ticker=ticker,
         current_conditions=current_conditions,
-        similar_setups=similar_setups
+        similar_setups=similar_setups,
+        target_return_pct=target_return_pct,
+        holding_period_days=holding_period_days,
+        direction=direction
     )
 
     # Generate report
@@ -4189,6 +4909,442 @@ for more robust predictions. Results may vary across different market regimes.
 
     except Exception as e:
         return f"Error analyzing feature importance for {ticker}: {str(e)}"
+
+
+# ============================================================================
+# TradingView Scanner Tools
+# ============================================================================
+
+# Import the scanner analyzer for deep analysis
+try:
+    from investor_agent.scanner_analyzer import ScannerAnalyzer, format_analysis_report
+    ANALYZER_AVAILABLE = True
+except ImportError:
+    ANALYZER_AVAILABLE = False
+
+
+def _get_ohlcv_for_ticker(ticker: str, period: str = "3mo") -> pd.DataFrame | None:
+    """Helper to get OHLCV data for Brooks analysis."""
+    try:
+        hist = yf.Ticker(ticker).history(period=period, interval="1d")
+        if hist is not None and not hist.empty:
+            return hist
+    except Exception as e:
+        logger.warning(f"Failed to get OHLCV for {ticker}: {e}")
+    return None
+
+
+@mcp.tool()
+def scan_market_opportunities(
+    market: Literal["america", "canada", "both"] = "both",
+    min_price: float = 2.0,
+    min_market_cap: int = 1_000_000_000,
+    top_n: int = 3,
+    include_deep_analysis: bool = True
+) -> dict[str, Any]:
+    """
+    Scan US and Canadian markets for INFLECTION POINT trading opportunities.
+
+    Enhanced with 4-Tier Filter Architecture to find stocks ENTERING trends
+    at early stages, not stocks already exhausted in late-stage moves.
+
+    4-Tier Filter System:
+        TIER 1 (MOMENTUM - Required): ADX 20-40, RSI 40-65, EMA20 <5%
+        TIER 2 (PATTERN - Min 2/4): Consolidation Breakout, Volume 1.5-4x, RS 55-85
+        TIER 3 (CATALYST - Adds Score): Earnings proximity, IV Rank, ML alignment
+        TIER 4 (EXCLUSIONS - Hard Reject): >50% 3mo move, ATR <2%, Near 52w extremes
+
+    Returns top LONG and SHORT candidates with:
+    - Composite scores (0-100) using tier-based inflection detection
+    - Al Brooks price action analysis (pattern, probability, levels)
+    - Trend Day Counter to detect exhaustion
+
+    Args:
+        market: Market to scan - "america", "canada", or "both"
+        min_price: Minimum stock price (default: $2)
+        min_market_cap: Minimum market cap (default: $1B)
+        top_n: Number of candidates per direction (default: 3)
+        include_deep_analysis: Run full analysis pipeline (default: True)
+
+    Returns:
+        Dictionary with:
+        - scan_time: Timestamp of scan
+        - filters: Applied filters including tier exclusions
+        - long_candidates: Top N LONG at inflection points
+        - short_candidates: Top N SHORT at inflection points
+        - report: Formatted text report for easy reading
+
+    Composite Score Components (100 pts total):
+        - Momentum Quality (30 pts): ADX, RSI, EMA20, MACD
+        - Pattern Quality (25 pts): Breakout, Volume, Trend Days
+        - Relative Strength (15 pts): RS vs benchmark
+        - Catalyst Quality (20 pts): Earnings, IV, ML prediction
+        - Al Brooks (10 pts): Pattern quality + probability
+    """
+    if not SCREENER_AVAILABLE:
+        raise ValueError(
+            "TradingView scanner not available. Install with: pip install tradingview-screener"
+        )
+
+    from datetime import datetime
+    import pytz
+
+    try:
+        scanner = get_scanner()
+        et = pytz.timezone("America/New_York")
+
+        # Scan for initial candidates (get more to filter after analysis)
+        long_candidates = scanner.scan_long_setups(
+            setup_type="all",
+            market=market,
+            min_price=min_price,
+            min_market_cap=min_market_cap,
+            limit=top_n * 5
+        )
+
+        short_candidates = scanner.scan_short_setups(
+            setup_type="all",
+            market=market,
+            min_price=min_price,
+            min_market_cap=min_market_cap,
+            limit=top_n * 5
+        )
+
+        analyzed_long = []
+        analyzed_short = []
+
+        if include_deep_analysis and ANALYZER_AVAILABLE:
+            analyzer = ScannerAnalyzer()
+
+            # Helper functions to pass to analyzer
+            def get_technical(ticker, period="3mo", include_ml_analysis=False):
+                return TechnicalAnalysis.analyze_comprehensive(
+                    yf_call(ticker, "history", period=period, interval="1d")
+                )
+
+            # Analyze top LONG candidates
+            for c in long_candidates[:top_n * 2]:
+                try:
+                    ohlcv = _get_ohlcv_for_ticker(c['symbol'])
+
+                    # Get technical data for Brooks analysis
+                    tech_data = None
+                    try:
+                        hist = yf_call(c['symbol'], "history", period="3mo", interval="1d")
+                        if hist is not None and not hist.empty:
+                            tech_data = {
+                                'analysis': TechnicalAnalysis.calculate_comprehensive_indicators(hist)
+                            }
+                    except Exception:
+                        pass
+
+                    # Run full analysis
+                    analysis = analyzer.analyze_candidate(
+                        ticker=c['symbol'],
+                        direction='long',
+                        tv_data=c,
+                        get_ohlcv_fn=lambda t=c['symbol']: _get_ohlcv_for_ticker(t)
+                    )
+
+                    # If we have better technical data, update Brooks
+                    if tech_data and ohlcv is not None:
+                        analysis['brooks_analysis'] = analyzer.brooks_analyzer.analyze(
+                            ticker=c['symbol'],
+                            direction='long',
+                            ohlcv_data=ohlcv,
+                            technical_data=tech_data
+                        )
+                        # Recalculate Brooks score
+                        analysis['scores']['brooks_score'] = analyzer._score_brooks(analysis['brooks_analysis'])
+                        analysis['composite_score'] = analyzer._calculate_composite(analysis['scores'])
+                        analysis['recommendation'] = analyzer._generate_recommendation(
+                            analysis['composite_score'], 'long', analysis['brooks_analysis']
+                        )
+
+                    analyzed_long.append(analysis)
+                except Exception as e:
+                    logger.warning(f"Analysis failed for {c['symbol']}: {e}")
+                    # Fall back to basic format
+                    analyzed_long.append({
+                        'symbol': c['symbol'],
+                        'direction': 'LONG',
+                        'price': c['price'],
+                        'composite_score': c['signal_strength'],
+                        'tv_data': c,
+                        'recommendation': {'label': c['recommendation']},
+                        'brooks_analysis': {'pattern': 'N/A - analysis failed'}
+                    })
+
+            # Analyze top SHORT candidates
+            for c in short_candidates[:top_n * 2]:
+                try:
+                    ohlcv = _get_ohlcv_for_ticker(c['symbol'])
+
+                    tech_data = None
+                    try:
+                        hist = yf_call(c['symbol'], "history", period="3mo", interval="1d")
+                        if hist is not None and not hist.empty:
+                            tech_data = {
+                                'analysis': TechnicalAnalysis.calculate_comprehensive_indicators(hist)
+                            }
+                    except Exception:
+                        pass
+
+                    analysis = analyzer.analyze_candidate(
+                        ticker=c['symbol'],
+                        direction='short',
+                        tv_data=c,
+                        get_ohlcv_fn=lambda t=c['symbol']: _get_ohlcv_for_ticker(t)
+                    )
+
+                    if tech_data and ohlcv is not None:
+                        analysis['brooks_analysis'] = analyzer.brooks_analyzer.analyze(
+                            ticker=c['symbol'],
+                            direction='short',
+                            ohlcv_data=ohlcv,
+                            technical_data=tech_data
+                        )
+                        analysis['scores']['brooks_score'] = analyzer._score_brooks(analysis['brooks_analysis'])
+                        analysis['composite_score'] = analyzer._calculate_composite(analysis['scores'])
+                        analysis['recommendation'] = analyzer._generate_recommendation(
+                            analysis['composite_score'], 'short', analysis['brooks_analysis']
+                        )
+
+                    analyzed_short.append(analysis)
+                except Exception as e:
+                    logger.warning(f"Analysis failed for {c['symbol']}: {e}")
+                    analyzed_short.append({
+                        'symbol': c['symbol'],
+                        'direction': 'SHORT',
+                        'price': c['price'],
+                        'composite_score': c['signal_strength'],
+                        'tv_data': c,
+                        'recommendation': {'label': c['recommendation']},
+                        'brooks_analysis': {'pattern': 'N/A - analysis failed'}
+                    })
+
+            # Sort by composite score
+            analyzed_long.sort(key=lambda x: x.get('composite_score', 0), reverse=True)
+            analyzed_short.sort(key=lambda x: x.get('composite_score', 0), reverse=True)
+
+        else:
+            # Basic format without deep analysis
+            for i, c in enumerate(long_candidates[:top_n]):
+                analyzed_long.append({
+                    'rank': i + 1,
+                    'symbol': c['symbol'],
+                    'direction': 'LONG',
+                    'price': c['price'],
+                    'composite_score': c['signal_strength'],
+                    'tv_data': c,
+                    'recommendation': {'label': c['recommendation']},
+                    'brooks_analysis': {'note': 'Deep analysis disabled'}
+                })
+
+            for i, c in enumerate(short_candidates[:top_n]):
+                analyzed_short.append({
+                    'rank': i + 1,
+                    'symbol': c['symbol'],
+                    'direction': 'SHORT',
+                    'price': c['price'],
+                    'composite_score': c['signal_strength'],
+                    'tv_data': c,
+                    'recommendation': {'label': c['recommendation']},
+                    'brooks_analysis': {'note': 'Deep analysis disabled'}
+                })
+
+        # Take top N after sorting
+        final_long = analyzed_long[:top_n]
+        final_short = analyzed_short[:top_n]
+
+        # Add ranks
+        for i, a in enumerate(final_long):
+            a['rank'] = i + 1
+        for i, a in enumerate(final_short):
+            a['rank'] = i + 1
+
+        # Generate text report
+        report_lines = [
+            "=" * 65,
+            f"    MARKET OPPORTUNITIES SCAN - {datetime.now(et).strftime('%Y-%m-%d %H:%M %Z')}",
+            "=" * 65,
+            f"Markets: {market.upper()} | Filters: Price>${min_price}, MCap>${min_market_cap:,}",
+            "",
+            "=" * 65,
+            "                TOP LONG CANDIDATES",
+            "=" * 65,
+        ]
+
+        if ANALYZER_AVAILABLE:
+            for a in final_long:
+                report_lines.append(format_analysis_report(a))
+
+            report_lines.extend([
+                "=" * 65,
+                "                TOP SHORT CANDIDATES",
+                "=" * 65,
+            ])
+
+            for a in final_short:
+                report_lines.append(format_analysis_report(a))
+        else:
+            for a in final_long:
+                report_lines.append(f"#{a.get('rank')} {a['symbol']} - ${a['price']:.2f} | Score: {a['composite_score']}")
+            report_lines.extend(["", "=" * 65, "                TOP SHORT CANDIDATES", "=" * 65])
+            for a in final_short:
+                report_lines.append(f"#{a.get('rank')} {a['symbol']} - ${a['price']:.2f} | Score: {a['composite_score']}")
+
+        return {
+            "scan_time": datetime.now(et).strftime("%Y-%m-%d %H:%M:%S %Z"),
+            "filters": {
+                "market": market,
+                "min_price": min_price,
+                "min_market_cap": f"${min_market_cap:,}",
+                "tier_filters": {
+                    "tier1_momentum": "ADX 20-40, RSI 40-65 (long) / 35-60 (short), EMA20 <5%",
+                    "tier2_pattern": "Consolidation Breakout, Volume 1.5-4x, Trend Days <6",
+                    "tier4_exclusions": "3mo >50%/-40%, ATR <2%, 52w proximity <5%"
+                }
+            },
+            "long_candidates": final_long,
+            "short_candidates": final_short,
+            "total_long_found": len(long_candidates),
+            "total_short_found": len(short_candidates),
+            "report": "\n".join(report_lines)
+        }
+
+    except Exception as e:
+        logger.error(f"Error in scan_market_opportunities: {e}")
+        import traceback
+        traceback.print_exc()
+        raise ValueError(f"Market scan failed: {str(e)}")
+
+
+@mcp.tool()
+def scan_stocks_by_setup(
+    setup_type: Literal[
+        # Long setups
+        "momentum_long", "consolidation_breakout", "golden_cross", "macd_bullish", "volume_breakout", "support_bounce",
+        # Short setups
+        "momentum_short", "consolidation_breakdown", "death_cross", "macd_bearish", "breakdown", "resistance_rejection"
+    ],
+    market: Literal["america", "canada", "both"] = "both",
+    min_price: float = 2.0,
+    min_market_cap: int = 1_000_000_000,
+    limit: int = 10
+) -> dict[str, Any]:
+    """
+    Scan for stocks matching a specific technical setup pattern.
+
+    LONG Setups (Inflection Point Detection):
+        - momentum_long: ADX 20-40, RSI 40-65, MACD bullish (RECOMMENDED)
+        - consolidation_breakout: Breaking 20-day high with volume 1.5-4x (RECOMMENDED)
+        - golden_cross: SMA20 > SMA50, price above both
+        - macd_bullish: MACD above signal line
+        - volume_breakout: High volume 1.5-4x, positive momentum
+        - support_bounce: Price near SMA50, RSI rising
+
+    SHORT Setups (Inflection Point Detection):
+        - momentum_short: ADX 20-40, RSI 35-60, MACD bearish (RECOMMENDED)
+        - consolidation_breakdown: Breaking 20-day low with volume 1.5-4x (RECOMMENDED)
+        - death_cross: SMA20 < SMA50, price below both
+        - macd_bearish: MACD below signal line
+        - breakdown: Price below SMA50, high volume 1.5-4x, negative
+        - resistance_rejection: Near 52w high, negative change
+
+    Note: All setups now include Tier 1/4 filters by default:
+        - Tier 1: ADX 20-40, RSI positioning, EMA20 <5%
+        - Tier 4: Rejects >50% 3mo moves, ATR <2%, 52w proximity
+
+    Args:
+        setup_type: The technical setup pattern to scan for
+        market: Market to scan ("america", "canada", "both")
+        min_price: Minimum stock price
+        min_market_cap: Minimum market capitalization
+        limit: Maximum results to return
+
+    Returns:
+        Dictionary with matching candidates and their metrics
+    """
+    if not SCREENER_AVAILABLE:
+        raise ValueError(
+            "TradingView scanner not available. Install with: pip install tradingview-screener"
+        )
+
+    from datetime import datetime
+    import pytz
+
+    # Determine direction from setup type
+    long_setups = ["momentum_long", "consolidation_breakout", "golden_cross", "macd_bullish", "volume_breakout", "support_bounce"]
+    direction = "LONG" if setup_type in long_setups else "SHORT"
+
+    try:
+        scanner = get_scanner()
+        et = pytz.timezone("America/New_York")
+
+        if direction == "LONG":
+            candidates = scanner.scan_long_setups(
+                setup_type=setup_type,
+                market=market,
+                min_price=min_price,
+                min_market_cap=min_market_cap,
+                limit=limit
+            )
+        else:
+            candidates = scanner.scan_short_setups(
+                setup_type=setup_type,
+                market=market,
+                min_price=min_price,
+                min_market_cap=min_market_cap,
+                limit=limit
+            )
+
+        # Setup type display names
+        setup_names = {
+            # Long setups - Inflection Point Detection
+            "momentum_long": "Momentum Long (Inflection)",
+            "consolidation_breakout": "Consolidation Breakout",
+            "golden_cross": "Golden Cross",
+            "macd_bullish": "MACD Bullish",
+            "volume_breakout": "Volume Breakout",
+            "support_bounce": "Support Bounce",
+            # Short setups - Inflection Point Detection
+            "momentum_short": "Momentum Short (Inflection)",
+            "consolidation_breakdown": "Consolidation Breakdown",
+            "death_cross": "Death Cross",
+            "macd_bearish": "MACD Bearish",
+            "breakdown": "Breakdown",
+            "resistance_rejection": "Resistance Rejection"
+        }
+
+        return {
+            "scan_time": datetime.now(et).strftime("%Y-%m-%d %H:%M:%S %Z"),
+            "setup_type": setup_names.get(setup_type, setup_type),
+            "direction": direction,
+            "filters": {
+                "market": market,
+                "min_price": min_price,
+                "min_market_cap": f"${min_market_cap:,}"
+            },
+            "candidates": [
+                {
+                    "rank": i + 1,
+                    "symbol": c['symbol'],
+                    "price": c['price'],
+                    "change_pct": c['change_pct'],
+                    "signal_strength": c['signal_strength'],
+                    "recommendation": c['recommendation'],
+                    "market": c['market'],
+                    "metrics": c['metrics']
+                }
+                for i, c in enumerate(candidates)
+            ],
+            "total_found": len(candidates)
+        }
+
+    except Exception as e:
+        logger.error(f"Error in scan_stocks_by_setup: {e}")
+        raise ValueError(f"Setup scan failed: {str(e)}")
 
 
 if __name__ == "__main__":

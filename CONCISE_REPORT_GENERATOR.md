@@ -1,8 +1,10 @@
 # Concise Trading Report Generator
 
-Fast analysis with bullet points for data, detailed Al Brooks and Trading Plan.
+Fast analysis with bullet points for data, detailed Al Brooks, McMillan Options, and Trading Plan.
 
-**Structure:** ~185 lines | **Time:** 30 minutes | **Framework:** 9-Phase Institutional
+**Structure:** ~210 lines | **Time:** 35 minutes | **Framework:** 10-Phase Institutional
+
+**Methodology:** Al Brooks (Price Action) + McMillan (Options Strategy)
 
 ---
 
@@ -27,31 +29,37 @@ Fast analysis with bullet points for data, detailed Al Brooks and Trading Plan.
 
 ## QUICK DATA SUMMARY (Phases 1-6)
 
-### Phase 1: Fundamentals (19.6%) - [BULLISH/BEARISH/NEUTRAL] [✓/✗]
+### Phase 1: Fundamentals (17.9%) - [BULLISH/BEARISH/NEUTRAL] [✓/✗]
 - F-Score: X/9 ([STRONG/WEAK]) [calculate_fundamental_scores_tool]
 - Z-Score: X.XX ([SAFE/GREY/DISTRESS]) [calculate_fundamental_scores_tool]
 - Revenue: +/-XX.X% YoY [get_ticker_data]
 - ROE: XX.X%, EPS: $X.XX [get_ticker_data]
 - **Score: XX/100** → XX.X pts
 
-### Phase 2: Catalysts (15.2%) - [BULLISH/BEARISH/NEUTRAL]
+### Phase 2: Catalysts (13.4%) - [BULLISH/BEARISH/NEUTRAL]
 - Last earnings: [Date] ([Beat/Miss] +/-XX%) [get_earnings_history]
 - Next earnings: [Date] [get_nasdaq_earnings_calendar]
 - Recent news: "[Headline]" [get_ticker_data]
 - **Score: XX/100** → XX.X pts
 
-### Phase 3: Smart Money (17.9%) - [BULLISH/BEARISH/NEUTRAL] [✓/✗]
-- Insider activity: [Description] [get_insider_trades]
-- Options P/C: X.XX ([Bullish/Bearish]) [get_options]
-- Unusual activity: [Description] [get_options]
+### Phase 3: McMillan Options Strategy (17.9%) ⭐ NEW - [BULLISH/BEARISH/NEUTRAL] [✓/✗]
+- IV Rank: XX% ([HIGH >70 / LOW <30 / NORMAL]) [analyze_options_mcmillan]
+- P/C Ratio: X.XX ([Contrarian Bullish/Bearish/Neutral]) [analyze_options_mcmillan]
+- Max Pain: $XXX.XX ([Above/Below/At] price) [analyze_options_mcmillan]
+- Smart Money: [BULLISH/BEARISH/MIXED/NO_SIGNAL] [analyze_options_mcmillan]
+- **Strategy:** [Bull Put Spread / Long Call / Iron Condor / etc.] [analyze_options_mcmillan]
 - **Score: XX/100** → XX.X pts
 
-### Phase 4: Institutions (4.5%) - [ACCUMULATING/DISTRIBUTING/MIXED]
+### Phase 4: Insiders (4.5%) - [BUYING/SELLING/MIXED]
+- Insider activity: [Description] [get_insider_trades]
+- **Score: XX/100** → XX.X pts
+
+### Phase 5: Institutions (4.5%) - [ACCUMULATING/DISTRIBUTING/MIXED]
 - Top holders: [Vanguard X%, BlackRock X%] [get_institutional_holders]
 - 13F changes: [+/-X% net] [get_institutional_holders]
 - **Score: XX/100** → XX.X pts
 
-### Phase 5: Technical (17.9%) - [BULLISH/BEARISH/NEUTRAL] [✓/✗]
+### Phase 6: Technical (17.9%) - [BULLISH/BEARISH/NEUTRAL] [✓/✗]
 - RSI: XX.X ([Overbought/Neutral/Oversold]) [analyze_technical]
 - MACD: [Bullish/Bearish] (X.XX) [analyze_technical]
 - Price vs EMA20: +/-XX.X%, vs VWAP: +/-XX.X% [analyze_technical]
@@ -60,13 +68,13 @@ Fast analysis with bullet points for data, detailed Al Brooks and Trading Plan.
 - OBV: [Accumulation/Distribution] [analyze_volume_tool]
 - **Score: XX/100** → XX.X pts
 
-### Phase 6: Market Context (5.3%) - [BULLISH/BEARISH/NEUTRAL]
+### Phase 7: Market Context (5.3%) - [BULLISH/BEARISH/NEUTRAL]
 - Fear & Greed: XX.X ([Extreme Fear/Fear/Neutral/Greed/Extreme Greed]) [get_cnn_fear_greed_index]
 - **Score: XX/100** → XX.X pts
 
 ---
 
-## PHASE 7: AL BROOKS PRICE ACTION (19.6%) ⭐ CRITICAL
+## PHASE 8: AL BROOKS PRICE ACTION (17.9%) ⭐ CRITICAL
 
 ### A. Always-In Direction
 - **Current:** [LONG/SHORT] since [Date] ([reason])
@@ -139,27 +147,64 @@ Fast analysis with bullet points for data, detailed Al Brooks and Trading Plan.
 
 ---
 
-## PHASE 8: HISTORICAL CONFIRMATION (0% Weight)
+## PHASE 9: HISTORICAL CONFIRMATION (0% Weight)
 
+**⚠️ CRITICAL:** Use ACTUAL Trading Plan targets from Phase 10, NOT hardcoded values!
+
+**Call with dynamic targets:**
+```python
+# Get targets from YOUR Trading Plan (Phase 9)
+# Example: If PT1 = 3.6%, PT2 = 5.6%, holding = 10 days
+find_similar_historical_setups(
+    ticker="XXXX",
+    target_return_pct=3.6,      # Use YOUR PT1 or PT2 from Trading Plan
+    holding_period_days=10,     # Use YOUR holding period from Trading Plan
+    direction="LONG"            # Use YOUR direction from Trading Plan
+)
+```
+
+### Summary
 - **Setups Found:** XX [find_similar_historical_setups]
-- **[LONG/SHORT] Success:** XX%
+- **Target:** X.X% in XX days ([LONG/SHORT]) ← MUST match Trading Plan!
+- **Avg Achievement:** XX.X% ([STRONG/MODERATE/WEAK])
+- **Hit Target Rate:** XX% (XX/XX setups)
 - **Confidence:** [HIGH/MEDIUM/LOW]
-- **Status:** [✅ STRONG / ⚠️ LIMITED / ✗ WEAK]
+
+### Trading Plan Validation (Top 10)
+
+| Date | Sim% | Actual | Target | Achieve | Status |
+|------|------|--------|--------|---------|--------|
+| YYYY-MM-DD | XX.X% | +X.XX% | X.X% | +XXX.X% | ✅ HIT |
+| YYYY-MM-DD | XX.X% | +X.XX% | X.X% | +XX.X% | 🟡 PARTIAL |
+| YYYY-MM-DD | XX.X% | -X.XX% | X.X% | -XX.X% | ❌ WRONG |
+| ... | ... | ... | ... | ... | ... |
+
+**Status Legend:** ✅ HIT (≥100%) | 🟡 PARTIAL (60-99%) | 🟠 WEAK (0-59%) | ❌ WRONG (<0%)
+
+### Achievement Distribution
+| Category | Count | Rate |
+|----------|-------|------|
+| STRONG (≥80%) | XX | XX% |
+| MODERATE (60-79%) | XX | XX% |
+| WEAK (0-59%) | XX | XX% |
+| NEGATIVE (<0%) | XX | XX% |
+
+**Status:** [✅ STRONG / ⚠️ LIMITED / ✗ WEAK]
 
 ---
 
-## TRADING PLAN 🎯
+## TRADING PLAN 🎯 (Phase 10)
 
 ### Weighted Score ([LONG/SHORT])
 ```
-Fundamentals:  XX.X pts (XX/100 × 19.6%)
-Catalysts:     XX.X pts (XX/100 × 15.2%)
-Options:       XX.X pts (XX/100 × 13.4%)
+Fundamentals:  XX.X pts (XX/100 × 17.9%)
+Catalysts:     XX.X pts (XX/100 × 13.4%)
+McMillan Opts: XX.X pts (XX/100 × 17.9%) ⭐ NEW
 Insiders:      XX.X pts (XX/100 × 4.5%)
 Institutions:  XX.X pts (XX/100 × 4.5%)
 Technical:     XX.X pts (XX/100 × 17.9%)
 Context:       XX.X pts (XX/100 × 5.3%)
-Al Brooks:     XX.X pts (XX/100 × 19.6%)
+Al Brooks:     XX.X pts (XX/100 × 17.9%)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 TOTAL:         XX.X/100 ([HIGH/MODERATE/LOW] CONVICTION [LONG/SHORT])
 ```
@@ -194,10 +239,12 @@ TOTAL:         XX.X/100 ([HIGH/MODERATE/LOW] CONVICTION [LONG/SHORT])
 |--------|-------|
 | Weighted Score | XX.X/100 |
 | Brooks Probability | XX% |
+| **McMillan Options Score** | **XX/100** ⭐ NEW |
+| **Options Strategy** | **[Strategy Name]** ⭐ NEW |
 | Historical | XX% [LONG/SHORT] |
 | Confidence | [HIGH/MEDIUM/LOW] |
 
-**Bottom Line:** [1-2 sentence summary with key thesis and action]
+**Bottom Line:** [1-2 sentence summary with key thesis, options strategy, and action]
 
 ---
 
@@ -209,23 +256,32 @@ TOTAL:         XX.X/100 ([HIGH/MODERATE/LOW] CONVICTION [LONG/SHORT])
 ## WORKFLOW
 
 ```python
-# PHASE 1-6: Data Collection (10 min) - BULLET POINTS ONLY
+# PHASE 1-7: Data Collection (12 min) - BULLET POINTS ONLY
 get_ticker_data(), calculate_fundamental_scores_tool()
 get_earnings_history(), get_nasdaq_earnings_calendar()
-get_options(), get_insider_trades(), get_institutional_holders()
+analyze_options_mcmillan(ticker, direction="LONG")  # ⭐ NEW - McMillan Options
+get_insider_trades(), get_institutional_holders()
 analyze_technical(), analyze_ml_enhanced(), calculate_relative_strength_tool()
 analyze_volume_tool(), get_cnn_fear_greed_index()
 
-# PHASE 7: Al Brooks (15 min) - DETAILED
+# PHASE 8: Al Brooks (15 min) - DETAILED
 # Bar-by-bar, patterns, probability factors, context adjustments
 
-# PHASE 8: Historical (2 min) - BRIEF
-find_similar_historical_setups()
-
-# PHASE 9: Trading Plan (3 min) - DETAILED
+# PHASE 10: Trading Plan (3 min) - DETAILED FIRST!
 # Weighted score, position sizing, action plan
+# DETERMINE: PT1, PT2, holding period, direction, options strategy
+
+# PHASE 9: Historical (2 min) - USE TRADING PLAN TARGETS!
+# ⚠️ MUST use actual targets from Phase 10
+find_similar_historical_setups(
+    ticker="XXXX",
+    target_return_pct=PT1_or_PT2,  # From YOUR Trading Plan
+    holding_period_days=YOUR_HOLD, # From YOUR Trading Plan
+    direction="LONG/SHORT"         # From YOUR Trading Plan
+)
 ```
 
 ---
 
-**Time:** 30 minutes | **Output:** ~185 lines | **Quality:** Institutional-grade
+**Time:** 35 minutes | **Output:** ~210 lines | **Quality:** Institutional-grade
+**Methodology:** Al Brooks (Price Action) + McMillan (Options Strategy)

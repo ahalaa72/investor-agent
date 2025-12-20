@@ -1,8 +1,12 @@
 # Comprehensive Trading Report Generator
 
-Generate institutional-grade reports integrating all investor-agent tools with Al Brooks methodology.
+Generate institutional-grade reports integrating all investor-agent tools with Al Brooks methodology and McMillan options strategy.
 
-**Report Structure:** 12 sections | **Time:** 90 minutes | **Framework:** 9-Phase Institutional
+**Report Structure:** 13 sections | **Time:** 100 minutes | **Framework:** 10-Phase Institutional
+
+**Key Methodologies:**
+- **Al Brooks** - Price Action (Trading Price Action series)
+- **McMillan** - Options Strategy (Options as a Strategic Investment, 5th Ed.) ⭐ NEW
 
 ---
 
@@ -76,6 +80,7 @@ else:
 - `get_financial_statements()`
 - `calculate_fundamental_scores_tool()`
 - `get_options()`
+- `analyze_options_mcmillan()` ⭐ NEW - McMillan Options Strategy
 - `get_insider_trades()`
 - `get_institutional_holders()`
 - `get_earnings_history()`
@@ -400,7 +405,175 @@ When a tool fails:
 
 ---
 
-### 6. CATALYST VERIFICATION (Phase 2 - 15.2%)
+### 6. McMILLAN OPTIONS STRATEGY (Phase 3 - 17.9%) ⭐ NEW
+
+**Reference:** Lawrence McMillan, "Options as a Strategic Investment" (5th Edition)
+
+#### A. Implied Volatility Analysis
+
+**📊 IV METRICS:**
+
+| Metric | Value | Interpretation |
+|--------|-------|----------------|
+| **Current IV** | XX.X% | ATM option implied volatility |
+| **IV Rank** | XX% | Current IV vs 52-week range (0-100) |
+| **IV Percentile** | XX% | % of days IV was lower |
+| **52W IV High** | XX.X% | Historical ceiling |
+| **52W IV Low** | XX.X% | Historical floor |
+| **IV Environment** | **[HIGH/LOW/NORMAL]** | Strategy selection driver |
+
+**IV Interpretation:**
+- **HIGH IV (>70 rank):** Sell premium strategies - IV likely to contract
+- **LOW IV (<30 rank):** Buy premium strategies - IV likely to expand
+- **NORMAL IV:** Flexible strategy selection based on direction
+
+**McMillan Reference:** Chapter 28 - Volatility Trading
+
+#### B. Put/Call Ratio Analysis
+
+**📊 P/C RATIO METRICS:**
+
+| Metric | Value | Signal |
+|--------|-------|--------|
+| **Volume P/C Ratio** | X.XX | [Bullish <0.7 / Neutral 0.7-0.9 / Bearish >0.9] |
+| **OI P/C Ratio** | X.XX | [Positioning bias] |
+| **Call Volume** | XXX,XXX | Total call contracts |
+| **Put Volume** | XXX,XXX | Total put contracts |
+| **Sentiment** | [EXTREMELY_BEARISH/BEARISH/NEUTRAL/BULLISH/EXTREMELY_BULLISH] |
+| **Contrarian Signal** | **[BULLISH/BEARISH/NEUTRAL]** | McMillan contrarian interpretation |
+
+**P/C Interpretation:**
+[Detailed explanation of what P/C ratio suggests about market sentiment]
+
+**McMillan Reference:** Chapter 24 - Stock Option Strategies
+
+#### C. Open Interest Analysis
+
+**📊 MAX PAIN & KEY LEVELS:**
+
+| Metric | Value | Impact |
+|--------|-------|--------|
+| **Max Pain Strike** | $XXX.XX | Where options sellers profit most |
+| **Current Price** | $XXX.XX | Market price |
+| **Distance to Max Pain** | +/-XX.X% | Gravitational pull direction |
+| **OI Bias** | [BULLISH/BEARISH/NEUTRAL] | Price magnet effect |
+
+**Top OI Strikes:**
+
+| Type | Strike | OI | Significance |
+|------|--------|-----|-------------|
+| 🔵 Call | $XXX | XXX,XXX | Resistance / Call wall |
+| 🔵 Call | $XXX | XXX,XXX | Secondary resistance |
+| 🔴 Put | $XXX | XXX,XXX | Support / Put wall |
+| 🔴 Put | $XXX | XXX,XXX | Secondary support |
+
+**Max Pain Interpretation:**
+[Explanation of how max pain affects expected price movement]
+
+**McMillan Reference:** Chapter 25 - Index Option Strategies
+
+#### D. Unusual Options Activity (Smart Money)
+
+**📊 UOA DETECTION:**
+
+| Type | Strike | Volume | OI | V/OI Ratio | Signal |
+|------|--------|--------|-----|------------|--------|
+| [CALL/PUT] | $XXX | XX,XXX | X,XXX | XX.X | [ITM/OTM] |
+| [CALL/PUT] | $XXX | XX,XXX | X,XXX | XX.X | [ITM/OTM] |
+| ... | ... | ... | ... | ... | ... |
+
+**UOA Criteria:** Volume > 2x Open Interest + Volume > 100 contracts
+
+**Smart Money Signal:** [BULLISH/BEARISH/MIXED/NO_SIGNAL]
+
+**Interpretation:**
+[Explanation of what unusual activity suggests about institutional positioning]
+
+**McMillan Reference:** Chapter 36 - Portfolio Management
+
+#### E. Greeks Assessment
+
+**📊 ATM GREEKS:**
+
+| Greek | Call | Put | Impact |
+|-------|------|-----|--------|
+| **Delta** | X.XX | -X.XX | Directional exposure |
+| **Gamma** | X.XXXX | X.XXXX | Rate of delta change |
+| **Theta** | -$X.XX | -$X.XX | Daily time decay |
+| **Vega** | $X.XX | $X.XX | IV sensitivity |
+
+**Greeks Source:** [yfinance_estimated / questrade]
+
+**Greeks Interpretation:**
+- **High Gamma Near ATM:** Expect rapid delta changes
+- **Theta Decay:** Time working for/against position
+- **Vega Exposure:** How IV changes affect position
+
+#### F. McMillan Strategy Selection Matrix
+
+**📊 OPTIMAL STRATEGY:**
+
+| Factor | Current | Impact |
+|--------|---------|--------|
+| **IV Environment** | [HIGH/LOW/NORMAL] | Strategy type driver |
+| **Direction** | [LONG/SHORT/NEUTRAL] | Directional bias |
+| **Holding Period** | XX days | Time horizon |
+
+**PRIMARY STRATEGY RECOMMENDATION:**
+
+**[Strategy Name]** (e.g., Bull Put Spread, Long Call, Iron Condor)
+
+**Rationale:**
+[McMillan-based explanation of why this strategy is optimal for current IV + direction]
+
+**Alternative Strategies:**
+
+| Strategy | Type | Risk | Max Profit | Max Loss |
+|----------|------|------|------------|----------|
+| [Strategy 1] | Credit/Debit | Defined/Undefined | [Description] | [Description] |
+| [Strategy 2] | Credit/Debit | Defined/Undefined | [Description] | [Description] |
+| [Strategy 3] | Credit/Debit | Defined/Undefined | [Description] | [Description] |
+
+**Suggested Strikes:**
+
+| Strike Type | Price | Description |
+|-------------|-------|-------------|
+| ATM | $XXX | At-the-money |
+| OTM Call | $XXX | Out-of-the-money call strike |
+| OTM Put | $XXX | Out-of-the-money put strike |
+| Deep OTM Call | $XXX | Far out-of-the-money call |
+| Deep OTM Put | $XXX | Far out-of-the-money put |
+
+#### G. McMillan Options Composite Score
+
+**📊 OPTIONS SCORE:**
+
+| Factor | Points | Max | Interpretation |
+|--------|--------|-----|----------------|
+| IV Environment | +XX | 15 | [Favorable/Unfavorable] |
+| P/C Contrarian | +XX | 15 | [Aligned/Conflicting] |
+| Max Pain Bias | +XX | 10 | [Supportive/Opposing] |
+| UOA Signal | +XX | 15 | [Confirming/Mixed] |
+| **BASE** | 50 | 50 | Starting neutral |
+| **TOTAL** | **XX/100** | 100 | **[HIGH/MODERATE/LOW] Confidence** |
+
+**Options Summary:**
+- **Score:** XX/100
+- **Confidence:** [HIGH/MODERATE/LOW]
+- **Strategy:** [Recommended strategy]
+- **IV Environment:** [HIGH/LOW/NORMAL]
+- **Smart Money:** [BULLISH/BEARISH/MIXED]
+
+**Bottom Line:**
+[2-3 sentence summary of McMillan options analysis and recommended strategy with specific strikes]
+
+**Tools:** `analyze_options_mcmillan(ticker, direction, holding_period_days)`
+
+---
+
+### 7. CATALYST VERIFICATION (Phase 2 - 13.4%)
+
+**Note:** Catalyst weight reduced from 15.2% to 13.4% to accommodate McMillan Options Strategy (17.9%)
 
 **Primary Catalyst:**
 - Event: [Earnings / Product Launch / Partnership]
@@ -419,7 +592,7 @@ When a tool fails:
 
 ---
 
-### 7. MACRO & SECTOR CONTEXT (Phase 6 - 5.3%) ⭐
+### 8. MACRO & SECTOR CONTEXT (Phase 7 - 5.3%) ⭐
 
 **Market Environment:**
 - **Fear & Greed Index:** XX ([Extreme Fear <20 / Fear 20-45 / Neutral 45-55 / Greed 55-80 / Extreme Greed >80])
@@ -463,7 +636,7 @@ SECTOR RANK: X/XX stocks (Top XX%)
 
 ---
 
-### 8. FEATURE IMPORTANCE ANALYSIS (Phase 5 - 5.4% of 17.9%)
+### 9. FEATURE IMPORTANCE ANALYSIS (Phase 6 - 5.4% of 17.9%)
 
 **Which indicators matter for THIS stock?**
 
@@ -496,7 +669,7 @@ For [TICKER], the most important factor is [Feature 1] at [current value], which
 
 ---
 
-### 9. ML-ENHANCED ANALYSIS (Phase 5A - 9.8% of 17.9% Technical) ⭐ MANDATORY
+### 10. ML-ENHANCED ANALYSIS (Phase 6A - 9.8% of 17.9% Technical) ⭐ MANDATORY
 
 **Machine Learning Probability Assessment**
 
@@ -579,20 +752,63 @@ For [TICKER], the most important factor is [Feature 1] at [current value], which
 
 ---
 
-### 10. HISTORICAL CONFIRMATION (Phase 8 - 0% Weight) ⚠️ MANDATORY
+### 11. HISTORICAL CONFIRMATION (Phase 9 - 0% Weight) ⚠️ MANDATORY
 
 **⚠️ CRITICAL:** Confirmation only, NOT weighted in final score
 
+**⚠️ CRITICAL:** Use ACTUAL Trading Plan targets from Section 11, NOT hardcoded values!
+
+**Call with dynamic targets from YOUR Trading Plan:**
+```python
+# Get targets from YOUR Trading Plan (Section 11)
+# Example: If PT1 = 3.6%, PT2 = 5.6%, holding = 10 days
+find_similar_historical_setups(
+    ticker="XXXX",
+    target_return_pct=3.6,      # Use YOUR PT1 or PT2 from Trading Plan
+    holding_period_days=10,     # Use YOUR holding period from Trading Plan
+    direction="LONG"            # Use YOUR direction from Trading Plan
+)
+```
+
 **Similar Historical Setups (2-year lookback):**
 
-**📊 Results:**
+**📊 Trading Plan Target:** ← MUST match YOUR Trading Plan!
+- **Direction:** [LONG/SHORT]
+- **Target Return:** X.X%
+- **Holding Period:** XX trading days
+
+**📊 Results Summary:**
 - **Similar Setups Found:** XX setups
+- **Avg Achievement:** XX.X% ([STRONG/MODERATE/WEAK])
+- **Hit Target Rate:** XX% (XX/XX setups)
 - **Success Rate (10-day):** XX.X% profitable
 - **Average Return:** +X.X%
-- **Win/Loss:** XX wins, XX losses
-- **Best Return:** +X.X%
-- **Worst Return:** -X.X%
 - **Risk/Reward:** X.X:1
+
+**📊 Trading Plan Validation (Per Setup):**
+
+| Date | Sim% | Actual | Target | Achieve | Status |
+|------|------|--------|--------|---------|--------|
+| YYYY-MM-DD | XX.X% | +X.XX% | X.X% | +XXX.X% | ✅ HIT |
+| YYYY-MM-DD | XX.X% | +X.XX% | X.X% | +XX.X% | 🟡 PARTIAL |
+| YYYY-MM-DD | XX.X% | +X.XX% | X.X% | +XX.X% | 🟠 WEAK |
+| YYYY-MM-DD | XX.X% | -X.XX% | X.X% | -XX.X% | ❌ WRONG |
+| ... | ... | ... | ... | ... | ... |
+
+**Status Legend:**
+- ✅ HIT TARGET (≥100%): Achieved full target or exceeded
+- 🟡 PARTIAL (60-99%): Achieved 60-99% of target
+- 🟠 WEAK (0-59%): Moved right direction but fell short
+- ❌ WRONG WAY (<0%): Moved opposite to trade direction
+
+**📊 Achievement Distribution:**
+
+| Category | Count | Rate | Interpretation |
+|----------|-------|------|----------------|
+| STRONG (≥80%) | XX | XX% | Achieved 80%+ of target |
+| MODERATE (60-79%) | XX | XX% | Achieved 60-79% of target |
+| WEAK (0-59%) | XX | XX% | Right direction, fell short |
+| NEGATIVE (<0%) | XX | XX% | Wrong direction |
 
 **📈 Statistical Validation:**
 - **95% Confidence Interval:** [XX%, XX%]
@@ -602,22 +818,25 @@ For [TICKER], the most important factor is [Feature 1] at [current value], which
 
 **Confirmation Status:**
 
-✅ **STRONG** (≥60% success rate): Analysis validated by historical evidence
-⚠️ **WEAK** (<60% success rate): Conflicts with analysis, lower confidence
-⚠️ **LIMITED** (low sample count): Use with caution, note sample size
+✅ **STRONG** (≥60% hit target OR avg achievement ≥80%): Analysis validated
+⚠️ **MODERATE** (40-59% hit target OR avg achievement 60-79%): Partial validation
+⚠️ **WEAK** (<40% hit target OR avg achievement <60%): Conflicts with analysis
+⚠️ **LIMITED** (low sample count <5): Use with caution
 
 **Comparison to Baseline:**
 - ML-Enhanced System: XX.X% accuracy
 - Simple Indicators: XX.X% accuracy
 - Improvement: +XX.X percentage points
 
-**📌 Bottom Line:** Historical data shown for validation, NOT driving score
+**📌 Bottom Line:** Historical data validates trading plan - XX% of similar setups achieved target
 
-**Tools:** `find_similar_historical_setups()`
+**Tools:** `find_similar_historical_setups(ticker, target_return_pct=YOUR_PT, holding_period_days=YOUR_HOLD, direction=YOUR_DIR)`
+
+**⚠️ REMINDER:** Run Section 11 (Trading Plan) FIRST to determine PT1/PT2/holding period, THEN run this section with those actual values!
 
 ---
 
-### 11. TRADE PLAN 🎯 (Phase 9)
+### 12. TRADE PLAN 🎯 (Phase 10)
 
 #### A. Direction Decision
 
@@ -678,39 +897,40 @@ For [TICKER], the most important factor is [Feature 1] at [current value], which
 
 #### C. Probability Assessment
 
-**WEIGHTED SCORE (Phases 1-7):**
+**WEIGHTED SCORE (Phases 1-8):**
 
 | Phase | Raw Score | Weight | Weighted Points |
 |-------|-----------|--------|-----------------|
-| Fundamentals | XX/100 | 19.6% | XX pts |
-| Catalysts | XX/100 | 15.2% | XX pts |
-| Options Flow | XX/100 | 13.4% | XX pts |
-| Insider Trading | XX/100 | 4.5% | XX pts |
-| Institutional Holdings | XX/100 | 4.5% | XX pts |
-| Technical Analysis | XX/100 | 17.9% | XX pts |
+| Fundamentals (Phase 1) | XX/100 | 17.9% | XX pts |
+| Catalysts (Phase 2) | XX/100 | 13.4% | XX pts |
+| **McMillan Options (Phase 3)** ⭐ | **XX/100** | **17.9%** | **XX pts** |
+| Insider Trading (Phase 4) | XX/100 | 4.5% | XX pts |
+| Institutional Holdings (Phase 5) | XX/100 | 4.5% | XX pts |
+| Technical Analysis (Phase 6) | XX/100 | 17.9% | XX pts |
 | └─ ML Signals (9.8%) | - | - | - |
 | └─ Indicators (8.1%) | - | - | - |
-| Market Context | XX/100 | 5.3% | XX pts |
-| Al Brooks | XX% | 19.6% | XX pts |
+| Market Context (Phase 7) | XX/100 | 5.3% | XX pts |
+| Al Brooks (Phase 8) | XX% | 17.9% | XX pts |
 | **TOTAL** | - | **100.0%** | **XX/100** |
 
 **NOTE:** Weights sum to exactly 100% - NO normalization needed
+**NEW:** McMillan Options Strategy now a primary component (17.9% weight)
 
-**PHASE 7: BROOKS PROBABILITY (Context-Informed):**
+**PHASE 8: BROOKS PROBABILITY (Context-Informed):**
 
 | Component | Value | Impact |
 |-----------|-------|--------|
 | Base Pattern | XX% | [High 2/Low 1/etc.] |
 | + Fundamentals | +XX% | F-Score X/9 |
 | + Catalyst | +XX% | X days to event |
-| + Options | +XX% | Gamma squeeze |
+| + **McMillan Options** | +XX% | IV environment + strategy |
 | + Insiders | +XX% | $XXM buying |
 | + Institutions | +XX% | Accumulation |
 | + Technicals | +XX% | RS>70, breakout |
 | + Market | +XX% | Greed>70, sector lead |
 | **Final Brooks Probability** | **XX%** | **(vs XX% base)** |
 
-**PHASE 8: HISTORICAL CONFIRMATION (0% Weight):**
+**PHASE 9: HISTORICAL CONFIRMATION (0% Weight):**
 
 | Metric | Value | Status |
 |--------|-------|--------|
@@ -778,7 +998,7 @@ For [TICKER], the most important factor is [Feature 1] at [current value], which
 
 ---
 
-### 12. TECHNICAL INDICATORS (Phase 5B - 8.1% of 17.9% Technical)
+### 13. TECHNICAL INDICATORS (Phase 6B - 8.1% of 17.9% Technical)
 
 **Key Levels:**
 - **Resistance:** R1 $XXX, R2 $XXX, R3 $XXX
@@ -808,43 +1028,51 @@ For [TICKER], the most important factor is [Feature 1] at [current value], which
 Before publishing:
 
 **Framework Compliance:**
-- [ ] All 9 phases executed in order
-- [ ] Phase 7 (Brooks) ran AFTER Phases 1-6
-- [ ] Phase 8 (Historical) ran AFTER Phase 7
+- [ ] All 10 phases executed in order
+- [ ] Phase 3 (McMillan Options) ran with correct direction ⭐ NEW
+- [ ] Phase 8 (Brooks) ran AFTER Phases 1-7
+- [ ] Phase 9 (Historical) ran AFTER Phase 8
 - [ ] Historical labeled "CONFIRMATION (0% weight)"
-- [ ] Weighted score uses Phases 1-7 only
+- [ ] Weighted score uses Phases 1-8 only
 
 **Visual Charts:**
 - [ ] Price Action Chart included (Section 3)
 - [ ] Supply/Demand Zones included (Section 3)
-- [ ] Position Sizing Ladder included (Section 11)
+- [ ] McMillan Options Tables included (Section 6) ⭐ NEW
+- [ ] Position Sizing Ladder included (Section 12)
 - [ ] Block Order Flow included (Section 5)
-- [ ] Peer Comparison Table included (Section 7)
-- [ ] ML Analysis Tables included (Section 9)
+- [ ] Peer Comparison Table included (Section 8)
+- [ ] ML Analysis Tables included (Section 10)
 
 **Content Quality:**
 - [ ] Executive Summary included (Section 1) with quick decision snapshot
-- [ ] Macro & Sector Context standalone (Section 7) with peer comparison
-- [ ] ML-Enhanced Analysis included (Section 9) with all tables
-- [ ] Scenario Analysis included (Section 11) with expected value calculation
+- [ ] McMillan Options Strategy included (Section 6) with IV analysis, P/C ratio, strategy ⭐ NEW
+- [ ] Macro & Sector Context standalone (Section 8) with peer comparison
+- [ ] ML-Enhanced Analysis included (Section 10) with all tables
+- [ ] Scenario Analysis included (Section 12) with expected value calculation
 - [ ] Brooks probability = context-informed (base + adjustments)
+- [ ] Options score included in probability communication ⭐ NEW
 - [ ] Historical shown separately (NOT combined with Brooks)
-- [ ] Decision matrix applied
+- [ ] Decision matrix applied (now includes Options score column)
 - [ ] All support/resistance levels specific ($XXX.XX)
 - [ ] Position sizing calculated (ATR-based)
 - [ ] Risk/reward ratio calculated (min 2:1)
+- [ ] McMillan strategy recommendation included ⭐ NEW
 
 **Probability Communication:**
 - [ ] Never claim certainty ("will go up")
 - [ ] Always cite sample size (XX setups)
 - [ ] Always show statistical significance (p-value)
 - [ ] Note sample size for confidence assessment
+- [ ] Include McMillan Options Score (XX/100) ⭐ NEW
 
 **No Circular Logic:**
 - [ ] Historical NOT used for Brooks probability
 - [ ] Historical NOT in weighted score (0%)
 - [ ] Clear separation: Analysis → Confirmation → Score
+- [ ] Options analysis independent of Brooks probability
 
 ---
 
-**Time:** 90 minutes for institutional-grade report with embedded visuals
+**Time:** 100 minutes for institutional-grade report with embedded visuals
+**Methodology:** Al Brooks (Price Action) + McMillan (Options Strategy) + López de Prado (ML)

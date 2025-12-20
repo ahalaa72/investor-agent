@@ -18,7 +18,7 @@ Reference:
 
 import numpy as np
 import pandas as pd
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Literal
 from dataclasses import dataclass
 from scipy import stats
 from datetime import datetime, timedelta
@@ -32,6 +32,7 @@ class SimilarSetup:
     conditions: Dict[str, any]
     outcomes: Dict[str, float]  # Returns at different horizons
     barrier_hit: str  # 'profit', 'stop', or 'time'
+    target_achievement: Optional[float] = None  # % of target achieved (100 = exactly hit target)
 
 
 @dataclass
@@ -81,7 +82,11 @@ class SimilarityEngine:
         current_conditions: Dict[str, any],
         historical_data: pd.DataFrame,
         lookback_periods: int = 504,  # ~2 years of trading days
-        feature_weights: Optional[Dict[str, float]] = None
+        feature_weights: Optional[Dict[str, float]] = None,
+        target_return_pct: Optional[float] = None,
+        holding_period_days: Optional[int] = None,
+        direction: Literal['LONG', 'SHORT'] = 'LONG',
+        earnings_dates: Optional[List[pd.Timestamp]] = None
     ) -> List[SimilarSetup]:
         """
         Find historical setups similar to current conditions using feature-weighted matching.
@@ -96,9 +101,17 @@ class SimilarityEngine:
             lookback_periods: Number of periods to search back
             feature_weights: Optional feature importance weights from calculate_feature_importance_analysis()
                            If None, uses research-based default weights
+            target_return_pct: Target return percentage for trade plan (e.g., 5.0 for 5%)
+                             If provided, calculates target achievement for each similar setup
+            holding_period_days: Number of trading days to hold (e.g., 10)
+                               Required if target_return_pct is provided
+            direction: Trade direction 'LONG' or 'SHORT' (default 'LONG')
+            earnings_dates: Optional list of historical earnings dates for earnings context matching.
+                          If provided, similarity matching will include earnings proximity features.
 
         Returns:
             List of similar historical setups (technical patterns, NOT price patterns)
+            Each setup includes target_achievement if target parameters provided
 
         Example:
             >>> # Define current technical setup
@@ -110,27 +123,36 @@ class SimilarityEngine:
             ...     'volatility_regime': 'LOW'      # Low volatility
             ... }
             >>>
-            >>> # Find similar TECHNICAL setups (not similar prices!)
+            >>> # Find similar TECHNICAL setups with target achievement
             >>> similar = engine.find_similar_setups('AAPL', current, hist_data,
-            ...                                       feature_weights=importance_weights)
+            ...                                       target_return_pct=5.0,
+            ...                                       holding_period_days=10,
+            ...                                       direction='LONG')
             >>>
             >>> # Result: Historical days with similar RSI, trend, MACD, volume patterns
-            >>> # Even if price was completely different (e.g., $100 vs $200)
+            >>> # Each setup includes target_achievement (e.g., 120% = exceeded target by 20%)
         """
         if len(historical_data) < lookback_periods:
             lookback_periods = len(historical_data)
+
+        # Determine minimum forward days needed
+        if target_return_pct is not None and holding_period_days is not None:
+            min_forward_days = holding_period_days
+        else:
+            min_forward_days = 20  # Default for legacy outcomes
 
         # Search window: last N periods
         search_data = historical_data.iloc[-lookback_periods:]
 
         similar_setups = []
 
-        for idx in range(len(search_data) - 20):  # Need 20 days forward for outcomes
+        for idx in range(len(search_data) - min_forward_days):
             hist_date = search_data.index[idx]
 
             # Calculate historical TECHNICAL conditions at this date
             # (RSI, MACD, trend, volume - NOT price!)
-            hist_conditions = self._calculate_conditions(search_data, idx)
+            # Include earnings context if earnings_dates provided
+            hist_conditions = self._calculate_conditions(search_data, idx, earnings_dates)
 
             if not hist_conditions:
                 continue
@@ -148,6 +170,18 @@ class SimilarityEngine:
                 # Calculate forward returns
                 outcomes = self._calculate_outcomes(search_data, idx)
 
+                # Calculate target achievement if parameters provided
+                target_achievement = None
+                if target_return_pct is not None and holding_period_days is not None:
+                    outcomes_with_target, target_achievement = self._calculate_outcomes_with_target(
+                        search_data, idx, holding_period_days, target_return_pct, direction
+                    )
+                    # Merge target outcomes into main outcomes
+                    outcomes['target_return'] = outcomes_with_target['return']
+                    outcomes['target_holding_days'] = holding_period_days
+                    outcomes['target_pct'] = target_return_pct
+                    outcomes['direction'] = direction
+
                 # Determine which barrier hit (simplified)
                 barrier = self._determine_barrier_hit(outcomes)
 
@@ -156,7 +190,8 @@ class SimilarityEngine:
                     similarity_score=similarity,
                     conditions=hist_conditions,
                     outcomes=outcomes,
-                    barrier_hit=barrier
+                    barrier_hit=barrier,
+                    target_achievement=target_achievement
                 ))
 
         return similar_setups
@@ -292,16 +327,100 @@ class SimilarityEngine:
 
         return float(t_stat)
 
+    def _calculate_earnings_context(
+        self,
+        current_date: pd.Timestamp,
+        earnings_dates: List[pd.Timestamp]
+    ) -> Dict[str, any]:
+        """
+        Calculate earnings-related context for similarity matching.
+
+        This helps find similar setups that were also near earnings events,
+        enabling pattern-based probability analysis for pre/post earnings behavior.
+
+        Args:
+            current_date: The date to calculate context for
+            earnings_dates: List of historical earnings report dates
+
+        Returns:
+            Dictionary with:
+                - days_to_earnings: Days until next earnings (0-90, or 999 if unknown)
+                - days_since_earnings: Days since last earnings (0-90, or 999 if unknown)
+                - earnings_phase: PRE_EARNINGS/EARNINGS_WEEK/POST_EARNINGS/NEUTRAL
+        """
+        if not earnings_dates:
+            return {
+                'days_to_earnings': 999,
+                'days_since_earnings': 999,
+                'earnings_phase': 'NEUTRAL'
+            }
+
+        # Convert to comparable format (normalize timezone to avoid tz-aware vs tz-naive issues)
+        current = pd.Timestamp(current_date)
+        if current.tzinfo is not None:
+            current = current.tz_localize(None)
+
+        # Normalize earnings dates to tz-naive for comparison
+        normalized_earnings = []
+        for d in earnings_dates:
+            ts = pd.Timestamp(d)
+            if ts.tzinfo is not None:
+                ts = ts.tz_localize(None)
+            normalized_earnings.append(ts)
+
+        # Find nearest past and future earnings
+        past_earnings = [d for d in normalized_earnings if d <= current]
+        future_earnings = [d for d in normalized_earnings if d > current]
+
+        # Days since last earnings
+        if past_earnings:
+            last_earnings = max(past_earnings)
+            days_since = (current - last_earnings).days
+            days_since_earnings = min(days_since, 90)  # Cap at 90
+        else:
+            days_since_earnings = 999  # Unknown
+
+        # Days to next earnings (only use known dates, no estimation)
+        if future_earnings:
+            next_earnings = min(future_earnings)
+            days_to = (next_earnings - current).days
+            days_to_earnings = min(days_to, 90)  # Cap at 90
+        else:
+            # No known future earnings date - don't estimate
+            days_to_earnings = 999  # Unknown
+
+        # Determine earnings phase
+        if days_to_earnings <= 7:
+            earnings_phase = 'EARNINGS_WEEK'
+        elif days_to_earnings <= 14:
+            earnings_phase = 'PRE_EARNINGS'
+        elif days_since_earnings <= 14:
+            earnings_phase = 'POST_EARNINGS'
+        else:
+            earnings_phase = 'NEUTRAL'
+
+        return {
+            'days_to_earnings': int(days_to_earnings),
+            'days_since_earnings': int(days_since_earnings),
+            'earnings_phase': earnings_phase
+        }
+
     def _calculate_conditions(
         self,
         data: pd.DataFrame,
-        idx: int
+        idx: int,
+        earnings_dates: Optional[List[pd.Timestamp]] = None
     ) -> Dict[str, any]:
         """
         Calculate comprehensive technical market conditions at a given index.
 
         Uses proper technical indicators instead of simplified price metrics.
         This enables finding similar TECHNICAL SETUPS, not similar prices.
+
+        Args:
+            data: Historical OHLCV data
+            idx: Index in the data to calculate conditions for
+            earnings_dates: Optional list of earnings dates for earnings context
         """
         if idx < 50:  # Need enough history for indicators
             return {}
@@ -383,7 +502,8 @@ class SimilarityEngine:
         else:
             macd_trend = 'NEUTRAL'
 
-        return {
+        # Build base conditions dict
+        conditions = {
             # Momentum Indicators
             'rsi': float(rsi),
             'macd_line': float(macd_line),
@@ -409,6 +529,14 @@ class SimilarityEngine:
             # Momentum
             'momentum_20d': float(momentum_20d)
         }
+
+        # 12. Earnings Context (if earnings_dates provided)
+        if earnings_dates:
+            current_date = data.index[idx]
+            earnings_context = self._calculate_earnings_context(current_date, earnings_dates)
+            conditions.update(earnings_context)
+
+        return conditions
 
     def _get_indicator_tolerance(self, indicator_name: str) -> float:
         """
@@ -443,7 +571,11 @@ class SimilarityEngine:
             'atr_pct': 0.005,  # ±0.5% ATR percentage
 
             # Momentum
-            'momentum_20d': 0.05  # ±5% momentum
+            'momentum_20d': 0.05,  # ±5% momentum
+
+            # Earnings Event Parameters
+            'days_to_earnings': 5,      # ±5 days (e.g., 10 days matches 5-15)
+            'days_since_earnings': 5    # ±5 days
         }
 
         return tolerances.get(indicator_name, 0.15)  # Default 15% tolerance
@@ -455,15 +587,17 @@ class SimilarityEngine:
         Based on research showing RSI (97% accuracy), multi-indicator confluence.
         These can be overridden by actual feature importance analysis.
 
+        Includes earnings event weights to capture pre/post earnings patterns.
+
         Returns:
             Dictionary of feature weights (sum = 1.0)
         """
         return {
             # High Importance (based on research)
-            'rsi': 0.15,  # RSI has 97% accuracy in research
-            'trend_direction': 0.15,  # Trend is critical
-            'macd_trend': 0.10,
-            'volume_ratio': 0.10,
+            'rsi': 0.13,  # RSI has 97% accuracy in research
+            'trend_direction': 0.13,  # Trend is critical
+            'macd_trend': 0.08,
+            'volume_ratio': 0.09,
 
             # Medium Importance
             'trend_tstat': 0.08,
@@ -477,7 +611,11 @@ class SimilarityEngine:
             'momentum_20d': 0.04,
             'atr_pct': 0.03,
             'macd_line': 0.02,
-            'macd_signal': 0.01
+            'macd_signal': 0.01,
+
+            # Earnings Event Parameters (5% total - only applied for non-NEUTRAL phases)
+            'earnings_phase': 0.04,     # Categorical - pre/post earnings patterns
+            'days_to_earnings': 0.01    # Numeric - proximity to next earnings
         }
 
     def _calculate_similarity(
@@ -517,6 +655,16 @@ class SimilarityEngine:
         # Use provided weights or defaults
         if feature_weights is None:
             feature_weights = self._get_default_feature_weights()
+
+        # Make earnings weights conditional on current earnings phase
+        # If current setup is NEUTRAL (>14 days from any earnings), set earnings weights to 0
+        current_earnings_phase = current.get('earnings_phase', 'NEUTRAL')
+        if current_earnings_phase == 'NEUTRAL':
+            # Create a copy to avoid modifying the original weights
+            feature_weights = feature_weights.copy()
+            feature_weights['earnings_phase'] = 0.0
+            feature_weights['days_to_earnings'] = 0.0
+            feature_weights['days_since_earnings'] = 0.0
 
         # Calculate weighted differences with tolerance
         weighted_diffs = []
@@ -624,11 +772,108 @@ class SimilarityEngine:
         else:
             return 'time'
 
+    def calculate_target_achievement(
+        self,
+        actual_return: float,
+        target_return: float,
+        direction: Literal['LONG', 'SHORT']
+    ) -> float:
+        """
+        Calculate what percentage of target was achieved.
+
+        For LONG trades: positive returns are good
+        For SHORT trades: negative returns are good (stock went down)
+
+        Examples:
+            - LONG target +5%, actual +6% = 120% achievement
+            - LONG target +5%, actual +4% = 80% achievement
+            - LONG target +5%, actual -2% = -40% achievement (went wrong way)
+            - SHORT target -5%, actual -6% = 120% achievement
+            - SHORT target -5%, actual -4% = 80% achievement
+            - SHORT target -5%, actual +2% = -40% achievement (went wrong way)
+
+        Args:
+            actual_return: Actual return observed (as decimal, e.g., 0.05 for 5%)
+            target_return: Target return from trade plan (as decimal, always positive)
+            direction: 'LONG' or 'SHORT'
+
+        Returns:
+            Achievement percentage (100 = exactly hit target, >100 = exceeded, <0 = went wrong way)
+        """
+        if target_return == 0:
+            return 0.0
+
+        # For SHORT trades, we want the price to go DOWN
+        # So if actual_return is negative, that's good for shorts
+        if direction == 'SHORT':
+            # Invert actual return for shorts
+            # If price went down 5% (actual = -0.05), for a short that's +5% gain
+            effective_return = -actual_return
+        else:
+            # LONG: positive return is good
+            effective_return = actual_return
+
+        # Calculate achievement as percentage of target
+        # target_return is always positive (e.g., 0.05 for 5% target)
+        achievement = (effective_return / target_return) * 100
+
+        return achievement
+
+    def _calculate_outcomes_with_target(
+        self,
+        data: pd.DataFrame,
+        idx: int,
+        holding_period_days: int,
+        target_return_pct: float,
+        direction: Literal['LONG', 'SHORT']
+    ) -> Tuple[Dict[str, float], float]:
+        """
+        Calculate forward returns and target achievement for a specific holding period.
+
+        Args:
+            data: Historical OHLCV data
+            idx: Index of entry point
+            holding_period_days: Number of trading days to hold
+            target_return_pct: Target return percentage (e.g., 5.0 for 5%)
+            direction: 'LONG' or 'SHORT'
+
+        Returns:
+            Tuple of (outcomes dict, target_achievement percentage)
+        """
+        if 'Close' not in data.columns:
+            return {'return': 0.0}, 0.0
+
+        entry_price = data['Close'].iloc[idx]
+        target_return_decimal = target_return_pct / 100.0
+
+        if idx + holding_period_days < len(data):
+            exit_price = data['Close'].iloc[idx + holding_period_days]
+            actual_return = (exit_price / entry_price - 1)
+        else:
+            actual_return = 0.0
+
+        # Calculate achievement
+        achievement = self.calculate_target_achievement(
+            actual_return, target_return_decimal, direction
+        )
+
+        outcomes = {
+            'return': actual_return,
+            'holding_days': holding_period_days,
+            'target_pct': target_return_pct,
+            'direction': direction
+        }
+
+        return outcomes, achievement
+
     def analyze_similar_setups(
         self,
         ticker: str,
         current_conditions: Dict[str, any],
-        similar_setups: List[SimilarSetup]
+        similar_setups: List[SimilarSetup],
+        target_return_pct: Optional[float] = None,
+        holding_period_days: Optional[int] = None,
+        direction: Literal['LONG', 'SHORT'] = 'LONG'
     ) -> SimilarityAnalysisResult:
         """
         Analyze similar setups and generate comprehensive results.
@@ -637,9 +882,13 @@ class SimilarityEngine:
             ticker: Stock symbol
             current_conditions: Current market conditions
             similar_setups: List of similar historical setups
+            target_return_pct: Target return percentage (e.g., 5.0 for 5%)
+            holding_period_days: Number of trading days to hold
+            direction: Trade direction 'LONG' or 'SHORT'
 
         Returns:
             Complete analysis with statistics and recommendations
+            If target parameters provided, includes achievement-based metrics
         """
         if len(similar_setups) < self.min_similar_setups:
             return SimilarityAnalysisResult(
@@ -669,14 +918,24 @@ class SimilarityEngine:
                 }
             )
 
-        # Aggregate statistics
-        agg_stats = self._calculate_aggregate_stats(similar_setups)
+        # Aggregate statistics (with target achievement if parameters provided)
+        agg_stats = self._calculate_aggregate_stats(
+            similar_setups,
+            target_return_pct=target_return_pct,
+            holding_period_days=holding_period_days,
+            direction=direction
+        )
 
         # Statistical validation
         stat_validation = self._statistical_validation(similar_setups, agg_stats)
 
-        # Generate recommendation
-        recommendation = self._generate_recommendation(agg_stats, stat_validation)
+        # Generate recommendation (with achievement-based logic if available)
+        recommendation = self._generate_recommendation(
+            agg_stats, stat_validation,
+            target_return_pct=target_return_pct,
+            holding_period_days=holding_period_days,
+            direction=direction
+        )
 
         return SimilarityAnalysisResult(
             ticker=ticker,
@@ -690,12 +949,23 @@ class SimilarityEngine:
 
     def _calculate_aggregate_stats(
         self,
-        similar_setups: List[SimilarSetup]
+        similar_setups: List[SimilarSetup],
+        target_return_pct: Optional[float] = None,
+        holding_period_days: Optional[int] = None,
+        direction: Literal['LONG', 'SHORT'] = 'LONG'
     ) -> Dict[str, any]:
-        """Calculate aggregate statistics from similar setups"""
+        """
+        Calculate aggregate statistics from similar setups.
+
+        If target parameters provided, calculates achievement-based metrics.
+        Achievement thresholds:
+            - ≥80% = STRONG (achieved 80%+ of target)
+            - 60-79% = MODERATE
+            - <60% = WEAK
+        """
         total = len(similar_setups)
 
-        # Count profitable outcomes at different horizons
+        # Count profitable outcomes at different horizons (legacy)
         returns_5d = [s.outcomes.get('5d', 0) for s in similar_setups]
         returns_10d = [s.outcomes.get('10d', 0) for s in similar_setups]
         returns_20d = [s.outcomes.get('20d', 0) for s in similar_setups]
@@ -713,31 +983,97 @@ class SimilarityEngine:
         risk_reward = abs(avg_winner / avg_loser) if avg_loser != 0 else 0.0
 
         # Confidence interval for success rate (binomial)
-        success_rate_10d = profitable_10d / total
+        success_rate_10d = profitable_10d / total if total > 0 else 0.0
 
         # Wilson score interval (better for small samples than normal approximation)
         ci_lower, ci_upper = self._wilson_confidence_interval(
             profitable_10d, total, confidence=0.95
         )
 
-        return {
+        base_stats = {
             'total_similar': total,
             'profitable_5d': profitable_5d,
             'profitable_10d': profitable_10d,
             'profitable_20d': profitable_20d,
-            'success_rate_5d': profitable_5d / total,
+            'success_rate_5d': profitable_5d / total if total > 0 else 0.0,
             'success_rate_10d': success_rate_10d,
-            'success_rate_20d': profitable_20d / total,
-            'avg_return_5d': np.mean(returns_5d),
-            'avg_return_10d': np.mean(returns_10d),
-            'avg_return_20d': np.mean(returns_20d),
+            'success_rate_20d': profitable_20d / total if total > 0 else 0.0,
+            'avg_return_5d': np.mean(returns_5d) if returns_5d else 0.0,
+            'avg_return_10d': np.mean(returns_10d) if returns_10d else 0.0,
+            'avg_return_20d': np.mean(returns_20d) if returns_20d else 0.0,
             'avg_return_winners': avg_winner,
             'avg_return_losers': avg_loser,
             'risk_reward_ratio': risk_reward,
             'confidence_interval_95': [ci_lower, ci_upper],
-            'median_return_10d': np.median(returns_10d),
-            'std_return_10d': np.std(returns_10d)
+            'median_return_10d': np.median(returns_10d) if returns_10d else 0.0,
+            'std_return_10d': np.std(returns_10d) if returns_10d else 0.0
         }
+
+        # Add target achievement metrics if target parameters provided
+        if target_return_pct is not None and holding_period_days is not None:
+            achievements = [s.target_achievement for s in similar_setups
+                          if s.target_achievement is not None]
+
+            if achievements:
+                avg_achievement = np.mean(achievements)
+                median_achievement = np.median(achievements)
+                min_achievement = np.min(achievements)
+                max_achievement = np.max(achievements)
+                std_achievement = np.std(achievements)
+
+                # Count setups by achievement level
+                strong_count = sum(1 for a in achievements if a >= 80)  # ≥80% = STRONG
+                moderate_count = sum(1 for a in achievements if 60 <= a < 80)  # 60-79% = MODERATE
+                weak_count = sum(1 for a in achievements if 0 <= a < 60)  # 0-59% = WEAK
+                negative_count = sum(1 for a in achievements if a < 0)  # <0% = Wrong direction
+
+                total_with_achievement = len(achievements)
+                strong_rate = strong_count / total_with_achievement if total_with_achievement > 0 else 0.0
+                moderate_rate = moderate_count / total_with_achievement if total_with_achievement > 0 else 0.0
+                weak_rate = weak_count / total_with_achievement if total_with_achievement > 0 else 0.0
+                negative_rate = negative_count / total_with_achievement if total_with_achievement > 0 else 0.0
+
+                # Determine overall achievement label
+                if avg_achievement >= 80:
+                    achievement_label = 'STRONG'
+                elif avg_achievement >= 60:
+                    achievement_label = 'MODERATE'
+                elif avg_achievement >= 0:
+                    achievement_label = 'WEAK'
+                else:
+                    achievement_label = 'NEGATIVE'
+
+                # Add achievement stats
+                base_stats.update({
+                    # Target info
+                    'target_return_pct': target_return_pct,
+                    'holding_period_days': holding_period_days,
+                    'direction': direction,
+
+                    # Achievement metrics
+                    'avg_achievement': avg_achievement,
+                    'median_achievement': median_achievement,
+                    'min_achievement': min_achievement,
+                    'max_achievement': max_achievement,
+                    'std_achievement': std_achievement,
+                    'achievement_label': achievement_label,
+
+                    # Achievement distribution
+                    'strong_count': strong_count,  # ≥80%
+                    'moderate_count': moderate_count,  # 60-79%
+                    'weak_count': weak_count,  # 0-59%
+                    'negative_count': negative_count,  # <0% (wrong direction)
+
+                    'strong_rate': strong_rate,
+                    'moderate_rate': moderate_rate,
+                    'weak_rate': weak_rate,
+                    'negative_rate': negative_rate,
+
+                    # Total with valid achievement
+                    'total_with_achievement': total_with_achievement
+                })
+
+        return base_stats
 
     def _wilson_confidence_interval(
         self,
@@ -797,64 +1133,144 @@ class SimilarityEngine:
     def _generate_recommendation(
         self,
         agg_stats: Dict[str, any],
-        stat_validation: Dict[str, any]
+        stat_validation: Dict[str, any],
+        target_return_pct: Optional[float] = None,
+        holding_period_days: Optional[int] = None,
+        direction: Literal['LONG', 'SHORT'] = 'LONG'
     ) -> Dict[str, any]:
-        """Generate trading recommendation based on analysis"""
-        success_rate = agg_stats['success_rate_10d']
+        """
+        Generate trading recommendation based on analysis.
+
+        If target parameters provided, uses achievement-based logic instead of
+        legacy success rate logic.
+        """
         significant = stat_validation.get('significant_at_05', False)
         sample_adequate = stat_validation.get('sample_size_adequate', False)
 
-        # Determine if should take trade
-        take_trade = (
-            success_rate > 0.55 and  # Better than random
-            sample_adequate and       # Enough data
-            significant              # Statistically significant
-        )
+        # Use achievement-based logic if target parameters provided
+        has_achievement_data = 'avg_achievement' in agg_stats
 
-        # Confidence level
-        if success_rate > 0.70 and significant:
-            confidence = 0.85
-            confidence_label = "HIGH"
-        elif success_rate > 0.60 and significant:
-            confidence = 0.70
-            confidence_label = "MEDIUM"
-        else:
-            confidence = 0.50
-            confidence_label = "LOW"
+        if has_achievement_data:
+            # Achievement-based recommendation
+            avg_achievement = agg_stats['avg_achievement']
+            strong_rate = agg_stats.get('strong_rate', 0.0)
+            achievement_label = agg_stats.get('achievement_label', 'WEAK')
 
-        # Generate reasoning
-        reasoning_parts = []
-
-        if sample_adequate:
-            reasoning_parts.append(
-                f"Found {agg_stats['total_similar']} similar historical setups"
-            )
-        else:
-            reasoning_parts.append(
-                f"Only {agg_stats['total_similar']} similar setups found (need {stat_validation['min_required_samples']})"
+            # Determine if should take trade based on achievement
+            # Strong confirmation if avg achievement ≥60% AND strong_rate ≥40%
+            take_trade = (
+                avg_achievement >= 60 and
+                strong_rate >= 0.40 and
+                sample_adequate
             )
 
-        reasoning_parts.append(
-            f"{success_rate:.1%} success rate over 10 days"
-        )
+            # Confidence level based on achievement
+            if avg_achievement >= 80 and strong_rate >= 0.60:
+                confidence = 0.85
+                confidence_label = "HIGH"
+            elif avg_achievement >= 60 and strong_rate >= 0.40:
+                confidence = 0.70
+                confidence_label = "MEDIUM"
+            else:
+                confidence = 0.50
+                confidence_label = "LOW"
 
-        if significant:
-            p_val = stat_validation.get('p_value', 0.0)
-            reasoning_parts.append(f"Statistically significant (p={p_val:.3f})")
+            # Generate reasoning
+            reasoning_parts = []
+
+            if sample_adequate:
+                reasoning_parts.append(
+                    f"Found {agg_stats['total_similar']} similar historical setups"
+                )
+            else:
+                reasoning_parts.append(
+                    f"Only {agg_stats['total_similar']} similar setups found (need {stat_validation['min_required_samples']})"
+                )
+
+            reasoning_parts.append(
+                f"Avg target achievement: {avg_achievement:.1f}% ({achievement_label})"
+            )
+            reasoning_parts.append(
+                f"Strong setups (≥80%): {agg_stats.get('strong_count', 0)}/{agg_stats.get('total_with_achievement', 0)} ({strong_rate:.1%})"
+            )
+            reasoning_parts.append(
+                f"Direction: {direction}, Target: {target_return_pct}% in {holding_period_days} days"
+            )
+
+            reasoning = ". ".join(reasoning_parts)
+
+            expected_return_pct = (avg_achievement / 100) * target_return_pct if target_return_pct else 0
+
+            return {
+                'take_trade': take_trade,
+                'confidence': confidence,
+                'confidence_label': confidence_label,
+                'reasoning': reasoning,
+                'expected_return': expected_return_pct / 100,  # Convert to decimal
+                'expected_holding_days': holding_period_days or 10,
+                'risk_reward_ratio': agg_stats['risk_reward_ratio'],
+                'avg_achievement': avg_achievement,
+                'achievement_label': achievement_label,
+                'strong_rate': strong_rate,
+                'direction': direction,
+                'target_return_pct': target_return_pct
+            }
+
         else:
-            reasoning_parts.append("Not statistically significant")
+            # Legacy success rate based logic
+            success_rate = agg_stats['success_rate_10d']
 
-        reasoning = ". ".join(reasoning_parts)
+            # Determine if should take trade
+            take_trade = (
+                success_rate > 0.55 and  # Better than random
+                sample_adequate and       # Enough data
+                significant              # Statistically significant
+            )
 
-        return {
-            'take_trade': take_trade,
-            'confidence': confidence,
-            'confidence_label': confidence_label,
-            'reasoning': reasoning,
-            'expected_return': agg_stats['avg_return_10d'],
-            'expected_holding_days': 10,
-            'risk_reward_ratio': agg_stats['risk_reward_ratio']
-        }
+            # Confidence level
+            if success_rate > 0.70 and significant:
+                confidence = 0.85
+                confidence_label = "HIGH"
+            elif success_rate > 0.60 and significant:
+                confidence = 0.70
+                confidence_label = "MEDIUM"
+            else:
+                confidence = 0.50
+                confidence_label = "LOW"
+
+            # Generate reasoning
+            reasoning_parts = []
+
+            if sample_adequate:
+                reasoning_parts.append(
+                    f"Found {agg_stats['total_similar']} similar historical setups"
+                )
+            else:
+                reasoning_parts.append(
+                    f"Only {agg_stats['total_similar']} similar setups found (need {stat_validation['min_required_samples']})"
+                )
+
+            reasoning_parts.append(
+                f"{success_rate:.1%} success rate over 10 days"
+            )
+
+            if significant:
+                p_val = stat_validation.get('p_value', 0.0)
+                reasoning_parts.append(f"Statistically significant (p={p_val:.3f})")
+            else:
+                reasoning_parts.append("Not statistically significant")
+
+            reasoning = ". ".join(reasoning_parts)
+
+            return {
+                'take_trade': take_trade,
+                'confidence': confidence,
+                'confidence_label': confidence_label,
+                'reasoning': reasoning,
+                'expected_return': agg_stats['avg_return_10d'],
+                'expected_holding_days': 10,
+                'risk_reward_ratio': agg_stats['risk_reward_ratio']
+            }
 
 
 def generate_similarity_report(result: SimilarityAnalysisResult) -> str:
@@ -871,6 +1287,9 @@ def generate_similarity_report(result: SimilarityAnalysisResult) -> str:
     val = result.statistical_validation
     rec = result.recommendation
 
+    # Check if target achievement data is available
+    has_achievement = 'avg_achievement' in agg
+
     report = f"""# Similarity-Based Analysis Report
 
 ## Summary
@@ -879,15 +1298,78 @@ def generate_similarity_report(result: SimilarityAnalysisResult) -> str:
 - **Similar Setups Found:** {agg.get('total_similar', 0)}
 - **Recommendation:** {"TAKE TRADE" if rec['take_trade'] else "SKIP"}
 - **Confidence:** {rec['confidence_label']} ({rec['confidence']:.0%})
-
-## Current Market Conditions
 """
+
+    # Add target info if achievement-based
+    if has_achievement:
+        report += f"""
+## Trade Plan Target
+- **Direction:** {agg.get('direction', 'N/A')}
+- **Target Return:** {agg.get('target_return_pct', 0):.1f}%
+- **Holding Period:** {agg.get('holding_period_days', 0)} trading days
+"""
+
+    report += "\n## Current Market Conditions\n"
 
     for key, value in result.current_conditions.items():
         report += f"- **{key}:** {value}\n"
 
+    # Add Target Achievement section if available
+    if has_achievement:
+        report += f"""
+## Target Achievement Analysis
+
+### Achievement Summary
+- **Average Achievement:** {agg.get('avg_achievement', 0):.1f}% ({agg.get('achievement_label', 'N/A')})
+- **Median Achievement:** {agg.get('median_achievement', 0):.1f}%
+- **Min/Max:** {agg.get('min_achievement', 0):.1f}% / {agg.get('max_achievement', 0):.1f}%
+- **Std Dev:** {agg.get('std_achievement', 0):.1f}%
+
+### Achievement Distribution
+| Category | Count | Rate |
+|----------|-------|------|
+| STRONG (≥80%) | {agg.get('strong_count', 0)} | {agg.get('strong_rate', 0):.1%} |
+| MODERATE (60-79%) | {agg.get('moderate_count', 0)} | {agg.get('moderate_rate', 0):.1%} |
+| WEAK (0-59%) | {agg.get('weak_count', 0)} | {agg.get('weak_rate', 0):.1%} |
+| NEGATIVE (<0%) | {agg.get('negative_count', 0)} | {agg.get('negative_rate', 0):.1%} |
+
+**Interpretation:**
+- STRONG (≥80%): Achieved 80%+ of target (e.g., target 5%, actual ≥4%)
+- MODERATE (60-79%): Achieved 60-79% of target
+- WEAK (0-59%): Moved in right direction but fell short
+- NEGATIVE (<0%): Moved in wrong direction
+
+### Trading Plan Validation (Per Setup)
+
+| Date | Sim% | Actual | Target | Achieve | Status |
+|------|------|--------|--------|---------|--------|
+"""
+        # Add individual setup rows
+        sorted_setups = sorted(result.similar_setups, key=lambda x: x.similarity_score, reverse=True)
+        for setup in sorted_setups[:15]:  # Limit to top 15 for readability
+            date_str = setup.date.strftime('%Y-%m-%d')
+            similarity = setup.similarity_score * 100
+            actual_return = setup.outcomes.get('target_return', setup.outcomes.get('10d', 0)) * 100
+            achievement = setup.target_achievement if setup.target_achievement else 0
+            target_pct = agg.get('target_return_pct', 5.0)
+
+            # Determine status emoji
+            if achievement >= 100:
+                status = '✅ HIT'
+            elif achievement >= 60:
+                status = '🟡 PARTIAL'
+            elif achievement >= 0:
+                status = '🟠 WEAK'
+            else:
+                status = '❌ WRONG'
+
+            report += f"| {date_str} | {similarity:.1f}% | {actual_return:+.2f}% | {target_pct:.1f}% | {achievement:+.1f}% | {status} |\n"
+
+        if len(result.similar_setups) > 15:
+            report += f"\n*Showing top 15 of {len(result.similar_setups)} similar setups*\n"
+
     report += f"""
-## Historical Performance
+## Historical Performance (Legacy)
 
 ### Success Rates
 - **5-day:** {agg.get('success_rate_5d', 0):.1%} ({agg.get('profitable_5d', 0)}/{agg.get('total_similar', 0)})
@@ -922,7 +1404,16 @@ def generate_similarity_report(result: SimilarityAnalysisResult) -> str:
 - Expected Return: {rec.get('expected_return', 0):.2%}
 - Expected Holding Period: {rec.get('expected_holding_days', 0)} days
 - Risk/Reward: {rec.get('risk_reward_ratio', 0):.2f}:1
+"""
 
+    if has_achievement:
+        report += f"""
+**Achievement-Based Metrics:**
+- Avg Achievement: {rec.get('avg_achievement', 0):.1f}% ({rec.get('achievement_label', 'N/A')})
+- Strong Rate (≥80%): {rec.get('strong_rate', 0):.1%}
+"""
+
+    report += """
 ---
 *Generated with institutional-grade similarity-based backtesting*
 """

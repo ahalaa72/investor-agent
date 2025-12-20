@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "investor-agent": {
+      "command": "docker",
+      "args": [
+        "exec",
+        "-i",
+        "investor-agent-mcp",
+        "python",
+        "-m",
+        "investor_agent.server"
+      ]
+    }
+  }
+}

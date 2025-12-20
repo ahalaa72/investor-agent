@@ -6,28 +6,32 @@
 
 ## Overview
 
-The **investor-agent** is a Model Context Protocol (MCP) server that provides comprehensive financial insights and analysis to Large Language Models. It implements a **9-Phase Institutional Analysis Framework** for professional-grade stock analysis.
+The **investor-agent** is a Model Context Protocol (MCP) server that provides comprehensive financial insights and analysis to Large Language Models. It implements a **10-Phase Institutional Analysis Framework** for professional-grade stock analysis using **Al Brooks** price action and **McMillan** options strategy methodologies.
 
 ### Objectives
 
-1. **Generate Institutional-Grade Reports** - Comprehensive analysis following the 9-phase framework
+1. **Generate Institutional-Grade Reports** - Comprehensive analysis following the 10-phase framework
 2. **Context-Informed Probability Assessment** - Al Brooks price action with ML-enhanced signals
-3. **Data Integrity** - All numbers traced to specific tool outputs, zero fabrication
-4. **Real Money Discipline** - Position sizing, risk management, and validation
+3. **McMillan Options Strategy** - IV analysis, P/C ratio, max pain, unusual activity detection
+4. **Data Integrity** - All numbers traced to specific tool outputs, zero fabrication
+5. **Real Money Discipline** - Position sizing, risk management, and validation
 
-### 9-Phase Institutional Framework
+### 10-Phase Institutional Framework
 
 | Phase | Weight | Description |
 |-------|--------|-------------|
-| 1. Fundamentals | 19.6% | F-Score, Z-Score, quality metrics |
-| 2. Catalysts | 15.2% | Earnings, events, timing |
-| 3. Options Flow | 13.4% | Put/Call ratio, gamma, unusual activity |
+| 1. Fundamentals | 17.9% | F-Score, Z-Score, quality metrics |
+| 2. Catalysts | 13.4% | Earnings, events, timing |
+| 3. **McMillan Options** | **17.9%** | IV Rank, P/C Ratio, Max Pain, UOA, Greeks ⭐ |
 | 4. Insider Trading | 4.5% | Cluster buying/selling patterns |
 | 5. Institutions | 4.5% | 13F holdings, accumulation/distribution |
 | 6. Technical | 17.9% | ML signals (9.8%) + Indicators (8.1%) |
 | 7. Market Context | 5.3% | Fear/Greed, sector analysis |
-| 8. Al Brooks | 19.6% | Context-informed price action |
+| 8. Al Brooks | 17.9% | Context-informed price action |
 | 9. Historical | 0% | Confirmation only, not weighted |
+| 10. Final | - | Weighted score calculation |
+
+**Reference:** McMillan, L.G. "Options as a Strategic Investment" (5th Edition)
 
 ### Capabilities
 
@@ -54,6 +58,37 @@ The server integrates with [yfinance](https://pypi.org/project/yfinance/) for ma
 3. **`tenacity`** → Retry logic with exponential backoff for transient failures
 
 This multi-layered approach ensures reliable data delivery while respecting API rate limits and minimizing redundant requests.
+
+### 3-Server MCP Architecture (Docker)
+
+For Claude Desktop, the investor-agent is split into **3 focused MCP servers** to prevent UI freeze (which occurs with 47+ tools):
+
+| Server | Tools | Purpose |
+|--------|-------|---------|
+| **investor-scanner** | 9 | Market scanning, ticker data, fundamentals |
+| **investor-analysis** | 16 | Technical analysis, options (McMillan), ML |
+| **investor-questrade** | 15 | Questrade account & trading |
+
+**Server Modules:**
+- `investor_agent.server_scanner` - Scanner tools
+- `investor_agent.server_analysis` - Analysis tools
+- `investor_agent.server_questrade` - Questrade tools
+- `investor_agent.server` - Full server (47 tools, for Claude Code)
+
+**Docker Setup:**
+
+```bash
+# Build the Docker image
+docker build -t investor-agent-mcp .
+
+# Run the container with Questrade token
+docker run -d --name investor-agent-mcp \
+  -e QUESTRADE_REFRESH_TOKEN="your_token_here" \
+  investor-agent-mcp
+
+# Or use docker-compose with .env file
+docker-compose up -d
+```
 
 ## Prerequisites
 
@@ -167,6 +202,46 @@ To use Questrade features, you need to:
 - **`calculate_feature_importance_analysis(ticker, period="6mo", forward_window=10)`** - Identify which technical indicators predict returns for a specific stock.
 
 ## Usage with MCP Clients
+
+### Option 1: Docker with 3 Servers (Claude Desktop - Recommended)
+
+Add to your `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "investor-scanner": {
+      "command": "docker",
+      "args": ["exec", "-i", "investor-agent-mcp", "python", "-m", "investor_agent.server_scanner"]
+    },
+    "investor-analysis": {
+      "command": "docker",
+      "args": ["exec", "-i", "investor-agent-mcp", "python", "-m", "investor_agent.server_analysis"]
+    },
+    "investor-questrade": {
+      "command": "docker",
+      "args": ["exec", "-i", "investor-agent-mcp", "python", "-m", "investor_agent.server_questrade"]
+    }
+  }
+}
+```
+
+### Option 2: Docker Full Server (Claude Code)
+
+Add to your `.mcp.json` in the project root:
+
+```json
+{
+  "mcpServers": {
+    "investor-agent": {
+      "command": "docker",
+      "args": ["exec", "-i", "investor-agent-mcp", "python", "-m", "investor_agent.server"]
+    }
+  }
+}
+```
+
+### Option 3: uvx (No Docker)
 
 Add to your `claude_desktop_config.json`:
 

@@ -32,14 +32,23 @@ RUN /root/.local/bin/uv pip install --system \
     "numpy>=2.0.0" \
     "scipy>=1.14.0" \
     "scikit-learn>=1.3.0" \
-    "statsmodels>=0.14.0"
+    "statsmodels>=0.14.0" \
+    "cryptography>=42.0.0" \
+    "tradingview-screener>=1.0.0"
 
 # Copy only the investor_agent package (the source code we need)
 COPY investor_agent ./investor_agent
 
+# Copy entrypoint script
+COPY docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
+
 # Set environment variables
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
+
+# Use entrypoint for token decryption
+ENTRYPOINT ["/docker-entrypoint.sh"]
 
 # Keep container running - Claude Desktop will exec into it
 CMD ["tail", "-f", "/dev/null"]

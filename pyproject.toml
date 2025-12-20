@@ -44,6 +44,14 @@ bridge = [
     "uvicorn[standard]>=0.32.0",
 ]
 
+security = [
+    "cryptography>=42.0.0",
+]
+
+screener = [
+    "tradingview-screener>=1.0.0",
+]
+
 [dependency-groups]
 dev = [
     "pydantic-ai>=1.0.10",
