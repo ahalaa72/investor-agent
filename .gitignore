@@ -33,3 +33,9 @@ test_*.py
 # OS
 .DS_Store
 Thumbs.db
+
+# Questrade token
+.questrade_token
+
+# MCP config (local)
+.mcp.json

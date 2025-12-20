@@ -80,11 +80,11 @@ else:
 - `get_financial_statements()`
 - `calculate_fundamental_scores_tool()`
 - `get_options()`
-- `analyze_options_mcmillan()` ⭐ NEW - McMillan Options Strategy
+- `analyze_options_mcmillan()` ⭐ McMillan Options Strategy
 - `get_insider_trades()`
 - `get_institutional_holders()`
 - `get_earnings_history()`
-- `analyze_technical()`
+- `analyze_technical()` ⭐ Now includes Al Brooks output in 'al_brooks' section
 - `find_support_resistance()`
 - `analyze_volume_tool()`
 - `analyze_volatility_tool()`
@@ -193,7 +193,9 @@ When a tool fails:
 - If market hours: Analyze 15m/1h structure and momentum
 - Entry timing patterns only if market is open
 
-**Tools:** `get_price_history()`, `analyze_technical()`, `fetch_intraday_1h()`, `fetch_intraday_15m()`
+**Tools:** `analyze_technical()` (includes Al Brooks output), `fetch_intraday_1h()`, `fetch_intraday_15m()`
+
+**Note:** `analyze_technical()` now returns an `al_brooks` section with: always_in_direction, pattern, base_probability, adjusted_probability, bar_reading, trap_risk, entry/stop/target levels.
 
 #### B. Brooks Methodology Analysis ⭐ DETAILED
 
@@ -420,7 +422,14 @@ When a tool fails:
 | **IV Percentile** | XX% | % of days IV was lower |
 | **52W IV High** | XX.X% | Historical ceiling |
 | **52W IV Low** | XX.X% | Historical floor |
+| **Divergence Check** | **[ALIGNED/DIVERGENT]** | Rank vs Percentile comparison |
 | **IV Environment** | **[HIGH/LOW/NORMAL]** | Strategy selection driver |
+
+**IV Divergence Interpretation:**
+- **Both HIGH (Rank >70, Percentile >70):** Genuinely elevated IV → Premium selling optimal
+- **Both LOW (Rank <30, Percentile <30):** Genuinely suppressed IV → Premium buying optimal
+- **Rank HIGH + Percentile LOW:** Recent volatility spike but historically normal → Watch for mean reversion
+- **Rank LOW + Percentile HIGH:** Unusual IV compression → Potential breakout setup
 
 **IV Interpretation:**
 - **HIGH IV (>70 rank):** Sell premium strategies - IV likely to contract
@@ -435,14 +444,18 @@ When a tool fails:
 
 | Metric | Value | Signal |
 |--------|-------|--------|
-| **Volume P/C Ratio** | X.XX | [Bullish <0.7 / Neutral 0.7-0.9 / Bearish >0.9] |
-| **OI P/C Ratio** | X.XX | [Positioning bias] |
+| **Volume P/C Ratio** | X.XX | Raw sentiment indicator |
+| **Raw Sentiment** | - | [Bullish <0.7 / Neutral 0.7-1.0 / Bearish >1.0] |
+| **Contrarian Signal** | **[BULLISH/BEARISH/NO SIGNAL]** | **BULLISH if >1.2 / BEARISH if <0.5 / NO SIGNAL 0.5-1.2** |
+| **OI P/C Ratio** | X.XX | [Positioning bias - longer-term view] |
 | **Call Volume** | XXX,XXX | Total call contracts |
 | **Put Volume** | XXX,XXX | Total put contracts |
 | **Sentiment** | [EXTREMELY_BEARISH/BEARISH/NEUTRAL/BULLISH/EXTREMELY_BULLISH] |
-| **Contrarian Signal** | **[BULLISH/BEARISH/NEUTRAL]** | McMillan contrarian interpretation |
 
 **P/C Interpretation:**
+- **P/C > 1.2 (Extreme Bearishness):** Contrarian BULLISH signal - crowd is overly bearish
+- **P/C < 0.5 (Extreme Bullishness):** Contrarian BEARISH signal - crowd is overly bullish
+- **P/C 0.5-1.2 (Normal Range):** No contrarian signal - sentiment is balanced
 [Detailed explanation of what P/C ratio suggests about market sentiment]
 
 **McMillan Reference:** Chapter 24 - Stock Option Strategies
@@ -456,7 +469,15 @@ When a tool fails:
 | **Max Pain Strike** | $XXX.XX | Where options sellers profit most |
 | **Current Price** | $XXX.XX | Market price |
 | **Distance to Max Pain** | +/-XX.X% | Gravitational pull direction |
+| **Days to Expiry** | XX days | Expiration timing |
+| **Aggregate OI** | XXX,XXX | [HIGH >100k / MEDIUM 25-100k / LOW <25k] |
+| **Max Pain Reliability** | **[HIGH/MEDIUM/LOW]** | HIGH if near expiry + high OI |
 | **OI Bias** | [BULLISH/BEARISH/NEUTRAL] | Price magnet effect |
+
+**Max Pain Reliability Conditions:**
+- **HIGH:** Current expiry + Last 5 days before expiration + Aggregate OI >100k
+- **MEDIUM:** Current expiry + Days 6-15 before expiration OR Aggregate OI 25-100k
+- **LOW:** Early cycle (>15 days) OR Aggregate OI <25k
 
 **Top OI Strikes:**
 
@@ -505,9 +526,21 @@ When a tool fails:
 **Greeks Source:** [yfinance_estimated / questrade]
 
 **Greeks Interpretation:**
-- **High Gamma Near ATM:** Expect rapid delta changes
-- **Theta Decay:** Time working for/against position
-- **Vega Exposure:** How IV changes affect position
+
+| Greek | Value | Actionable Insight |
+|-------|-------|-------------------|
+| **Delta** | X.XX | XX% chance ITM / $XX P&L per $1 stock move |
+| **Gamma** | X.XXXX | [HIGH = explosive near expiry / LOW = stable position] |
+| **Theta** | -$X.XX | Losing $X.XX/day - [Good/Bad] for [buyer/seller] |
+| **Vega** | $X.XX | +/-$X.XX per 1% IV change - [Benefit/Hurt] if IV [rises/falls] |
+
+**Position Risk Profile:** [Theta-positive/negative], [Vega-long/short], [Gamma-stable/explosive]
+
+**Greeks Quick Reference:**
+- **High Delta (>0.70):** Deep ITM, high directional exposure
+- **High Gamma (>0.05):** Near ATM, dangerous near expiry
+- **High Theta (>-$0.10):** Rapid time decay, favors sellers
+- **High Vega (>$0.50):** IV-sensitive, benefits from vol expansion
 
 #### F. McMillan Strategy Selection Matrix
 
@@ -518,6 +551,16 @@ When a tool fails:
 | **IV Environment** | [HIGH/LOW/NORMAL] | Strategy type driver |
 | **Direction** | [LONG/SHORT/NEUTRAL] | Directional bias |
 | **Holding Period** | XX days | Time horizon |
+
+**📊 McMILLAN STRATEGY MATRIX:**
+
+| IV Environment | LONG Direction | SHORT Direction | NEUTRAL |
+|----------------|----------------|-----------------|---------|
+| **HIGH (>70)** | Bull Put Spread | Bear Call Spread | Iron Condor |
+| **NORMAL (30-70)** | Long Call / Call Debit Spread | Long Put / Put Debit Spread | Butterfly |
+| **LOW (<30)** | Long Call + Long Stock | Long Put + Short Stock | Calendar Spread |
+
+**Current Selection:** Based on IV [XX%] + Direction [LONG/SHORT/NEUTRAL] → See highlighted cell above
 
 **PRIMARY STRATEGY RECOMMENDATION:**
 

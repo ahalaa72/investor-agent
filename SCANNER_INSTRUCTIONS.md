@@ -4,6 +4,24 @@ Instructions for the AI Agent to generate Market Opportunity Scanner reports.
 
 ---
 
+## 10-PHASE FRAMEWORK WEIGHTS (100.0%)
+
+| Phase | Weight | Description |
+|-------|--------|-------------|
+| 1. Fundamentals | 19.6% | F-Score, Z-Score, quality metrics |
+| 2. Catalysts | 15.2% | Earnings, events, timing |
+| 3. McMillan Options | 13.4% | IV Rank, P/C Ratio, Max Pain, UOA |
+| 4. Insiders | 4.5% | Cluster buying/selling patterns |
+| 5. Institutions | 4.5% | 13F holdings, accumulation/distribution |
+| 6. Technical | 17.9% | ML signals (9.8%) + Indicators (8.1%) |
+| 7. Market Context | 5.3% | Fear/Greed, sector analysis |
+| 8. Al Brooks | 19.6% | Context-informed price action |
+| 9. Historical | 0% | Confirmation only, not weighted |
+
+**Weight Sum:** 19.6 + 15.2 + 13.4 + 4.5 + 4.5 + 17.9 + 5.3 + 19.6 = **100.0%**
+
+---
+
 ## YOUR ROLE
 
 You are a **Professional Market Analyst** with TWO distinct operating modes:
@@ -114,9 +132,13 @@ get_institutional_holders(ticker)         # 13F accumulation/distribution
 analyze_options_mcmillan(ticker, direction="LONG")  # Full McMillan analysis
 
 # SECTION D: Al Brooks Price Action
-analyze_technical(ticker)                 # RSI, MACD, EMAs, price data
+analyze_technical(ticker)                 # RSI, MACD, EMAs, price data + AL BROOKS OUTPUT
 calculate_relative_strength_tool(ticker)  # RS vs SPY
 analyze_volume_tool(ticker)               # OBV, accumulation/distribution
+
+# NOTE: analyze_technical() now returns 'al_brooks' section with:
+# - always_in_direction, pattern, base_probability, adjusted_probability
+# - bar_reading, trap_risk, entry/stop/target levels
 ```
 
 ### Step 2: Generate Full Report
@@ -161,14 +183,22 @@ Include specific:
 - **IV Analysis:**
   - IV Rank (current vs 52-week range)
   - IV Percentile (% of days IV was lower)
+  - **Divergence Check:** [ALIGNED / DIVERGENT]
+    - Both HIGH = Premium selling optimal
+    - Both LOW = Premium buying optimal
+    - Rank HIGH + Percentile LOW = Recent spike (mean reversion)
+    - Rank LOW + Percentile HIGH = Compression (breakout setup)
   - IV Environment (HIGH/LOW/NORMAL)
 - **Put/Call Ratio:**
-  - Volume P/C ratio
-  - OI P/C ratio
-  - Sentiment interpretation (contrarian signal)
+  - Volume P/C ratio (raw sentiment)
+  - OI P/C ratio (positioning bias)
+  - **Contrarian Signal:** [BULLISH if >1.2 / BEARISH if <0.5 / NO SIGNAL 0.5-1.2]
 - **Open Interest:**
   - Max Pain level
   - Distance to max pain
+  - Days to expiry
+  - Aggregate OI [HIGH >100k / MEDIUM 25-100k / LOW <25k]
+  - **Max Pain Reliability:** [HIGH (near expiry + high OI) / MEDIUM / LOW (early cycle)]
   - Key OI strikes (calls and puts)
 - **Unusual Options Activity:**
   - Volume > OI spikes
@@ -220,10 +250,13 @@ The scanner uses a 4-tier filter system to find inflection points:
 | RS Position | 55-85 (L) / 15-45 (S) | Not over-extended |
 | Trend Days | < 6 consecutive | Fresh move, not exhausted |
 
-### TIER 3: CATALYST (Adds to score)
-- Earnings 7-30 days out
+### TIER 3: CATALYST (Adds to score) - NOW INTEGRATED
+- **Earnings Proximity:** 7-30 days = +8 pts, 30-45 days = +4 pts, 0-3 days = -5 pts (binary risk)
+- **Historical Beat Rate:** >60% for LONG = +5 pts, <50% for SHORT = +5 pts
 - IV Rank 20-50 (directional opportunity)
 - Insider cluster buying/selling
+
+**Note:** Scanner now automatically checks earnings calendar and beat rate via `_get_days_to_earnings()` and `_get_historical_beat_rate()` helpers.
 
 ### TIER 4: EXCLUSIONS (Hard Rejects)
 | Filter | LONG Reject | SHORT Reject |
@@ -332,7 +365,7 @@ For each of the last 5 bars, note:
 | Overview | `get_ticker_data()`, `calculate_fundamental_scores_tool()` |
 | Catalyst | `get_earnings_history()`, `get_insider_trades()`, `get_institutional_holders()` |
 | McMillan Options | `analyze_options_mcmillan()` |
-| Al Brooks | `analyze_technical()`, `calculate_relative_strength_tool()`, `analyze_volume_tool()` |
+| Al Brooks | `analyze_technical()` (includes Al Brooks output), `calculate_relative_strength_tool()`, `analyze_volume_tool()` |
 
 ### Score Interpretation
 

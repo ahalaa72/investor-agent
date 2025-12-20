@@ -29,23 +29,27 @@ Fast analysis with bullet points for data, detailed Al Brooks, McMillan Options,
 
 ## QUICK DATA SUMMARY (Phases 1-6)
 
-### Phase 1: Fundamentals (17.9%) - [BULLISH/BEARISH/NEUTRAL] [✓/✗]
+### Phase 1: Fundamentals (19.6%) - [BULLISH/BEARISH/NEUTRAL] [✓/✗]
 - F-Score: X/9 ([STRONG/WEAK]) [calculate_fundamental_scores_tool]
 - Z-Score: X.XX ([SAFE/GREY/DISTRESS]) [calculate_fundamental_scores_tool]
 - Revenue: +/-XX.X% YoY [get_ticker_data]
 - ROE: XX.X%, EPS: $X.XX [get_ticker_data]
 - **Score: XX/100** → XX.X pts
 
-### Phase 2: Catalysts (13.4%) - [BULLISH/BEARISH/NEUTRAL]
+### Phase 2: Catalysts (15.2%) - [BULLISH/BEARISH/NEUTRAL]
 - Last earnings: [Date] ([Beat/Miss] +/-XX%) [get_earnings_history]
 - Next earnings: [Date] [get_nasdaq_earnings_calendar]
 - Recent news: "[Headline]" [get_ticker_data]
 - **Score: XX/100** → XX.X pts
 
-### Phase 3: McMillan Options Strategy (17.9%) ⭐ NEW - [BULLISH/BEARISH/NEUTRAL] [✓/✗]
-- IV Rank: XX% ([HIGH >70 / LOW <30 / NORMAL]) [analyze_options_mcmillan]
-- P/C Ratio: X.XX ([Contrarian Bullish/Bearish/Neutral]) [analyze_options_mcmillan]
+### Phase 3: McMillan Options Strategy (13.4%) - [BULLISH/BEARISH/NEUTRAL] [✓/✗]
+- IV Rank: XX% / IV Percentile: XX% [analyze_options_mcmillan]
+  - Divergence: [ALIGNED / DIVERGENT: recent spike vs historical norm]
+- P/C Ratio: X.XX [analyze_options_mcmillan]
+  - Raw: [Bullish <0.7 / Neutral 0.7-1.0 / Bearish >1.0]
+  - **Contrarian:** [BULLISH if >1.2 / BEARISH if <0.5 / NO SIGNAL 0.5-1.2]
 - Max Pain: $XXX.XX ([Above/Below/At] price) [analyze_options_mcmillan]
+  - Reliability: [HIGH (near expiry + high OI) / MEDIUM / LOW (early cycle)]
 - Smart Money: [BULLISH/BEARISH/MIXED/NO_SIGNAL] [analyze_options_mcmillan]
 - **Strategy:** [Bull Put Spread / Long Call / Iron Condor / etc.] [analyze_options_mcmillan]
 - **Score: XX/100** → XX.X pts
@@ -66,6 +70,7 @@ Fast analysis with bullet points for data, detailed Al Brooks, McMillan Options,
 - RS vs SPY: XX ([LEADER/LAGGARD]) [calculate_relative_strength_tool]
 - Trend: [UPTREND/DOWNTREND], XX.X% confidence [analyze_ml_enhanced]
 - OBV: [Accumulation/Distribution] [analyze_volume_tool]
+- **Al Brooks (from analyze_technical):** [Pattern], [XX]% adjusted probability [analyze_technical.al_brooks]
 - **Score: XX/100** → XX.X pts
 
 ### Phase 7: Market Context (5.3%) - [BULLISH/BEARISH/NEUTRAL]
@@ -74,7 +79,7 @@ Fast analysis with bullet points for data, detailed Al Brooks, McMillan Options,
 
 ---
 
-## PHASE 8: AL BROOKS PRICE ACTION (17.9%) ⭐ CRITICAL
+## PHASE 8: AL BROOKS PRICE ACTION (19.6%) ⭐ CRITICAL
 
 ### A. Always-In Direction
 - **Current:** [LONG/SHORT] since [Date] ([reason])
@@ -197,16 +202,18 @@ find_similar_historical_setups(
 
 ### Weighted Score ([LONG/SHORT])
 ```
-Fundamentals:  XX.X pts (XX/100 × 17.9%)
-Catalysts:     XX.X pts (XX/100 × 13.4%)
-McMillan Opts: XX.X pts (XX/100 × 17.9%) ⭐ NEW
+Fundamentals:  XX.X pts (XX/100 × 19.6%)
+Catalysts:     XX.X pts (XX/100 × 15.2%)
+McMillan Opts: XX.X pts (XX/100 × 13.4%)
 Insiders:      XX.X pts (XX/100 × 4.5%)
 Institutions:  XX.X pts (XX/100 × 4.5%)
 Technical:     XX.X pts (XX/100 × 17.9%)
 Context:       XX.X pts (XX/100 × 5.3%)
-Al Brooks:     XX.X pts (XX/100 × 17.9%)
+Al Brooks:     XX.X pts (XX/100 × 19.6%)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 TOTAL:         XX.X/100 ([HIGH/MODERATE/LOW] CONVICTION [LONG/SHORT])
+
+**Weights Sum:** 100.0% (NO normalization needed)
 ```
 
 ### Recommendation: **[STRONG BUY/BUY/HOLD/ADD/SELL/SHORT]**
@@ -259,13 +266,15 @@ TOTAL:         XX.X/100 ([HIGH/MODERATE/LOW] CONVICTION [LONG/SHORT])
 # PHASE 1-7: Data Collection (12 min) - BULLET POINTS ONLY
 get_ticker_data(), calculate_fundamental_scores_tool()
 get_earnings_history(), get_nasdaq_earnings_calendar()
-analyze_options_mcmillan(ticker, direction="LONG")  # ⭐ NEW - McMillan Options
+analyze_options_mcmillan(ticker, direction="LONG")  # ⭐ McMillan Options
 get_insider_trades(), get_institutional_holders()
-analyze_technical(), analyze_ml_enhanced(), calculate_relative_strength_tool()
+analyze_technical()  # ⭐ Now includes Al Brooks output in 'al_brooks' section
+analyze_ml_enhanced(), calculate_relative_strength_tool()
 analyze_volume_tool(), get_cnn_fear_greed_index()
 
 # PHASE 8: Al Brooks (15 min) - DETAILED
-# Bar-by-bar, patterns, probability factors, context adjustments
+# Use analyze_technical().al_brooks for: always_in_direction, pattern, probability
+# Add bar-by-bar analysis, probability factors, context adjustments
 
 # PHASE 10: Trading Plan (3 min) - DETAILED FIRST!
 # Weighted score, position sizing, action plan

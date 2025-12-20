@@ -165,9 +165,16 @@ def validate_date_range(start_str: str | None, end_str: str | None) -> None:
 
 @api_retry
 def yf_call(ticker: str, method: str, *args, **kwargs):
-    """Generic yfinance API call with retry logic."""
+    """Generic yfinance API call with retry logic.
+
+    Handles both properties (info, calendar, news) and methods (history, get_info).
+    """
     t = yf.Ticker(ticker)
-    return getattr(t, method)(*args, **kwargs)
+    attr = getattr(t, method)
+    # If it's callable (method), call it; otherwise return the property value
+    if callable(attr):
+        return attr(*args, **kwargs)
+    return attr
 
 def get_options_chain(ticker: str, expiry: str, option_type: Literal["C", "P"] | None = None) -> pd.DataFrame:
     """Get options chain with optional filtering by type."""
@@ -195,6 +202,122 @@ def format_date_string(date_str: str) -> str | None:
         return datetime.datetime.fromisoformat(date_str.replace("Z", "")).strftime("%Y-%m-%d")
     except Exception:
         return date_str[:10] if date_str else None
+
+
+# =============================================================================
+# QUESTRADE-FIRST DATA FETCHING (with Yahoo Finance fallback)
+# =============================================================================
+
+def get_ticker_info_questrade_first(ticker: str) -> dict[str, Any]:
+    """
+    Get ticker info using Questrade as primary source, Yahoo Finance as fallback.
+
+    This function tries Questrade first because:
+    1. Questrade often has data for stocks Yahoo Finance lacks (e.g., MNMD)
+    2. Questrade data is more reliable for Canadian stocks
+    3. Better real-time data when market is open
+
+    Returns a unified dict with metrics from best available source.
+    """
+    result = {
+        "source": "none",
+        "questrade_data": {},
+        "yfinance_data": {},
+        "merged": {}
+    }
+
+    # Field mapping: Questrade field -> unified field name
+    questrade_to_unified = {
+        'symbol': 'symbol',
+        'description': 'longName',
+        'prevDayClosePrice': 'previousClose',
+        'highPrice52': 'fiftyTwoWeekHigh',
+        'lowPrice52': 'fiftyTwoWeekLow',
+        'averageVol3Months': 'averageVolume',
+        'averageVol20Days': 'averageVolume10days',
+        'outstandingShares': 'sharesOutstanding',
+        'eps': 'trailingEps',
+        'pe': 'trailingPE',
+        'dividend': 'dividendRate',
+        'yield': 'dividendYield',
+        'marketCap': 'marketCap',
+        'currency': 'currency',
+        'listingExchange': 'exchange',
+    }
+
+    # Try Questrade first
+    questrade_success = False
+    try:
+        # Get Questrade client
+        client = get_questrade_client()
+        if client:
+            # Questrade client uses synchronous methods
+            symbol_info = client.get_symbol_info(ticker)
+            quote = client.get_quote(ticker)
+
+            if symbol_info and symbol_info.get('symbols'):
+                sym = symbol_info['symbols'][0]
+                result["questrade_data"] = sym
+
+                # Map Questrade fields to unified format
+                for q_field, u_field in questrade_to_unified.items():
+                    if q_field in sym and sym[q_field] is not None:
+                        result["merged"][u_field] = sym[q_field]
+
+                # Add quote data
+                if quote and quote.get('quotes'):
+                    q = quote['quotes'][0]
+                    if q.get('lastTradePrice'):
+                        result["merged"]['currentPrice'] = q['lastTradePrice']
+                    if q.get('volume'):
+                        result["merged"]['volume'] = q['volume']
+                    if q.get('openPrice'):
+                        result["merged"]['open'] = q['openPrice']
+                    if q.get('highPrice'):
+                        result["merged"]['dayHigh'] = q['highPrice']
+                    if q.get('lowPrice'):
+                        result["merged"]['dayLow'] = q['lowPrice']
+
+                result["source"] = "questrade"
+                questrade_success = True
+                logger.info(f"Got ticker info for {ticker} from Questrade")
+
+    except Exception as e:
+        logger.warning(f"Questrade failed for {ticker}: {e}")
+
+    # Try Yahoo Finance (as fallback or to supplement)
+    try:
+        yf_info = yf_call(ticker, "get_info")
+        if yf_info:
+            result["yfinance_data"] = yf_info
+
+            if not questrade_success:
+                # Questrade failed, use yfinance as primary
+                result["merged"] = yf_info.copy()
+                result["source"] = "yfinance"
+                logger.info(f"Got ticker info for {ticker} from Yahoo Finance (Questrade unavailable)")
+            else:
+                # Merge yfinance data for fields Questrade doesn't have
+                yf_only_fields = {
+                    'beta', 'forwardPE', 'forwardEps', 'pegRatio',
+                    'profitMargins', 'operatingMargins', 'returnOnEquity', 'returnOnAssets',
+                    'revenueGrowth', 'earningsGrowth', 'totalRevenue', 'totalDebt',
+                    'bookValue', 'priceToBook', 'enterpriseValue', 'sector', 'industry'
+                }
+                for field in yf_only_fields:
+                    if field in yf_info and yf_info[field] is not None and field not in result["merged"]:
+                        result["merged"][field] = yf_info[field]
+
+                result["source"] = "questrade+yfinance"
+                logger.info(f"Merged Questrade + Yahoo Finance data for {ticker}")
+
+    except Exception as e:
+        logger.warning(f"Yahoo Finance failed for {ticker}: {e}")
+        if not questrade_success:
+            raise ValueError(f"No data available for {ticker} from any source")
+
+    return result
+
 
 # Google Trends timeframe mapping
 TREND_TIMEFRAMES = {
@@ -1531,34 +1654,47 @@ def get_ticker_data(
     max_recommendations: int = 5,
     max_upgrades: int = 5
 ) -> dict[str, Any]:
-    """Get comprehensive ticker data: metrics, calendar, news, recommendations."""
+    """Get comprehensive ticker data: metrics, calendar, news, recommendations.
+
+    Uses Questrade as primary data source with Yahoo Finance as fallback.
+    This ensures better data availability for stocks where Yahoo Finance has gaps.
+    """
     ticker = validate_ticker(ticker)
 
-    # Get all basic data in parallel
+    # Get ticker info using Questrade-first approach
+    ticker_info = get_ticker_info_questrade_first(ticker)
+    info = ticker_info.get("merged", {})
+
+    if not info:
+        raise ValueError(f"No information available for {ticker}")
+
+    essential_fields = {
+        'symbol', 'longName', 'currentPrice', 'marketCap', 'volume', 'trailingPE',
+        'forwardPE', 'dividendYield', 'beta', 'eps', 'totalRevenue', 'totalDebt',
+        'profitMargins', 'operatingMargins', 'returnOnEquity', 'returnOnAssets',
+        'revenueGrowth', 'earningsGrowth', 'bookValue', 'priceToBook',
+        'enterpriseValue', 'pegRatio', 'trailingEps', 'forwardEps',
+        # Additional fields from Questrade
+        'previousClose', 'fiftyTwoWeekHigh', 'fiftyTwoWeekLow', 'averageVolume',
+        'sharesOutstanding', 'exchange', 'currency', 'sector', 'industry'
+    }
+
+    # Basic info section - convert to structured format
+    basic_info = [
+        {"metric": key, "value": value.isoformat() if hasattr(value, 'isoformat') else value}
+        for key, value in info.items() if key in essential_fields
+    ]
+
+    # Add data source indicator
+    basic_info.append({"metric": "dataSource", "value": ticker_info.get("source", "unknown")})
+
+    result: dict[str, Any] = {"basic_info": basic_info}
+
+    # Get calendar, news, recommendations, upgrades from Yahoo Finance
+    # (Questrade doesn't provide these)
     with ThreadPoolExecutor() as executor:
-        info_future = executor.submit(yf_call, ticker, "get_info")
         calendar_future = executor.submit(yf_call, ticker, "get_calendar")
         news_future = executor.submit(yf_call, ticker, "get_news")
-
-        info = safe_future_result(info_future, context=f"fetching info for {ticker}")
-        if not info:
-            raise ValueError(f"No information available for {ticker}")
-
-        essential_fields = {
-            'symbol', 'longName', 'currentPrice', 'marketCap', 'volume', 'trailingPE',
-            'forwardPE', 'dividendYield', 'beta', 'eps', 'totalRevenue', 'totalDebt',
-            'profitMargins', 'operatingMargins', 'returnOnEquity', 'returnOnAssets',
-            'revenueGrowth', 'earningsGrowth', 'bookValue', 'priceToBook',
-            'enterpriseValue', 'pegRatio', 'trailingEps', 'forwardEps'
-        }
-
-        # Basic info section - convert to structured format
-        basic_info = [
-            {"metric": key, "value": value.isoformat() if hasattr(value, 'isoformat') else value}
-            for key, value in info.items() if key in essential_fields
-        ]
-
-        result: dict[str, Any] = {"basic_info": basic_info}
 
         # Process calendar
         calendar = safe_future_result(calendar_future, context=f"fetching calendar for {ticker}")
@@ -2328,25 +2464,6 @@ def _calculate_options_composite_score(
         "interpretation": f"Options analysis {'strongly supports' if score >= 80 else 'supports' if score >= 65 else 'is neutral on' if score >= 50 else 'does not support'} {direction} position"
     }
 
-
-@mcp.tool()
-def get_price_history(
-    ticker: str,
-    period: Literal["1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "ytd", "max"] = "1mo"
-) -> str:
-    """Get historical OHLCV data with smart interval selection."""
-    ticker = validate_ticker(ticker)
-
-    interval = "1mo" if period in ["2y", "5y", "10y", "max"] else "1d"
-    history = yf_call(ticker, "history", period=period, interval=interval)
-    if history is None or history.empty:
-        raise ValueError(f"No historical data found for {ticker}")
-
-    # Reset index to include dates as a column
-    history_with_dates = history.reset_index()
-    history_with_dates['Date'] = pd.to_datetime(history_with_dates['Date']).dt.strftime('%Y-%m-%d')
-
-    return to_clean_csv(history_with_dates)
 
 @mcp.tool()
 def get_financial_statements(
@@ -3341,6 +3458,7 @@ if _advanced_ta_available:
         - Multiple Moving Averages (SMA 20/50/200, EMA 20)
         - Stochastic Oscillator
         - ML Probability Analysis (if include_ml_analysis=True)
+        - Al Brooks Price Action Analysis (pattern, probability, bar reading, trap risk)
         """
         ticker = validate_ticker(ticker)
 
@@ -3414,6 +3532,49 @@ if _advanced_ta_available:
                     'interpretation': 'ML analysis unavailable'
                 }
 
+        # Add Al Brooks Price Action Analysis
+        try:
+            if ANALYZER_AVAILABLE:
+                brooks = AlBrooksAnalyzer()
+                # Determine direction from technical indicators
+                ma_trend = indicators.get('moving_averages', {}).get('trend', 'neutral')
+                macd_trend = indicators.get('macd', {}).get('trend', 'neutral')
+                direction = 'long' if ma_trend == 'bullish' or macd_trend == 'bullish' else 'short'
+
+                brooks_result = brooks.analyze(
+                    ticker=ticker,
+                    direction=direction,
+                    ohlcv_data=history,
+                    technical_data=result
+                )
+
+                result['al_brooks'] = {
+                    'always_in_direction': brooks_result.get('always_in', 'UNKNOWN'),
+                    'pattern': brooks_result.get('pattern', 'none'),
+                    'pattern_description': brooks_result.get('pattern_description', ''),
+                    'base_probability': brooks_result.get('base_probability', 50),
+                    'adjusted_probability': brooks_result.get('adjusted_probability', 50),
+                    'probability_adjustments': brooks_result.get('probability_adjustments', []),
+                    'bar_reading': brooks_result.get('bar_reading', []),
+                    'trap_risk': brooks_result.get('trap_risk', 'UNKNOWN'),
+                    'trap_explanation': brooks_result.get('trap_explanation', ''),
+                    'entry': brooks_result.get('entry'),
+                    'stop': brooks_result.get('stop'),
+                    'target': brooks_result.get('target'),
+                    'risk_reward_ratio': brooks_result.get('risk_reward_ratio'),
+                    'commentary': brooks_result.get('commentary', '')
+                }
+            else:
+                result['al_brooks'] = {
+                    'error': 'AlBrooksAnalyzer not available',
+                    'note': 'Scanner analyzer module not loaded'
+                }
+        except Exception as e:
+            result['al_brooks'] = {
+                'error': f'Al Brooks analysis failed: {str(e)}',
+                'interpretation': 'Al Brooks analysis unavailable'
+            }
+
         return result
     
     @mcp.tool()
@@ -3440,57 +3601,6 @@ if _advanced_ta_available:
             "symbol": ticker,
             "lookback_period": lookback_period,
             **levels
-        }
-    
-    @mcp.tool()
-    def screen_stocks_technical(
-        tickers: list[str],
-        rsi_below: float | None = None,
-        rsi_above: float | None = None,
-        above_sma50: bool = False,
-        macd_bullish: bool = False
-    ) -> dict[str, Any]:
-        """Screen multiple stocks based on technical indicators.
-        
-        Criteria:
-        - rsi_below: Find stocks with RSI below this value (e.g., 30 for oversold)
-        - rsi_above: Find stocks with RSI above this value (e.g., 70 for overbought)
-        - above_sma50: Filter for stocks trading above their 50-day moving average
-        - macd_bullish: Filter for stocks with bullish MACD crossover
-        
-        Returns list of stocks that match ALL specified criteria.
-        """
-        # Validate tickers
-        tickers = [validate_ticker(t) for t in tickers]
-        
-        # Fetch data for all stocks
-        stock_data = {}
-        for ticker in tickers:
-            try:
-                history = yf_call(ticker, "history", period="3mo", interval="1d")
-                if history is not None and not history.empty:
-                    stock_data[ticker] = history
-            except Exception as e:
-                logger.warning(f"Failed to fetch data for {ticker}: {e}")
-                continue
-        
-        criteria = {
-            "rsi_below": rsi_below,
-            "rsi_above": rsi_above,
-            "above_sma50": above_sma50,
-            "macd_bullish": macd_bullish
-        }
-        
-        # Filter out None values
-        criteria = {k: v for k, v in criteria.items() if v is not None and v is not False}
-        
-        results = TechnicalAnalysis.screen_stocks(stock_data, criteria)
-        
-        return {
-            "total_screened": len(tickers),
-            "matches_found": len(results),
-            "criteria": criteria,
-            "results": results
         }
     
     @mcp.tool()
@@ -4917,7 +5027,7 @@ for more robust predictions. Results may vary across different market regimes.
 
 # Import the scanner analyzer for deep analysis
 try:
-    from investor_agent.scanner_analyzer import ScannerAnalyzer, format_analysis_report
+    from investor_agent.scanner_analyzer import ScannerAnalyzer, format_analysis_report, AlBrooksAnalyzer
     ANALYZER_AVAILABLE = True
 except ImportError:
     ANALYZER_AVAILABLE = False

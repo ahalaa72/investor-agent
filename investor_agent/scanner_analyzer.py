@@ -1016,7 +1016,7 @@ class ScannerAnalyzer:
         scores['pattern_score'] = self._score_pattern(
             tv_data, direction, trend_days
         )
-        scores['catalyst_score'] = self._score_catalyst(ml_data, direction)
+        scores['catalyst_score'] = self._score_catalyst(ml_data, direction, ticker)
         scores['brooks_score'] = self._score_brooks(brooks_analysis)
 
         # Calculate composite score using new weights
@@ -1157,30 +1157,121 @@ class ScannerAnalyzer:
 
         return max(0, min(25, score))
 
-    def _score_catalyst(self, ml_data: dict, direction: str) -> int:
+    def _get_days_to_earnings(self, ticker: str) -> int:
+        """Get days until next earnings announcement.
+
+        Returns:
+            Days to earnings (999 if no upcoming earnings found)
+        """
+        try:
+            import yfinance as yf
+            from datetime import datetime, timedelta
+
+            t = yf.Ticker(ticker)
+            calendar = t.calendar
+
+            if calendar is None:
+                return 999
+
+            # Try to get earnings date from calendar
+            if isinstance(calendar, pd.DataFrame):
+                if 'Earnings Date' in calendar.index:
+                    earnings_date = calendar.loc['Earnings Date'].iloc[0]
+                elif len(calendar) > 0 and 0 in calendar.columns:
+                    earnings_date = calendar[0].iloc[0]
+                else:
+                    return 999
+            elif isinstance(calendar, dict):
+                earnings_date = calendar.get('Earnings Date', [None])[0]
+            else:
+                return 999
+
+            if earnings_date is None:
+                return 999
+
+            # Convert to datetime if needed
+            if isinstance(earnings_date, str):
+                earnings_date = pd.to_datetime(earnings_date)
+
+            days = (earnings_date - datetime.now()).days
+            return max(0, days)
+
+        except Exception as e:
+            logger.debug(f"Failed to get earnings date for {ticker}: {e}")
+            return 999
+
+    def _get_historical_beat_rate(self, ticker: str) -> float:
+        """Get historical earnings beat rate (last 4 quarters).
+
+        Returns:
+            Beat rate as float (0.0 to 1.0), 0.5 if no data
+        """
+        try:
+            import yfinance as yf
+
+            t = yf.Ticker(ticker)
+            earnings = t.earnings_history
+
+            if earnings is None or earnings.empty:
+                return 0.5  # Neutral if no data
+
+            # Count beats (actual > estimate)
+            recent = earnings.head(4)  # Last 4 quarters
+            if 'epsActual' in recent.columns and 'epsEstimate' in recent.columns:
+                beats = (recent['epsActual'] > recent['epsEstimate']).sum()
+                return beats / len(recent)
+
+            return 0.5
+
+        except Exception as e:
+            logger.debug(f"Failed to get beat rate for {ticker}: {e}")
+            return 0.5
+
+    def _score_catalyst(self, ml_data: dict, direction: str, ticker: str = None) -> int:
         """Score catalyst quality (0-20 points).
 
         Tier 3 Catalyst Scoring:
-        - Earnings 7-30 days: 8 pts
-        - IV Rank 20-50: 6 pts
+        - Earnings 7-30 days: 8 pts (ideal timing)
+        - Earnings 30-45 days: 4 pts (acceptable)
+        - Earnings < 5 days: -5 pts (binary risk)
+        - Beat rate > 60% (longs) or < 50% (shorts): 5 pts
         - ML Alignment: 6 pts
 
         Note: Full catalyst scoring requires McMillan options data
-        which is integrated separately. This uses ML as proxy.
+        which is integrated separately. This uses ML + earnings as proxy.
         """
         score = 10  # Start neutral
 
-        # ML prediction as catalyst proxy
+        # Earnings proximity scoring (if ticker provided)
+        if ticker:
+            days_to_earnings = self._get_days_to_earnings(ticker)
+
+            if 7 <= days_to_earnings <= 30:
+                score += 8  # Ideal: 1-4 weeks out (high activity pre-earnings)
+            elif 30 < days_to_earnings <= 45:
+                score += 4  # Acceptable: 30-45 days
+            elif 0 <= days_to_earnings <= 4:
+                score -= 5  # Binary event risk - too close
+            # No change for > 45 days (neutral)
+
+            # Beat rate scoring
+            beat_rate = self._get_historical_beat_rate(ticker)
+            if direction == 'long' and beat_rate > 0.60:
+                score += 5  # Strong beat history for longs
+            elif direction == 'short' and beat_rate < 0.50:
+                score += 5  # Weak beat history for shorts
+
+        # ML prediction alignment (remaining points)
         if ml_data and 'error' not in ml_data:
             confidence = ml_data.get('confidence', 0.5)
             trend = ml_data.get('trend_direction', 'NEUTRAL')
 
             if direction == 'long' and trend in ['UP', 'UPTREND', 'BULLISH']:
-                score += int(confidence * 10)
+                score += int(confidence * 6)  # Max 6 pts from ML
             elif direction == 'short' and trend in ['DOWN', 'DOWNTREND', 'BEARISH']:
-                score += int(confidence * 10)
+                score += int(confidence * 6)
             elif trend not in ['NEUTRAL', 'SIDEWAYS', None, '']:
-                score -= 5
+                score -= 3  # Opposing signal
 
         return max(0, min(20, score))
 

@@ -8,6 +8,24 @@ Scan markets for top LONG and SHORT candidates with detailed analysis per stock.
 
 ---
 
+## 10-PHASE FRAMEWORK WEIGHTS (100.0%)
+
+| Phase | Weight | Description |
+|-------|--------|-------------|
+| 1. Fundamentals | 19.6% | F-Score, Z-Score, quality metrics |
+| 2. Catalysts | 15.2% | Earnings, events, timing |
+| 3. McMillan Options | 13.4% | IV Rank, P/C Ratio, Max Pain, UOA |
+| 4. Insiders | 4.5% | Cluster buying/selling patterns |
+| 5. Institutions | 4.5% | 13F holdings, accumulation/distribution |
+| 6. Technical | 17.9% | ML signals (9.8%) + Indicators (8.1%) |
+| 7. Market Context | 5.3% | Fear/Greed, sector analysis |
+| 8. Al Brooks | 19.6% | Context-informed price action |
+| 9. Historical | 0% | Confirmation only, not weighted |
+
+**Weight Sum:** 19.6 + 15.2 + 13.4 + 4.5 + 4.5 + 17.9 + 5.3 + 19.6 = **100.0%**
+
+---
+
 ## CRITICAL RULES
 
 ### Data Integrity
@@ -150,19 +168,28 @@ Scan markets for top LONG and SHORT candidates with detailed analysis per stock.
 
 #### IV Environment
 - **Current IV:** XX.X%
-- **IV Rank:** XX% [HIGH >70 sell premium / LOW <30 buy premium / NORMAL flexible]
+- **IV Rank:** XX% [HIGH >70 sell premium / LOW <30 buy premium / NORMAL 30-70]
 - **IV Percentile:** XX%
+- **Divergence Check:** [ALIGNED / DIVERGENT: recent spike vs historical norm]
+  - Both HIGH = Genuinely elevated → Premium selling optimal
+  - Both LOW = Genuinely suppressed → Premium buying optimal
+  - Rank HIGH + Percentile LOW = Recent spike → Watch for mean reversion
+  - Rank LOW + Percentile HIGH = Unusual compression → Potential breakout
 - **Environment:** [HIGH_IV / LOW_IV / NORMAL_IV]
 
 #### Put/Call Analysis
-- **Volume P/C Ratio:** X.XX [Bullish <0.7 / Neutral 0.7-0.9 / Bearish >0.9]
-- **OI P/C Ratio:** X.XX
+- **Volume P/C Ratio:** X.XX
+  - Raw Sentiment: [Bullish <0.7 / Neutral 0.7-1.0 / Bearish >1.0]
+  - **Contrarian Signal:** [BULLISH if >1.2 / BEARISH if <0.5 / NO SIGNAL 0.5-1.2]
+- **OI P/C Ratio:** X.XX [Positioning bias]
 - **Sentiment:** [EXTREMELY_BEARISH / BEARISH / NEUTRAL / BULLISH / EXTREMELY_BULLISH]
-- **Contrarian Signal:** [BULLISH / BEARISH / NEUTRAL]
 
 #### Open Interest & Max Pain
 - **Max Pain Strike:** $XXX.XX
 - **Distance to Max Pain:** +/-XX.X% ([Above/Below/At] price)
+- **Days to Expiry:** XX days
+- **Aggregate OI:** XXX,XXX contracts [HIGH >100k / MEDIUM 25-100k / LOW <25k]
+- **Max Pain Reliability:** [HIGH (near expiry + high OI) / MEDIUM / LOW (early cycle)]
 - **Key Call Wall:** $XXX (XXX,XXX OI)
 - **Key Put Wall:** $XXX (XXX,XXX OI)
 - **OI Bias:** [BULLISH / BEARISH / NEUTRAL]
