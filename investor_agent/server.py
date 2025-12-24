@@ -7776,11 +7776,13 @@ def detect_catalyst_strength(ticker: str) -> dict[str, Any]:
     Aggregate ALL catalyst signals into one actionable strength assessment.
 
     Combines multiple data sources:
-    - Earnings Calendar: Days to earnings, beat rate
-    - Insider Trades: Buy clusters in 30 days
-    - Options IV Rank: 30-60% = active interest
-    - Institutional: Recent 13F accumulation
-    - News/Upgrades: Recent analyst upgrades
+    - Earnings Calendar: Days to earnings, beat rate (25 pts max)
+    - Insider Trades: Buy clusters in 30 days (25 pts max)
+    - Options IV Rank: 30-60% = active interest (20 pts max)
+    - Institutional: Recent 13F accumulation (15 pts max)
+    - News/Upgrades: Recent analyst upgrades (15 pts max)
+    - Unusual Options Activity: Smart money detection (20 pts max)
+    - CNN Fear/Greed Index: Market sentiment context (10 pts max)
 
     Returns:
     - catalyst_strength: STRONG / MODERATE / WEAK / NONE
@@ -8049,6 +8051,78 @@ def detect_catalyst_strength(ticker: str) -> dict[str, Any]:
 
     except Exception as e:
         result["details"]["news_error"] = str(e)
+
+    # 6. UNUSUAL OPTIONS ACTIVITY (20 pts max) - Smart Money Detection
+    try:
+        options_activity = detect_unusual_options_activity(ticker)
+
+        if options_activity.get("unusual_activity"):
+            activity_type = options_activity.get("activity_type", "NEUTRAL")
+            signals = options_activity.get("signals", [])
+
+            result["details"]["unusual_options"] = {
+                "detected": True,
+                "type": activity_type,
+                "signal_count": len(signals),
+                "largest_bet": options_activity.get("largest_bet"),
+                "implied_move": options_activity.get("implied_move")
+            }
+
+            # BULLISH unusual activity = STRONG catalyst
+            if activity_type == "BULLISH":
+                score += 20
+                catalysts.append(f"Unusual Options: BULLISH ({len(signals)} signals)")
+            # BEARISH unusual activity = useful for shorts
+            elif activity_type == "BEARISH":
+                score += 10  # Still a catalyst, but for SHORT direction
+                catalysts.append(f"Unusual Options: BEARISH ({len(signals)} signals)")
+            # MIXED unusual activity = something brewing
+            elif activity_type == "MIXED" and len(signals) >= 2:
+                score += 8
+                catalysts.append(f"Unusual Options: MIXED ({len(signals)} signals)")
+        else:
+            result["details"]["unusual_options"] = {"detected": False}
+
+    except Exception as e:
+        result["details"]["unusual_options_error"] = str(e)
+
+    # 7. MARKET SENTIMENT - CNN Fear/Greed Index (10 pts max)
+    try:
+        # Sync fetch of CNN Fear/Greed
+        import httpx
+        CNN_FEAR_GREED_URL = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
+
+        with httpx.Client(timeout=10.0) as client:
+            response = client.get(CNN_FEAR_GREED_URL, headers=BROWSER_HEADERS)
+            if response.status_code == 200:
+                fg_data = response.json()
+                fg_score = fg_data.get("fear_and_greed", {}).get("score", 50)
+                fg_rating = fg_data.get("fear_and_greed", {}).get("rating", "Neutral")
+
+                result["details"]["market_sentiment"] = {
+                    "fear_greed_score": round(fg_score, 1),
+                    "rating": fg_rating
+                }
+
+                # Extreme Fear (<25) = LONG catalyst boost (buy the fear)
+                if fg_score < 25:
+                    score += 10
+                    catalysts.append(f"Extreme Fear ({round(fg_score)}) - Contrarian LONG")
+                # Fear (25-45) = Moderate LONG boost
+                elif fg_score < 45:
+                    score += 5
+                    catalysts.append(f"Fear ({round(fg_score)}) - LONG opportunity")
+                # Extreme Greed (>75) = SHORT catalyst or caution
+                elif fg_score > 75:
+                    score += 5  # Catalyst for SHORT trades
+                    catalysts.append(f"Extreme Greed ({round(fg_score)}) - SHORT catalyst")
+                # Greed (55-75) = Slight caution
+                elif fg_score > 55:
+                    # No points, just informational
+                    result["details"]["market_sentiment"]["note"] = "Elevated greed - be cautious"
+
+    except Exception as e:
+        result["details"]["market_sentiment_error"] = str(e)
 
     # CALCULATE FINAL STRENGTH
     result["catalyst_score"] = min(100, score)
