@@ -54,12 +54,40 @@ class QuestradeClient:
 
         Args:
             refresh_token: Optional refresh token. If not provided, will attempt
-                         to load from QUESTRADE_REFRESH_TOKEN environment variable.
+                         to load from QUESTRADE_REFRESH_TOKEN environment variable
+                         or from .questrade_token file.
 
         Raises:
-            ValueError: If no refresh token is provided or found in environment.
+            ValueError: If no refresh token is provided or found.
         """
         self.refresh_token = refresh_token or os.getenv("QUESTRADE_REFRESH_TOKEN")
+
+        # If no env var, try loading from token file
+        if not self.refresh_token:
+            token_file_paths = [
+                Path.cwd() / ".questrade_token",  # Current directory
+                Path("/app/.questrade_token"),     # Docker container path
+                Path.home() / ".questrade_token",  # Home directory
+            ]
+            for token_path in token_file_paths:
+                if token_path.exists():
+                    try:
+                        with open(token_path, 'r') as f:
+                            content = f.read().strip()
+                            # Try JSON format first
+                            try:
+                                token_data = json.loads(content)
+                                self.refresh_token = token_data.get('refresh_token')
+                            except json.JSONDecodeError:
+                                # Raw token string format
+                                if content and len(content) > 10:
+                                    self.refresh_token = content
+                            if self.refresh_token:
+                                logger.info(f"Loaded refresh token from {token_path}")
+                                break
+                    except Exception as e:
+                        logger.warning(f"Failed to read token from {token_path}: {e}")
+
         if not self.refresh_token:
             raise ValueError(
                 "Questrade refresh token required. Set QUESTRADE_REFRESH_TOKEN "
@@ -353,8 +381,17 @@ class QuestradeClient:
         try:
             client = self._get_client()
             logger.info(f"Fetching quote for {symbol}")
-            # questrade-api uses markets_quotes with ids keyword argument
-            quote = client.markets_quotes(ids=str(symbol))
+
+            # First, look up the symbol to get its numeric ID
+            symbol_info = client.symbols(names=symbol)
+            if not symbol_info or 'symbols' not in symbol_info or not symbol_info['symbols']:
+                raise ValueError(f"Symbol not found: {symbol}")
+
+            symbol_id = symbol_info['symbols'][0]['symbolId']
+            logger.info(f"Resolved {symbol} to symbolId {symbol_id}")
+
+            # Now fetch the quote using the numeric ID
+            quote = client.markets_quotes(ids=str(symbol_id))
 
             if quote is None:
                 raise ValueError(f"No quote data returned for {symbol}")
@@ -389,10 +426,23 @@ class QuestradeClient:
 
         try:
             client = self._get_client()
-            # Convert list to comma-separated string
-            symbols_str = ",".join(symbols)
             logger.info(f"Fetching quotes for {len(symbols)} symbols")
-            quotes = client.markets_quotes(symbols_str)
+
+            # First, resolve all symbols to their numeric IDs
+            symbols_str = ",".join(symbols)
+            symbol_info = client.symbols(names=symbols_str)
+
+            if not symbol_info or 'symbols' not in symbol_info or not symbol_info['symbols']:
+                raise ValueError(f"Symbols not found: {symbols}")
+
+            # Extract all symbol IDs
+            symbol_ids = [str(s['symbolId']) for s in symbol_info['symbols']]
+            ids_str = ",".join(symbol_ids)
+
+            logger.info(f"Resolved {len(symbols)} symbols to IDs: {ids_str}")
+
+            # Now fetch quotes using the numeric IDs
+            quotes = client.markets_quotes(ids=ids_str)
 
             if quotes is None:
                 raise ValueError(f"No quotes data returned")
@@ -439,8 +489,17 @@ class QuestradeClient:
         try:
             client = self._get_client()
             logger.info(f"Fetching candles for {symbol} ({interval})")
-            # questrade-api uses keyword arguments for candles
-            candles = client.markets_candles(symbol, startTime=start_time, endTime=end_time, interval=interval)
+
+            # First, resolve symbol to its numeric ID
+            symbol_info = client.symbols(names=symbol)
+            if not symbol_info or 'symbols' not in symbol_info or not symbol_info['symbols']:
+                raise ValueError(f"Symbol not found: {symbol}")
+
+            symbol_id = symbol_info['symbols'][0]['symbolId']
+            logger.info(f"Resolved {symbol} to symbolId {symbol_id}")
+
+            # questrade-api uses keyword arguments for candles, with numeric ID
+            candles = client.markets_candles(symbol_id, startTime=start_time, endTime=end_time, interval=interval)
 
             if candles is None:
                 raise ValueError(f"No candle data returned for {symbol}")
@@ -842,7 +901,17 @@ class QuestradeClient:
         try:
             client = self._get_client()
             logger.info(f"Fetching options chain for {symbol}")
-            options = client.symbol_options(symbol)
+
+            # First, resolve symbol to its numeric ID
+            symbol_info = client.symbols(names=symbol)
+            if not symbol_info or 'symbols' not in symbol_info or not symbol_info['symbols']:
+                raise ValueError(f"Symbol not found: {symbol}")
+
+            symbol_id = symbol_info['symbols'][0]['symbolId']
+            logger.info(f"Resolved {symbol} to symbolId {symbol_id}")
+
+            # Now fetch options using the numeric ID
+            options = client.symbol_options(symbol_id)
 
             if options is None:
                 raise ValueError(f"No options data returned for {symbol}")

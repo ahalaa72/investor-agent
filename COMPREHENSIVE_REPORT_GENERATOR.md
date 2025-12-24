@@ -84,7 +84,7 @@ else:
 - `get_insider_trades()`
 - `get_institutional_holders()`
 - `get_earnings_history()`
-- `analyze_technical()` ⭐ Now includes Al Brooks output in 'al_brooks' section
+- `analyze_technical()` - Basic technical indicators (use `analyze_ml_enhanced()` for full analysis)
 - `find_support_resistance()`
 - `analyze_volume_tool()`
 - `analyze_volatility_tool()`
@@ -193,9 +193,13 @@ When a tool fails:
 - If market hours: Analyze 15m/1h structure and momentum
 - Entry timing patterns only if market is open
 
-**Tools:** `analyze_technical()` (includes Al Brooks output), `fetch_intraday_1h()`, `fetch_intraday_15m()`
+**Tools:** `analyze_ml_enhanced()` (includes Al Brooks + Order Blocks + Supply/Demand), `fetch_intraday_1h()`, `fetch_intraday_15m()`
 
-**Note:** `analyze_technical()` now returns an `al_brooks` section with: always_in_direction, pattern, base_probability, adjusted_probability, bar_reading, trap_risk, entry/stop/target levels.
+**Note:** `analyze_ml_enhanced()` returns comprehensive analysis including:
+- `al_brooks` section: always_in_direction, pattern, base_probability, adjusted_probability, bar_reading, trap_risk, entry/stop/target levels
+- `order_blocks` section: bullish/bearish blocks, closest blocks, distance, interpretation
+- `supply_demand` section: demand/supply zones, closest zones, distance
+- `ema_vwap_confluence` section: multi-indicator alignment signals
 
 #### B. Brooks Methodology Analysis ⭐ DETAILED
 
@@ -298,6 +302,25 @@ When a tool fails:
 - Nearest Zone: [Demand/Supply] at $XXX.XX (X% away)
 - Probability: XX% price tests nearest zone within 5 days
 
+**📊 ORDER BLOCKS (Institutional Footprints):**
+
+| Block Type | Price Range | Age | Impulse | Distance | Signal |
+|------------|-------------|-----|---------|----------|--------|
+| 🟢 Bullish OB | $XXX.XX - $XXX.XX | X days | +X.X% | -X.X% | [TESTING/NEAR/FAR] |
+| 🔴 Bearish OB | $XXX.XX - $XXX.XX | X days | -X.X% | +X.X% | [TESTING/NEAR/FAR] |
+
+**Order Block Analysis:**
+- **Signal:** [BULLISH_ORDER_BLOCK_TEST / BEARISH_ORDER_BLOCK_TEST / NONE]
+- **Bullish Blocks Found:** X blocks below current price
+- **Bearish Blocks Found:** X blocks above current price
+- **Closest Bullish Block:** $XXX.XX (X.X% below) - Potential support zone
+- **Closest Bearish Block:** $XXX.XX (X.X% above) - Potential resistance zone
+
+**Interpretation:**
+[Order block interpretation - e.g., "Price testing bullish order block from X days ago. Original impulse +X.X%. Watch for bounce."]
+
+**Tools:** `analyze_ml_enhanced()` → order_blocks section
+
 #### C. Context-Informed Brooks Probability
 
 **Base Pattern Probability:** XX% ([High 2 / Low 1 / Breakout Pullback])
@@ -314,6 +337,602 @@ When a tool fails:
 **Final Brooks Probability:** XX% (context-informed)
 
 **Tools:** `find_support_resistance()`, `detect_chart_patterns()`, `analyze_trend_strength()`
+
+---
+
+#### 📚 AL BROOKS EDUCATIONAL BREAKDOWN (Teach Me Price Action!)
+
+**Purpose:** This section translates raw price action data into actionable trading decisions. Al Brooks' methodology from "Reading Price Charts Bar By Bar" teaches us to read what the market is DOING, not what we WANT it to do.
+
+---
+
+#### 1. WHAT THE MARKET IS DOING (Always-In Direction)
+
+**Always-In Direction:** [LONG / SHORT / NEUTRAL]
+
+[If Always-In LONG]:
+The market is currently **"Always-In LONG"**, which means **bulls are in control** and you should look for opportunities to **buy dips** or **pullbacks to support**. Shorting against this trend is dangerous - the market wants to go higher.
+
+**What "Always-In LONG" means:**
+- If a trader were **forced to be in the market** (either long or short), they would choose LONG because bulls have the edge.
+- **Every pullback is a buying opportunity** - the trend is your friend.
+- Bears are getting trapped - their shorts are losing money and will cover (creating buying pressure).
+
+**Trading Implication:**
+- ✅ **DO:** Buy pullbacks to EMA20, VWAP, or support levels. Use bull flag breakouts. Enter on High 2 or Low 1 setups.
+- ❌ **DON'T:** Short into this strength. Even if you think it's "overbought," the trend can stay overbought longer than you can stay solvent.
+
+**Brooks' Teaching:** "When Always-In is LONG, every selloff is a bull flag until proven otherwise. Buy the dips, don't fight the bulls." (Reading Price Charts Bar By Bar, Chapter 5)
+
+[If Always-In SHORT]:
+The market is currently **"Always-In SHORT"**, which means **bears are in control** and you should look for opportunities to **sell rallies** or **resistance rejections**. Buying against this trend is dangerous - the market wants to go lower.
+
+**What "Always-In SHORT" means:**
+- If a trader were **forced to be in the market**, they would choose SHORT because bears have the edge.
+- **Every rally is a selling opportunity** - the downtrend is strong.
+- Bulls are getting trapped - their longs are losing money and will exit (creating selling pressure).
+
+**Trading Implication:**
+- ✅ **DO:** Sell rallies to EMA20, VWAP, or resistance. Use bear flag breakdowns. Enter on Low 2 or High 1 setups.
+- ❌ **DON'T:** Buy dips in a bear trend. "Catching falling knives" loses money.
+
+**Brooks' Teaching:** "When Always-In is SHORT, every rally is a bear flag. Sell the rips, ride the trend down." (Chapter 6)
+
+[If Always-In NEUTRAL]:
+The market is **"Always-In NEUTRAL"** - neither bulls nor bears are in control. This is **range-bound, choppy price action** where the market is in **balance**.
+
+**What "Neutral" means:**
+- **No clear trend** - price is oscillating between support and resistance.
+- **Both sides are getting trapped** - breakouts fail, reversals happen quickly.
+- **Low conviction environment** - wait for clarity before taking directional bets.
+
+**Trading Implication:**
+- ✅ **DO:** Fade extremes (sell resistance, buy support). Trade the range. Wait for breakout confirmation before trend-following.
+- ❌ **DON'T:** Chase breakouts without strong confirmation. Most breakouts in ranges FAIL.
+
+**Brooks' Teaching:** "In trading ranges, buy low, sell high, and get out quickly. Wait for a strong breakout before switching to trend mode." (Chapter 8)
+
+---
+
+#### 2. THE PATTERN (Continuation vs Reversal Setup)
+
+**Current Pattern:** [Pattern Name from analyze_ml_enhanced]
+
+**Pattern Description:**
+
+[If High 2]:
+📋 **HIGH 2** (Bull Reversal - High Probability Setup)
+
+**What it is:** A High 2 is a **two-legged pullback in an uptrend** that tests a prior high. It's one of Al Brooks' **highest probability buy setups** (60-70% win rate).
+
+**Setup Structure:**
+1. **Bar 1:** A strong bull bar makes a new high
+2. **Bar 2:** A pullback bar (bear bar or doji) pulls back but stays above support
+3. **Bar 3 (Entry):** Price makes another attempt at the high - if it breaks above Bar 1's high, BUY
+
+**Why it works:**
+- **Failed bear breakout:** Bears tried to push lower (Bar 2) but failed - creates a "bear trap"
+- **Bull resumption:** Bulls regain control and push to new highs
+- **Trapped bears cover:** Bears who shorted on Bar 2 must cover, adding buying pressure
+
+**Example from current chart:**
+- Bar [Date-2]: High at $XXX.XX (Bar 1)
+- Bar [Date-1]: Pullback to $XXX.XX (Bar 2) - bears tried to break down
+- Bar [Today]: Pushing back above $XXX.XX (Bar 3) - **This is the High 2 entry**
+
+**Entry:** Buy stop above Bar 1 high ($XXX.XX)
+**Stop:** Below Bar 2 low ($XXX.XX)
+**Target:** Measured move or prior swing high ($XXX.XX)
+
+**Brooks' Teaching:** "High 2 is a failed bear breakout that becomes a bull signal. The best trades are when one side gives up." (Chapter 17)
+
+[If Low 1]:
+📋 **LOW 1** (Bull Entry - High Probability Setup)
+
+**What it is:** A Low 1 is the **first pullback in a strong bull trend**. It's a **buy-the-dip setup** with 60%+ win rate when trend is strong.
+
+**Setup Structure:**
+1. Strong bull trend with consecutive bull bars
+2. First pullback (1-3 bars) to support (EMA20, VWAP, prior resistance turned support)
+3. Entry: Buy when price bounces off support with a bull reversal bar
+
+**Why it works:**
+- **Strong trend momentum:** Bulls are in control, first pullback is shallow
+- **Late bulls enter:** Traders who missed the initial move buy the dip
+- **Bears weak:** Bears aren't strong enough to create deep pullback
+
+**Current Setup:**
+- Prior trend: [X consecutive bull bars, +XX% move]
+- Pullback depth: [X% from high to current support]
+- Support level: $XXX.XX (EMA20 / VWAP / prior resistance)
+
+**Entry:** Buy above bull reversal bar at support
+**Stop:** Below support ($XXX.XX)
+**Target:** Swing high or measured move
+
+**Brooks' Teaching:** "The first pullback in a strong trend is the best entry. Buy it before the second leg up begins." (Chapter 16)
+
+[If Wedge]:
+📋 **WEDGE** ([Bull/Bear] Wedge - Reversal Setup)
+
+**What it is:** A wedge is a **three-push pattern** that signals **exhaustion** and likely **reversal**. It's a climactic move where the trend is running out of steam.
+
+**Wedge Structure:**
+1. **Push 1:** Strong move in trend direction
+2. **Push 2:** Pullback, then another push (usually weaker momentum)
+3. **Push 3:** Final push (often weakest) - **THIS IS THE REVERSAL POINT**
+
+**Why it works:**
+- **Exhaustion:** Each push gets weaker (shrinking bars, lower volume, divergences)
+- **Trapped traders:** Late trend-followers buy/sell the top/bottom (Push 3)
+- **Smart money exits:** Early traders take profits, reversing the move
+
+**Current Wedge Analysis:**
+- **Push 1:** [Date] - $XXX.XX to $XXX.XX (+XX%)
+- **Push 2:** [Date] - $XXX.XX to $XXX.XX (+XX%) ← Weaker momentum
+- **Push 3:** [Today] - $XXX.XX to $XXX.XX (+XX%) ← **Weakest push, reversal likely**
+
+**Reversal Signal:**
+[If Bull Wedge]: **Sell** when Push 3 fails to make new high or breaks below wedge line
+[If Bear Wedge]: **Buy** when Push 3 fails to make new low or breaks above wedge line
+
+**Entry:** Reversal confirmed by strong counter-trend bar
+**Stop:** Beyond Push 3 extreme
+**Target:** Opposite side of wedge or measured move
+
+**Brooks' Teaching:** "Wedges are climactic moves. When you see three pushes with weakening momentum, prepare for reversal." (Chapter 11)
+
+[If Breakout]:
+📋 **BREAKOUT** (Trend Continuation - Moderate Probability)
+
+**What it is:** Price breaks above/below a significant level (resistance, support, trendline, range). **Breakouts can succeed (continuation) or fail (reversal)** - confirmation is critical.
+
+**Breakout Analysis:**
+- **Breakout Level:** $XXX.XX ([Resistance / Support / Range high/low])
+- **Breakout Bar:** [Strong bull/bear bar / Weak doji] ← **Strength matters**
+- **Volume:** [XX% above average / Below average] ← **Confirms conviction**
+- **Follow-Through:** [Consecutive bars in breakout direction / Immediate pullback]
+
+**Probability Assessment:**
+
+[If Strong Breakout]:
+✅ **HIGH PROBABILITY BREAKOUT** (70%+ success rate)
+- **Strong breakout bar:** Large bull/bear bar closing near extreme
+- **High volume:** XX% above average (institutions participating)
+- **Follow-through:** Next 1-2 bars continue in breakout direction
+- **No immediate pullback:** Price doesn't retest breakout level immediately
+
+**Entry:** Buy/Sell pullback to breakout level (now support/resistance)
+**Stop:** Below/Above breakout level
+**Target:** Measured move (height of range projected from breakout)
+
+[If Weak Breakout]:
+⚠️ **WEAK BREAKOUT - LIKELY TO FAIL** (30-40% success rate)
+- **Weak breakout bar:** Small bar, doji, or immediate reversal
+- **Low volume:** Below average (retail traders only, no institutions)
+- **Immediate pullback:** Price retests breakout level right away
+- **Overlap:** Breakout bar overlaps prior bar (lack of conviction)
+
+**Trading Implication:**
+- ❌ **DON'T chase weak breakouts** - wait for them to fail, then trade the reversal
+- ✅ **Fade the breakout:** If it fails to follow through, take the opposite trade
+
+**Brooks' Teaching:** "Strong breakouts have strong bars, high volume, and no pullback. Weak breakouts fail 60-70% of the time - fade them." (Chapter 9)
+
+[If Channel]:
+📋 **CHANNEL** (Trend with Parallel Lines)
+
+**What it is:** A channel is a **trend with clear boundaries** - price oscillates between a **trend line** (support in uptrend, resistance in downtrend) and a **channel line** (parallel line on opposite side).
+
+**Channel Characteristics:**
+- **Direction:** [Bull Channel / Bear Channel]
+- **Slope:** [Steep / Moderate / Shallow] ← Determines sustainability
+- **Width:** [Wide / Tight] ← Determines volatility
+- **Touches:** X touches on trend line, X touches on channel line
+
+**Trading the Channel:**
+
+[If Bull Channel]:
+✅ **Buy the Trend Line (Support):** Each pullback to the lower channel line is a buy opportunity
+- Entry: Buy when price tests trend line with bull reversal bar
+- Stop: Below trend line
+- Target: Upper channel line
+
+⚠️ **Fade the Channel Line (Resistance):** When price reaches upper channel line, consider taking profits or selling
+- Not a short unless channel breaks (trend is still bullish)
+
+[If Bear Channel]:
+✅ **Sell the Trend Line (Resistance):** Each rally to the upper channel line is a sell opportunity
+- Entry: Sell when price tests trend line with bear reversal bar
+- Stop: Above trend line
+- Target: Lower channel line
+
+**Channel Breakout:**
+- **Breakout above channel (Bull):** Acceleration signal - trend strengthening
+- **Breakdown below channel (Bear):** Trend failure - potential reversal
+
+**Brooks' Teaching:** "Trade with the channel - buy lows, sell highs within the trend. Only reverse when channel breaks." (Chapter 10)
+
+---
+
+#### 3. RECENT PRICE ACTION (Bar-by-Bar Reading)
+
+**Last 5 Bars Analysis:** (Read the bars like a story - what are they telling us?)
+
+**Bar [Today]:**
+- **Type:** [Strong Bull Bar / Bear Bar / Doji / Inside Bar]
+- **Close:** $XXX.XX ([Near High / Near Low / Middle])
+- **Size:** [Large / Average / Small] relative to recent bars
+- **Tails:** [Long upper tail / Long lower tail / No tails]
+
+**Interpretation:**
+[If Strong Bull Bar closing near high]:
+✅ **BULLISH CONVICTION** - Buyers dominated this entire period. They bought the open, pushed price higher, and held into the close. This is **strong buying pressure**.
+- **No upper tail:** No selling pressure even at highs - bulls are aggressive
+- **Small/no lower tail:** No downside test - bulls confident
+- **Implication:** Expect continuation higher or at worst a shallow pullback
+
+[If Bear Bar closing near low]:
+⚠️ **BEARISH PRESSURE** - Sellers dominated. They sold the open, pushed price lower, and held into the close. This is **strong selling pressure**.
+- **No lower tail:** No buying support even at lows - bears are aggressive
+- **Small/no upper tail:** No upside test - bears confident
+- **Implication:** Expect continuation lower or at worst a shallow bounce
+
+[If Doji / Small Bar]:
+⚠️ **INDECISION** - Neither bulls nor bears in control. Price opened, went nowhere, closed near open. This is **neutral** and suggests:
+- **Market uncertainty:** Waiting for catalyst or breakout direction
+- **Potential reversal:** After strong trend, doji = exhaustion
+- **Inside bar:** Low conviction - next bar will determine direction
+
+**Implication:** Wait for next bar to clarify direction. Don't trade indecision.
+
+[If Inside Bar]:
+⚠️ **COMPRESSION** - Inside bar (high/low both inside prior bar's high/low) = **coiling price action**. Market is compressing before explosive move.
+- **Breakout coming:** Inside bars often precede strong breakouts (up or down)
+- **Direction unclear:** Wait for breakout bar to show direction
+- **Entry:** Buy/Sell breakout of inside bar's high/low
+
+**Bar [Date-1]:**
+- **Type:** [Bar type]
+- **Close:** $XXX.XX
+- **Interpretation:** [Same detailed analysis]
+
+**Bar [Date-2]:**
+- **Type:** [Bar type]
+- **Close:** $XXX.XX
+- **Interpretation:** [Same detailed analysis]
+
+**Bar [Date-3]:**
+- **Type:** [Bar type]
+- **Close:** $XXX.XX
+- **Interpretation:** [Same detailed analysis]
+
+**Bar [Date-4]:**
+- **Type:** [Bar type]
+- **Close:** $XXX.XX
+- **Interpretation:** [Same detailed analysis]
+
+**PATTERN OBSERVATIONS (5-Bar Story):**
+
+[If String of Bull Bars]:
+📈 **STRONG BULL TREND** - X consecutive bull bars closing near highs = **powerful buying pressure**. Each bar confirms bulls are in control. This is a **trend day** or **strong trending move**.
+- **Entry Signal:** Buy first pullback (Low 1 setup)
+- **Risk:** Buying too late after X bars up - wait for pullback
+
+[If Overlapping Bars / Congestion]:
+⚠️ **CONSOLIDATION / RANGE** - Bars overlapping, no clear direction = **trading range**. Neither bulls nor bears winning.
+- **Entry Signal:** Buy support, sell resistance WITHIN the range
+- **Breakout Setup:** Waiting for breakout of range (strong bar + volume)
+
+[If Decreasing Bar Size]:
+⚠️ **MOMENTUM FADING** - Bars getting smaller = trend losing steam. This often precedes **reversal** or **deeper pullback**.
+- **Warning Sign:** If in a trend, be ready to take profits or tighten stops
+- **Reversal Setup:** Look for reversal pattern (Wedge, Failed Breakout)
+
+---
+
+#### 4. WHY THIS MATTERS (Probability + Conviction)
+
+**BASE PATTERN PROBABILITY:** XX% ([Pattern name] has historical XX% success rate)
+
+**CONTEXT ADJUSTMENTS:**
+
+Al Brooks teaches us that **context is everything** - a pattern's probability changes based on surrounding factors:
+
+**Positive Factors (Increase Probability):**
+✅ **Strong Trend:** Always-In LONG/SHORT = +10-15% (trend continuation favored)
+✅ **High Volume on Setup Bar:** XX% above average = +10% (institutions participating)
+✅ **Multiple Timeframe Alignment:** Daily + Weekly both bullish = +10-15% (higher timeframe confirms)
+✅ **Catalyst Present:** Earnings in X days / News event = +5-10% (fundamental driver)
+✅ **Failed Opposite Setup:** Bears tried to break down but failed (High 2) = +10-15% (trapped traders must cover)
+✅ **Strong Bars:** Large bars, closing near extremes = +5-10% (conviction)
+✅ **Clean Pattern:** No overlap, clear structure = +5% (textbook setup)
+
+**Negative Factors (Decrease Probability):**
+❌ **Counter-Trend Trade:** Shorting Always-In LONG = -20-30% (fighting the trend)
+❌ **Low Volume:** XX% below average = -10-15% (retail only, no institutional support)
+❌ **Choppy/Overlapping Bars:** = -10% (indecision, low conviction)
+❌ **Late in Move:** X bars into trend without pullback = -10-15% (exhaustion risk)
+❌ **Multiple Failed Attempts:** Prior breakouts failed = -10% (resistance strong)
+❌ **Weak Bars:** Small bars, dojis, long tails = -10% (weak momentum)
+❌ **Divergences:** Price higher but RSI/MACD lower = -10-15% (bearish divergence)
+
+**CALCULATION:**
+
+Base Pattern (e.g., High 2): 60%
++ Strong Trend (Always-In LONG): +15%
++ High Volume: +10%
++ Failed Bear Breakout: +15%
++ Clean Pattern: +5%
+- Late in Move (X bars up): -10%
+
+**= FINAL BROOKS PROBABILITY: 95%**
+
+**CONVICTION ASSESSMENT:**
+
+[If Probability ≥70%]:
+✅ **VERY STRONG CONVICTION - HIGH PROBABILITY TRADE**
+
+This is a **textbook setup** with multiple factors aligned:
+- Pattern is clear and clean (no ambiguity)
+- Context supports the setup (trend, volume, catalyst)
+- Risk/reward is favorable (tight stop, clear target)
+
+**Trading Implication:** **Full position size** (within 2% risk limit). This is the kind of setup you SHOULD take. All the factors align - this is what we wait for.
+
+**Brooks' Teaching:** "When you have 70%+ probability, strong conviction, and all factors aligned - BET BIG (within your risk rules). These setups don't come every day." (Chapter 20)
+
+[If Probability 50-69%]:
+⚠️ **MODERATE CONVICTION - ACCEPTABLE TRADE**
+
+This is a **decent setup** but not perfect:
+- Pattern is present but some negative factors exist (late in move, weak volume, etc.)
+- Risk/reward is acceptable but not ideal
+- Could work, but not a "slam dunk"
+
+**Trading Implication:** **Reduced position size** (50-75% of normal). This is tradeable but not a high-conviction setup. Be ready to exit quickly if it doesn't work.
+
+**Brooks' Teaching:** "50-60% setups are coin flips. Only take them if risk/reward is 2:1 or better to compensate for lower probability." (Chapter 21)
+
+[If Probability <50%]:
+❌ **LOW CONVICTION - AVOID OR WAIT**
+
+This setup has **too many negative factors**:
+- Counter-trend, weak bars, low volume, or conflicting signals
+- Probability is AGAINST you (less than 50% = losing trade long-term)
+
+**Trading Implication:** **DO NOT TRADE** - Wait for better setup. Forcing trades with <50% probability is how traders lose money.
+
+**Brooks' Teaching:** "If you don't have at least 60% probability AND 1:1 risk/reward (or 50% probability with 2:1 R/R), DON'T TRADE. Patience is a position." (Chapter 22)
+
+---
+
+#### 5. TRAP WARNING (When NOT To Trade)
+
+**TRAP RISK ASSESSMENT:** [HIGH / MODERATE / LOW]
+
+Al Brooks teaches that **recognizing TRAPS is more important than recognizing setups**. Most traders lose money because they get trapped, not because they miss good setups.
+
+**COMMON TRAPS TO AVOID:**
+
+[If TRAP RISK = HIGH]:
+🚨 **HIGH TRAP RISK - DO NOT ENTER**
+
+**Why This Is A Trap:**
+
+[If Late in Trend]:
+⚠️ **LATE-IN-MOVE TRAP** (Buying the Top / Selling the Bottom)
+
+**What's happening:** Price has rallied X bars / XX% without pullback. Everyone sees the trend and wants in. This is when **late bulls buy the top** and get trapped.
+
+**Trap Mechanism:**
+1. **Early bulls (smart money):** Already in from $XXX - sitting on XX% gains
+2. **Late bulls (retail):** Seeing the move NOW, buying at $XXX (the high)
+3. **Early bulls take profit:** Sell to late bulls at the top
+4. **Late bulls trapped:** Price reverses, they're underwater immediately
+
+**How to Avoid:**
+- ✅ **Wait for pullback:** Don't chase. Wait for first pullback (Low 1 setup)
+- ✅ **Check for exhaustion signals:** Wedge, divergence, weak bars, low volume
+- ❌ **Don't buy breakouts after X bars up:** You're late. The move is over.
+
+**Brooks' Teaching:** "The best time to buy is when nobody wants it (support, pullback). The worst time is when everyone wants it (breakout after big move). Don't be the last buyer." (Chapter 7)
+
+[If Counter-Trend]:
+⚠️ **COUNTER-TREND TRAP** (Fighting the Trend)
+
+**What's happening:** Always-In is LONG but you want to short because "it's overbought" or "it has to pull back." This is **fighting the trend** - one of the most common traps.
+
+**Trap Mechanism:**
+1. **Strong trend:** Bulls are in control, Always-In LONG
+2. **Retail shorts:** "This is too high, I'm shorting" (counter-trend)
+3. **Trend continues:** Bulls keep buying, price keeps rising
+4. **Shorts cover at loss:** Retail covers, adding to buying pressure (squeeze)
+
+**How to Avoid:**
+- ✅ **Trade WITH the trend:** If Always-In LONG, ONLY look for longs (buy dips)
+- ✅ **Wait for trend reversal:** Need strong reversal pattern (Wedge, Failed Breakout) before counter-trend
+- ❌ **Don't short strong uptrends:** "Trend is too strong" = not a reason to short
+
+**Brooks' Teaching:** "The trend is always stronger than you think. When Always-In is LONG, every selloff is a bull flag until proven otherwise. Don't fight it." (Chapter 5)
+
+[If Weak Breakout]:
+⚠️ **FAILED BREAKOUT TRAP** (Chasing Weak Breakouts)
+
+**What's happening:** Price breaks above resistance with **weak bar, low volume, immediate pullback**. Retail traders buy the breakout. Smart money fades it (sells). Breakout fails.
+
+**Trap Mechanism:**
+1. **Weak breakout:** Small bar, low volume, doji
+2. **Retail buys:** "Breakout! I'm buying!" (no confirmation)
+3. **Breakout fails:** Price immediately reverses back into range
+4. **Retail stops hit:** Buyers trapped, stopped out at loss
+
+**How to Avoid:**
+- ✅ **Require confirmation:** Strong breakout bar + high volume + follow-through
+- ✅ **Wait for retest:** Buy the pullback to breakout level (now support), not the breakout itself
+- ❌ **Don't chase weak breakouts:** 60-70% of weak breakouts FAIL
+
+**Brooks' Teaching:** "Most breakouts fail. Only trade breakouts with strong bars, high volume, and no immediate reversal. Otherwise, fade them." (Chapter 9)
+
+[If TRAP RISK = MODERATE]:
+⚠️ **MODERATE TRAP RISK - REDUCE SIZE OR WAIT**
+
+**Caution Areas:**
+- **Overlapping bars:** Choppy price action = indecision = reversals likely
+- **Divergences present:** Price higher but RSI/MACD lower = bearish divergence (momentum fading)
+- **Multiple timeframe conflict:** Daily bullish but weekly bearish = mixed signals
+- **Earnings/event coming:** Unpredictable volatility ahead (X days to earnings)
+
+**How to Trade:**
+- ✅ **Reduce position size:** 50% of normal size (less conviction)
+- ✅ **Tighter stops:** Be ready to exit quickly if setup fails
+- ✅ **Consider waiting:** If unsure, better to miss trade than lose money
+
+[If TRAP RISK = LOW]:
+✅ **LOW TRAP RISK - GOOD SETUP**
+
+**Why This Is Safe:**
+- **Clear pattern:** Textbook setup (High 2, Low 1, strong breakout)
+- **Strong bars:** Large bars closing near extremes = conviction
+- **High volume:** Institutions participating
+- **Trend alignment:** Trading WITH Always-In direction
+- **No conflicting signals:** All factors agree
+
+**Trading Implication:** This is a **high-probability, low-trap-risk setup**. Full position size justified (within 2% risk limit).
+
+---
+
+#### 6. TRADING IMPLICATION (What To Do RIGHT NOW)
+
+**Based on ALL analysis above, here's your SPECIFIC action plan:**
+
+[If Always-In LONG + High Probability Setup]:
+✅ **BUY SIGNAL - Enter Long Position**
+
+**Entry Strategy:**
+
+**Option 1: Aggressive Entry (If Currently At Support)**
+- **Entry:** BUY NOW at $XXX.XX (current price at [EMA20 / VWAP / support])
+- **Why:** Price is testing support RIGHT NOW with [bull reversal bar / hammer / strong bounce]
+- **Risk:** If you wait, you might miss the entry as price bounces
+
+**Option 2: Conservative Entry (Wait for Confirmation)**
+- **Entry:** BUY STOP at $XXX.XX (above prior bar high or resistance)
+- **Why:** Confirms bulls are in control before entering
+- **Risk:** Slightly worse entry price but more confirmation
+
+**Stop Loss:**
+- **Price:** $XXX.XX (below [support / EMA20 / prior swing low])
+- **Distance:** -X.X% from entry
+- **Dollar Risk:** $XXX per share × position size = $XXX total risk
+- **Why this stop:** If price breaks below support, the setup has FAILED - exit immediately
+
+**Position Sizing:**
+- **Account Size:** $XX,XXX
+- **Risk per trade:** 2% = $XXX max loss
+- **Share Size:** $XXX max loss ÷ $X.XX stop distance = XXX shares
+- **Capital Deployed:** XXX shares × $XXX.XX entry = $XX,XXX
+
+**Profit Targets:**
+
+**Target 1 (Conservative):** $XXX.XX (+X.X%) - [Prior resistance / R1 level]
+- **Action:** Sell 50% of position, move stop to breakeven on remaining
+- **Why:** Lock in profit, reduce risk to zero
+
+**Target 2 (Moderate):** $XXX.XX (+XX%) - [Major resistance / R2 level]
+- **Action:** Sell 25% more (75% total out)
+- **Why:** Take majority of profit off table
+
+**Target 3 (Aggressive):** $XXX.XX (+XX%) - [Measured move / R3 level]
+- **Action:** Let final 25% run with trailing stop
+- **Why:** Capture full trend move if it continues
+
+**Time Horizon:** X-XX days (based on [setup type / catalyst timing / trend strength])
+
+**Exit Triggers (STOP LOSS SCENARIOS):**
+1. **Price breaks below $XXX.XX:** Setup failed - exit immediately
+2. **Pattern invalidation:** If Always-In flips to SHORT, exit longs
+3. **Time stop:** If X days pass with no progress, re-evaluate (might be wrong)
+4. **Catalyst:** If earnings/news is negative, exit regardless of price
+
+**Risk/Reward:**
+- **Risk:** $XXX (X.X%)
+- **Reward:** $XXX (Target 1) to $XXX (Target 3) = XX% to XX%
+- **R/R Ratio:** [2:1 / 3:1 / 5:1] ✅ (Acceptable for XX% probability trade)
+
+**Brooks' Checklist Before Entry:**
+- [ ] Always-In direction = LONG ✅
+- [ ] Pattern probability ≥60% ✅
+- [ ] Risk/reward ≥2:1 ✅
+- [ ] Stop loss defined and acceptable ✅
+- [ ] Position size = 2% max risk ✅
+- [ ] Volume confirms setup ✅
+- [ ] No major trap risks ✅
+
+**IF ALL CHECKBOXES = ✅, EXECUTE THE TRADE.**
+
+**Brooks' Final Teaching:** "The best trades are obvious, boring, and textbook. If you have to convince yourself to take it, don't take it. Wait for the setups that scream at you." (Chapter 23)
+
+[If Always-In SHORT + High Probability Setup]:
+✅ **SELL SIGNAL - Enter Short Position**
+
+[Same detailed structure as LONG, but inverted for shorts]
+- Entry: Sell at resistance / breakdown level
+- Stop: Above resistance / prior swing high
+- Targets: Support levels (S1, S2, S3)
+
+[If NEUTRAL / Low Probability]:
+⚠️ **NO TRADE - WAIT FOR BETTER SETUP**
+
+**Why NOT to trade:**
+- [Always-In NEUTRAL = choppy, no edge]
+- [Probability <60% = coin flip]
+- [Trap risk HIGH = likely to lose money]
+- [Conflicting signals = uncertainty]
+
+**What to do instead:**
+1. ✅ **Wait for clarity:** Let market resolve (breakout or reversal)
+2. ✅ **Set alerts:** Price at $XXX (support) or $XXX (resistance) - wait for test
+3. ✅ **Re-evaluate tomorrow:** New bar = new information
+4. ❌ **Don't force trades:** No trade is better than bad trade
+
+**Brooks' Teaching:** "The market is there every day. If you don't have a good setup TODAY, wait for tomorrow. Patience is the most important skill." (Chapter 24)
+
+---
+
+**📊 AL BROOKS PRICE ACTION SCORE: XX/100**
+
+**Components:**
+- **Pattern Quality:** XX/30 pts (Clean pattern, high probability setup)
+- **Bar Reading:** XX/25 pts (Strong bars, conviction, momentum)
+- **Context Alignment:** XX/25 pts (Trend, volume, catalysts aligned)
+- **Trap Avoidance:** XX/20 pts (Low trap risk, good entry timing)
+
+[If Score ≥75]:
+✅ **HIGH CONVICTION - TEXTBOOK SETUP**
+This is the kind of setup Al Brooks teaches in his books - clear pattern, strong context, low trap risk. This is a **high-probability trade** worth taking (full position size within 2% risk limit).
+
+[If Score 50-74]:
+⚠️ **MODERATE CONVICTION - ACCEPTABLE WITH CAVEATS**
+Setup is decent but has some flaws (weak bars, late in move, moderate volume). Tradeable with **reduced size** (50-75%) and tight stops.
+
+[If Score <50]:
+❌ **LOW CONVICTION - AVOID**
+Too many red flags (counter-trend, weak bars, high trap risk, conflicting signals). **DO NOT FORCE THIS TRADE** - wait for better setup.
+
+---
+
+**🎓 KEY TAKEAWAY:**
+
+Al Brooks teaches us to **read price action like a language** - every bar tells a story. The best traders:
+1. Know what the market is DOING (Always-In direction)
+2. Recognize patterns (High 2, Low 1, Wedge, Breakout)
+3. Read bars for conviction (strong vs weak, bulls vs bears)
+4. Calculate probability (context adjustments)
+5. Avoid traps (late entries, counter-trend, weak breakouts)
+6. Execute with discipline (entry, stop, targets, position size)
+
+**Your edge is NOT predicting the future - it's reading what's happening NOW and acting on high-probability setups with disciplined risk management.**
 
 ---
 
@@ -611,6 +1230,469 @@ When a tool fails:
 [2-3 sentence summary of McMillan options analysis and recommended strategy with specific strikes]
 
 **Tools:** `analyze_options_mcmillan(ticker, direction, holding_period_days)`
+
+---
+
+#### 📚 McMILLAN OPTIONS EDUCATIONAL BREAKDOWN (Teach Me!)
+
+**Purpose:** This section translates raw options data into actionable strategy selection. McMillan's methodology from "Options as a Strategic Investment" teaches us to **match strategy to volatility environment** - not just pick random strikes.
+
+---
+
+#### 1. WHAT THE OPTIONS MARKET IS SAYING
+
+**Summary of Options Activity:**
+
+[Based on analyze_options_mcmillan data]
+
+**IV Rank:** XX% | **IV Percentile:** XX% | **P/C Ratio:** X.XX | **Max Pain:** $XXX
+
+**Combined Reading:**
+
+[If IV Rank >60%]:
+The options market is saying: **"Expect volatility."** IV Rank above 60% means implied volatility is near the HIGH end of its 52-week range. Options are **expensive right now** - premium sellers have an edge. This is a **premium-selling environment** - strategies like Iron Condors, Credit Spreads, and Covered Calls work best.
+
+[If IV Rank 30-60%]:
+The options market is saying: **"Normal volatility environment."** IV is in the middle of its range - neither cheap nor expensive. You can use **directional strategies** (Long Calls/Puts, Debit Spreads) if you have strong conviction on direction, OR **neutral strategies** (Iron Condors) if you expect range-bound action.
+
+[If IV Rank <30%]:
+The options market is saying: **"Volatility is cheap - options are on sale."** IV Rank below 30% means implied volatility is near the LOW end of its 52-week range. This is a **premium-buying environment** - strategies like Long Calls, Long Puts, and Debit Spreads are attractive because options are underpriced relative to potential moves.
+
+**Put/Call Ratio Sentiment:**
+
+[If P/C Ratio >1.2]:
+Put/call ratio of X.XX suggests **excessive bearish positioning**. McMillan teaches us this is often a **contrarian BULLISH signal** - when everyone is hedged/positioned bearish, a squeeze higher becomes likely.
+
+[If P/C Ratio <0.7]:
+Put/call ratio of X.XX suggests **excessive bullish positioning**. This is often a **contrarian BEARISH signal** - when everyone is positioned bullish (heavy call buying), the market may reverse lower.
+
+[If P/C Ratio 0.7-1.2]:
+Put/call ratio of X.XX is **neutral** - no contrarian signal. Use other factors for direction.
+
+**Max Pain Price Magnetism:**
+
+[If Max Pain is Above Current Price]:
+Max pain at $XXX is **above current price ($XXX)**. Theory suggests price has **upward gravitational pull** toward max pain as market makers hedge their positions. This suggests **bullish bias** into expiration.
+
+[If Max Pain is Below Current Price]:
+Max pain at $XXX is **below current price ($XXX)**. Theory suggests price has **downward gravitational pull** toward max pain. This suggests **bearish bias** into expiration.
+
+[If Max Pain is At Current Price]:
+Max pain at $XXX is **at current price** - price is already at equilibrium. Expect **range-bound action** into expiration unless a catalyst breaks the range.
+
+---
+
+#### 2. IV ENVIRONMENT EXPLAINED (Strategy Selection Framework)
+
+**Current IV Rank:** XX% → **[HIGH / NORMAL / LOW] Volatility Environment**
+
+**What IV Rank Tells You:**
+
+IV Rank compares **current implied volatility** to the **52-week high/low range**:
+
+- **IV Rank = (Current IV - 52w Low IV) / (52w High IV - 52w Low IV) × 100**
+
+**Translation:**
+- **>60% = HIGH** → Options are expensive, volatility is elevated
+- **30-60% = NORMAL** → Options are fairly priced
+- **<30% = LOW** → Options are cheap, volatility is compressed
+
+**Why This Matters for Strategy Selection:**
+
+[If IV Rank >60%]:
+✅ **PREMIUM SELLING STRATEGIES** (Collect expensive premium, profit from IV crush):
+- **Iron Condor:** Neutral, profit from range-bound action + IV drop
+- **Credit Spreads:** Directional income, sell overpriced options
+- **Covered Calls:** Income generation on existing shares
+- **Cash-Secured Puts:** Get paid to wait for entry
+
+❌ **AVOID Premium Buying:** Long Calls/Puts are overpriced - you're fighting IV crush (Vega risk).
+
+[If IV Rank 30-60%]:
+✅ **DIRECTIONAL STRATEGIES** (If you have conviction):
+- **Debit Spreads:** Defined risk, directional bets
+- **Long Calls/Puts:** If conviction is strong and catalyst expected
+
+✅ **NEUTRAL STRATEGIES** (If expecting range):
+- **Iron Condors:** Profit from theta decay in range
+
+[If IV Rank <30%]:
+✅ **PREMIUM BUYING STRATEGIES** (Buy cheap options before volatility expansion):
+- **Long Calls/Puts:** Cheap options, position for volatility spike
+- **Debit Spreads:** Defined risk, cheaper entry
+- **Straddles/Strangles:** If expecting big move but uncertain direction
+
+❌ **AVOID Premium Selling:** You're selling cheap options - not enough edge.
+
+**McMillan's Rule:** "Sell premium when IV is high, buy premium when IV is low. Match your strategy to the volatility environment, not your market opinion."
+
+---
+
+#### 3. PUT/CALL RATIO INTERPRETATION (Sentiment + Contrarian Signals)
+
+**Current P/C Ratio:** X.XX
+
+**What Put/Call Ratio Measures:**
+
+P/C Ratio = **Put Volume / Call Volume**
+
+**Raw Interpretation:**
+- **<0.7:** Bullish sentiment (heavy call buying)
+- **0.7-1.0:** Neutral to slightly bullish
+- **1.0-1.2:** Neutral to slightly bearish
+- **>1.2:** Bearish sentiment (heavy put buying)
+
+**McMillan's Contrarian Framework:**
+
+[If P/C >1.2]:
+⚠️ **CONTRARIAN BULLISH SIGNAL**
+
+**What it means:** When P/C ratio exceeds 1.2, it indicates **excessive bearish positioning** - too many puts being bought relative to calls. This often signals a **market bottom** because:
+
+1. **Everyone is hedged:** Institutions already protected downside
+2. **No sellers left:** If everyone is bearish, who's left to sell?
+3. **Short squeeze potential:** Bearish positions get squeezed on any good news
+
+**Historical Context:** McMillan's research shows P/C spikes >1.2 often precede **5-10 day rallies** as bearish positioning unwinds.
+
+**Trading Implication:** Consider **bullish strategies** (Long Calls, Bull Call Spreads) when P/C >1.2, even if fundamental outlook is uncertain. Sentiment extremes reverse.
+
+[If P/C <0.7]:
+⚠️ **CONTRARIAN BEARISH SIGNAL**
+
+**What it means:** When P/C ratio drops below 0.7, it indicates **excessive bullish positioning** - too many calls being bought relative to puts. This often signals a **market top** because:
+
+1. **Everyone is positioned long:** No more buyers left to push price higher
+2. **Complacency risk:** Low put buying = no fear = dangerous
+3. **Profit-taking likely:** Bullish positions vulnerable to selloff
+
+**Trading Implication:** Consider **bearish strategies** (Long Puts, Bear Put Spreads) or **protective strategies** when P/C <0.7.
+
+[If P/C 0.7-1.2]:
+✅ **NEUTRAL - NO CONTRARIAN SIGNAL**
+
+**What it means:** P/C ratio between 0.7-1.2 is **normal balanced positioning** - no extreme sentiment. Use **other factors** (IV environment, technical setup, fundamentals) for direction.
+
+**Trading Implication:** Focus on IV environment and directional conviction rather than sentiment.
+
+---
+
+#### 4. MAX PAIN & PRICE MAGNETISM (Price Target + Reliability)
+
+**Max Pain Theory:** The price at which **option sellers** (market makers) experience **minimum loss** at expiration. Market makers delta-hedge their positions, creating **buying/selling pressure** that "pulls" price toward max pain.
+
+**Current Max Pain:** $XXX | **Current Price:** $XXX | **Distance:** [+/-X.X%]
+
+**Price Relationship:**
+
+[If Max Pain Above Price]:
+📈 **UPWARD GRAVITATIONAL PULL**
+
+**What it means:** Max pain is $XXX, **above current price** by X.X%. Theory suggests market makers will **delta-hedge in a way that pushes price higher** toward max pain as expiration approaches.
+
+**Why it happens:**
+- Market makers are **short calls** above max pain → Must buy shares to hedge as price rises (creates buying pressure)
+- Market makers are **long puts** below max pain → Must sell shares to hedge as puts lose value (creates more buying pressure)
+
+**Trading Implication:** **Bullish bias** into expiration. Consider bullish strategies with targets near max pain level.
+
+[If Max Pain Below Price]:
+📉 **DOWNWARD GRAVITATIONAL PULL**
+
+**What it means:** Max pain is $XXX, **below current price** by X.X%. Theory suggests market makers will **delta-hedge in a way that pushes price lower** toward max pain.
+
+**Trading Implication:** **Bearish bias** into expiration. Consider bearish strategies with targets near max pain level.
+
+[If Max Pain At Price]:
+⚖️ **EQUILIBRIUM - RANGE-BOUND**
+
+**What it means:** Max pain is **at current price** - no gravitational pull. Price is already at the optimal level for option sellers.
+
+**Trading Implication:** Expect **range-bound action** unless a fundamental catalyst breaks the range. Consider **neutral strategies** (Iron Condor, Short Straddle).
+
+**Reliability Assessment:**
+
+[If Reliability HIGH]:
+✅ **HIGH RELIABILITY** (Trust the max pain signal)
+
+**Why:** High reliability occurs when:
+- **Near expiration:** <7 days to expiry = stronger gravitational pull
+- **High open interest:** More options = more delta-hedging pressure
+- **Low volatility:** Stable environment = predictable hedging
+
+**Confidence:** 70-80% - Max pain is a **strong price target** in these conditions.
+
+[If Reliability MEDIUM]:
+⚠️ **MEDIUM RELIABILITY** (Use with caution)
+
+**Why:** Medium reliability when expiration is 1-2 weeks away or open interest is moderate.
+
+**Confidence:** 50-60% - Max pain is a **weak directional bias**, not a precise target.
+
+[If Reliability LOW]:
+❌ **LOW RELIABILITY** (Do NOT trade based on max pain)
+
+**Why:** Low reliability when:
+- **Far from expiration:** >2 weeks = too early for gravitational pull
+- **Low open interest:** Not enough options to create hedging pressure
+- **High volatility:** Unpredictable moves overwhelm hedging effects
+
+**Confidence:** <40% - Max pain is **noise**, ignore it.
+
+---
+
+#### 5. GREEKS BREAKDOWN FOR YOUR TRADE (Plain English)
+
+**Greeks are NOT just numbers - they tell you exactly what risks you're taking and how your position will behave.**
+
+[From analyze_options_mcmillan.greeks_assessment]
+
+**📈 DELTA:** Call: +X.XX | Put: -X.XX
+
+**What it means:**
+- Delta tells you **how much your option price moves per $1 stock move**.
+- **Call Delta +X.XX:** If stock goes up $1, your call gains ~$X.XX × 100 = $XXX per contract.
+- **Put Delta -X.XX:** If stock goes down $1, your put gains ~$X.XX × 100 = $XXX per contract.
+
+**Probability Interpretation:**
+- Delta also approximates **probability of expiring ITM**:
+  - Call with +0.70 delta = ~70% chance of finishing in-the-money
+  - Put with -0.30 delta = ~30% chance of finishing in-the-money
+
+**Trading Implication:**
+[If Delta >0.70]: **Deep ITM** - High probability, expensive, acts like stock
+[If Delta 0.40-0.70]: **ATM/Slightly ITM** - Balanced probability, good for directional trades
+[If Delta <0.40]: **OTM** - Lower probability, cheap, high leverage (lotto tickets)
+
+---
+
+**⚡ GAMMA:** Call: X.XXXX | Put: X.XXXX → [HIGH / LOW]
+
+**What it means:**
+- Gamma tells you **how fast Delta changes** as stock moves.
+- **High Gamma (>0.05):** Delta changes rapidly = **explosive gains/losses** near strike.
+- **Low Gamma (<0.02):** Delta changes slowly = **stable, predictable** behavior.
+
+**Trading Implication:**
+[If Gamma HIGH]:
+⚠️ **EXPLOSIVE RISK/REWARD** - Your Delta will accelerate quickly as stock moves. Great for **swing trades** if you're right, but losses accelerate fast if you're wrong.
+
+**Example:** If stock moves $1 in your favor, your Delta might jump from 0.50 → 0.60, giving you 20% more exposure on the next $1 move.
+
+[If Gamma LOW]:
+✅ **STABLE BEHAVIOR** - Your Delta won't change much. Good for **longer-term positions** where you want predictable exposure.
+
+---
+
+**⏳ THETA:** Call: -$X.XX | Put: -$X.XX per day
+
+**What it means:**
+- Theta is **time decay** - how much value your option loses **per day** as expiration approaches.
+- **-$X.XX per day** means you lose $X.XX × 100 = $XXX per contract every day, even if stock doesn't move.
+
+**Trading Implication:**
+[If Theta High (>-$2)]:
+⚠️ **BURNING CASH FAST** - You're losing $XXX+ per day to time decay. This is **dangerous for premium buyers** (Long Calls/Puts) - you need stock to move FAST.
+
+✅ **GREAT for premium sellers** (Iron Condors, Credit Spreads) - you're collecting this decay.
+
+[If Theta Low (<-$0.50)]:
+✅ **Slow time decay** - Longer-dated options, more time for your thesis to play out.
+
+**McMillan's Rule:** "Theta is your enemy when you buy options, your friend when you sell them."
+
+---
+
+**🌪️ VEGA:** Call: $X.XX | Put: $X.XX per 1% IV change
+
+**What it means:**
+- Vega tells you **how much your option price changes per 1% move in implied volatility**.
+- **Vega $X.XX** means if IV increases by 1%, your option gains $X.XX × 100 = $XXX per contract.
+
+**Trading Implication:**
+
+[If High IV Environment (IV Rank >60%)]:
+⚠️ **VEGA RISK FOR PREMIUM BUYERS** - If you buy options in high IV, you're exposed to **IV crush** (volatility drop after earnings, news). Even if stock moves your way, IV drop can kill your gains.
+
+**Example:** You buy a call for $5.00 in high IV (60%). Stock moves up 2%, but IV drops 10% → Your call might LOSE money due to Vega losses overwhelming Delta gains.
+
+✅ **VEGA OPPORTUNITY FOR PREMIUM SELLERS** - Selling options in high IV means you profit from IV crush (volatility normalization).
+
+[If Low IV Environment (IV Rank <30%)]:
+✅ **VEGA OPPORTUNITY FOR PREMIUM BUYERS** - Buying options in low IV means you profit from **volatility expansion** when news/events hit.
+
+**McMillan's Rule:** "Sell Vega (premium sell) when IV is high, buy Vega (premium buy) when IV is low."
+
+---
+
+**Position Risk Summary:**
+
+[From analyze_options_mcmillan Position Risk assessment]
+
+- **Theta Risk:** [Theta-positive = collecting decay / Theta-negative = fighting decay]
+- **Vega Risk:** [Vega-long = profit from IV rise / Vega-short = profit from IV drop]
+- **Gamma Risk:** [Gamma-stable = predictable / Gamma-explosive = rapid changes]
+
+**Combined Risk Profile:**
+
+[If Theta-negative + Vega-long in High IV]:
+⚠️ **DANGER:** You're **buying premium in expensive IV** - fighting both time decay AND potential IV crush. You need a BIG, FAST move to overcome these headwinds.
+
+[If Theta-positive + Vega-short in High IV]:
+✅ **IDEAL:** You're **selling premium in expensive IV** - collecting decay AND benefiting from IV normalization. Time is on your side.
+
+[If Theta-negative + Vega-long in Low IV]:
+✅ **STRATEGIC:** You're **buying cheap options** - positioned for volatility expansion. Good for event-driven plays (earnings, FDA approvals).
+
+---
+
+#### 6. RECOMMENDED STRATEGY & WHY (McMillan's Strategy Selection Matrix)
+
+**Based on:**
+- **IV Environment:** [HIGH / NORMAL / LOW] (IV Rank XX%)
+- **Directional Bias:** [BULLISH / BEARISH / NEUTRAL]
+- **P/C Sentiment:** [Contrarian BULLISH / Contrarian BEARISH / No signal]
+- **Max Pain Bias:** [Upward pull / Downward pull / Neutral]
+
+[From analyze_options_mcmillan.strategy_selection]
+
+**RECOMMENDED STRATEGY:** [Bull Put Spread / Long Call / Iron Condor / etc.]
+
+**Why This Strategy:**
+
+[If Bull Put Spread in High IV + Bullish Bias]:
+📋 **BULL PUT SPREAD** (Premium Selling Strategy)
+
+**Setup:**
+- **Sell:** $XXX Put (higher strike) - Collect premium
+- **Buy:** $XXX Put (lower strike) - Define max loss
+- **Net Credit:** $X.XX per spread ($XXX per contract)
+- **Max Profit:** $XXX (keep full credit if stock stays above $XXX at expiry)
+- **Max Loss:** $XXX (if stock drops below $XXX at expiry)
+
+**Why it works NOW:**
+
+1. **High IV (XX%):** Options are expensive → Selling premium gives us an edge. We collect inflated premium and profit from IV crush.
+
+2. **Bullish Bias:** [Max pain above price / Contrarian P/C signal / Technical support] suggests upward pressure. We only need stock to stay above $XXX (not rally hard).
+
+3. **Theta Advantage:** We collect $X.XX per day in time decay. Every day stock doesn't drop, we make money.
+
+4. **Defined Risk:** Max loss is $XXX - we know our risk upfront. Better than naked puts.
+
+**McMillan's Take:** "In high IV, sell premium with defined risk spreads. Bull Put Spreads give you bullish exposure while collecting inflated premium." (Options as a Strategic Investment, Chapter 8)
+
+**Probability of Profit:** ~XX% (Delta of short put = probability of expiring OTM = profit)
+
+**Break-Even:** $XXX - $X.XX = $XXX (Stock can drop X.X% and we still profit)
+
+[If Long Call in Low IV + Bullish Bias]:
+📋 **LONG CALL** (Premium Buying Strategy)
+
+**Setup:**
+- **Buy:** $XXX Call (strike near current price or slightly OTM)
+- **Expiration:** [Date] (XX days)
+- **Cost:** $X.XX per contract ($XXX per contract)
+- **Max Profit:** Unlimited as stock rises
+- **Max Loss:** $XXX (premium paid)
+
+**Why it works NOW:**
+
+1. **Low IV (XX%):** Options are cheap relative to historical range. We're buying discounted premium before volatility expands.
+
+2. **Bullish Catalyst:** [Earnings / Max pain / Technical breakout] suggests upward move. Vega will work in our favor when IV spikes.
+
+3. **Leverage:** $XXX controls ~$XX,XXX of stock exposure (~XX:1 leverage). Small % stock move = large % option gain.
+
+4. **Limited Risk:** Max loss is $XXX (premium paid). No margin calls, no unlimited risk.
+
+**McMillan's Take:** "Buy options when IV is low and you have strong directional conviction. Low IV = cheap insurance against being wrong." (Chapter 3)
+
+**Target:** $XXX stock price = $X.XX option value (XXX% gain)
+
+**Time Risk:** Losing -$X.XX per day to theta. Need stock to move within XX days.
+
+[If Iron Condor in High IV + Neutral Bias]:
+📋 **IRON CONDOR** (Premium Selling, Neutral Strategy)
+
+**Setup:**
+- **Sell:** $XXX Call + $XXX Put (collect premium on both sides)
+- **Buy:** $XXX Call + $XXX Put (define max loss on both sides)
+- **Net Credit:** $X.XX per spread ($XXX per contract)
+- **Profit Range:** Stock stays between $XXX - $XXX at expiry
+- **Max Profit:** $XXX (keep full credit)
+- **Max Loss:** $XXX (if stock breaks out of range)
+
+**Why it works NOW:**
+
+1. **High IV (XX%):** Options are expensive on BOTH sides. We collect inflated premium and profit from IV crush as volatility normalizes.
+
+2. **Neutral Bias:** [Max pain at current price / Balanced P/C ratio / Range-bound technicals] suggests no strong directional move. We profit from lack of movement.
+
+3. **Double Theta:** We collect time decay from BOTH the call spread AND put spread. Every day stock stays in range, we make money.
+
+4. **Probability of Profit:** ~XX% (stock has XX% range to stay within, only loses if it moves >X% in either direction)
+
+**McMillan's Take:** "Iron Condors are ideal in high IV, low-movement environments. You're selling overpriced options on both sides and betting on mean reversion." (Chapter 14)
+
+**Management:** If stock approaches $XXX or $XXX, **close early** to avoid max loss. Take 50% profit target.
+
+---
+
+**STRATEGY EXECUTION CHECKLIST:**
+
+✅ **Entry Criteria Met:**
+- [ ] IV environment matches strategy (High IV for selling, Low IV for buying)
+- [ ] Directional bias confirmed by [technicals / max pain / P/C ratio]
+- [ ] Position sizing: Risk <2% of account on this trade
+- [ ] Greeks understood: Know your Theta/Vega/Gamma exposure
+
+✅ **Exit Plan Defined:**
+- [ ] **Profit Target:** Close at [50% profit / $X.XX target / specific stock price]
+- [ ] **Stop Loss:** Close if loss exceeds $XXX or stock breaks [support/resistance]
+- [ ] **Time Stop:** Close if [X days pass with no movement / 7 days before expiry]
+
+✅ **Risk Management:**
+- [ ] Max loss is acceptable ($XXX = X% of account)
+- [ ] No overlapping positions that increase correlation risk
+- [ ] Expiration is far enough for thesis to play out (>XX days for buyers)
+
+**McMillan's Final Rule:** "Never enter an options trade without knowing your exit plan for BOTH profit and loss scenarios. Hope is not a strategy."
+
+---
+
+**📊 MCMILLAN STRATEGY SCORE: XX/100**
+
+**Components:**
+- **IV Environment Match:** XX/30 pts (Strategy aligns with volatility regime)
+- **Directional Alignment:** XX/25 pts (Bias confirmed by multiple factors)
+- **Risk/Reward:** XX/25 pts (Favorable probability of profit)
+- **Timing:** XX/20 pts (Sufficient time for thesis, no Theta burn issues)
+
+[If Score ≥75]:
+✅ **HIGH CONVICTION - Excellent Options Setup**
+All factors align - IV environment, direction, sentiment, and Greeks favor this strategy. This is a **high-probability trade** per McMillan's framework.
+
+[If Score 50-74]:
+⚠️ **MODERATE CONVICTION - Acceptable Setup with Caveats**
+Some factors align, but [IV environment / directional bias / sentiment] creates headwinds. Reduce position size or wait for better setup.
+
+[If Score <50]:
+❌ **LOW CONVICTION - AVOID or WAIT**
+Too many factors misaligned. [High IV but buying premium / Low IV but selling premium / Conflicting signals]. **Do NOT force the trade** - wait for better opportunity.
+
+---
+
+**🎓 KEY TAKEAWAY:**
+
+McMillan's framework teaches us: **"Match your strategy to market conditions, not your emotions."**
+
+- **High IV?** Sell premium (Iron Condors, Credit Spreads)
+- **Low IV?** Buy premium (Long Calls/Puts, Debit Spreads)
+- **Strong direction + Catalyst?** Use directional strategies
+- **No clear direction?** Use neutral strategies (Iron Condor, Calendar Spread)
+
+**Your options strategy is NOT about predicting the future - it's about positioning yourself to profit from the CURRENT volatility environment while managing risk.**
 
 ---
 
@@ -1058,11 +2140,47 @@ find_similar_historical_setups(
 - OBV trend: [Accumulation/Distribution]
 - VWAP position: [Above/Below]
 
+**Volumetric Liquidity Analysis:** [analyze_volume_tool] ⭐ NEW
+
+| Metric | Value | Interpretation |
+|--------|-------|----------------|
+| **CVD Trend** | [RISING/FALLING/FLAT] | [Buying/Selling pressure] |
+| **CVD Divergence** | [BULLISH/BEARISH/NONE] | [Exhaustion signal if present] |
+| **Multi-VWAP Alignment** | [STRONG_BULLISH/BULLISH/MIXED/BEARISH] | Price position vs all VWAPs |
+| **VWAP σ Distance** | X.XX | [SUSTAINABLE <1σ / EXTENDED 1-2σ / UNSUSTAINABLE >2σ] |
+| **Exhaustion Score** | XX/100 | [NO/LOW/MODERATE/HIGH]_EXHAUSTION |
+| **Exhaustion Action** | [PROCEED/FLAG/REDUCE_SIZE/EXCLUDE] | Tiered response |
+
+**CVD Divergence Details:**
+- **Signal:** [BULLISH_DIVERGENCE / BEARISH_DIVERGENCE / NONE]
+- **Strength:** [STRONG / MODERATE / WEAK]
+- **Interpretation:** [Description of what the divergence means for the trade]
+
+**Multi-VWAP Breakdown:**
+
+| VWAP Type | Price | Position | Band |
+|-----------|-------|----------|------|
+| Rolling (20d) | $XXX.XX | [ABOVE/BELOW] | [Normal/+1σ/+2σ] |
+| Anchored | $XXX.XX | [ABOVE/BELOW] | [Normal/+1σ/+2σ] |
+
+**Exhaustion Score Components:**
+
+| Factor | Points | Max | Current Value |
+|--------|--------|-----|---------------|
+| CVD Divergence | XX | 20 | [Status] |
+| RSI Divergence | XX | 20 | [Status] |
+| Trend Days | XX | 25 | X days |
+| VWAP Extension | XX | 15 | X.XX σ |
+| Volume Decline | XX | 20 | X days |
+| **TOTAL** | **XX** | **100** | **[Level]** |
+
+**Liquidity Verdict:** [SUPPORTS/OPPOSES] [LONG/SHORT] - [1-2 sentence interpretation]
+
 **Volatility:**
 - ATR: $X.XX (X.X%)
 - ATR-based stop: 2.5x ATR = $X.XX below entry
 
-**Tools:** `analyze_technical()`, `calculate_relative_strength_tool()`, `analyze_volume_tool()`, `analyze_volatility_tool()`
+**Tools:** `analyze_ml_enhanced()`, `calculate_relative_strength_tool()`, `analyze_volume_tool()`, `analyze_volatility_tool()`
 
 ---
 
@@ -1081,7 +2199,9 @@ Before publishing:
 **Visual Charts:**
 - [ ] Price Action Chart included (Section 3)
 - [ ] Supply/Demand Zones included (Section 3)
-- [ ] McMillan Options Tables included (Section 6) ⭐ NEW
+- [ ] Order Blocks included (Section 3)
+- [ ] Volumetric Liquidity Analysis included (Section 13) ⭐ NEW
+- [ ] McMillan Options Tables included (Section 6)
 - [ ] Position Sizing Ladder included (Section 12)
 - [ ] Block Order Flow included (Section 5)
 - [ ] Peer Comparison Table included (Section 8)

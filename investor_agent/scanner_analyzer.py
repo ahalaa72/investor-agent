@@ -22,6 +22,33 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+# Import volumetric liquidity functions
+try:
+    from .technical_analysis_bootstrap import (
+        calculate_exhaustion_score,
+        enhance_brooks_with_cvd,
+        analyze_cvd
+    )
+    _volumetric_available = True
+except ImportError:
+    _volumetric_available = False
+    logger.warning("Volumetric liquidity functions not available")
+
+# Import new scanner enhancement tools (December 2025)
+try:
+    from .server import (
+        detect_catalyst_strength,
+        detect_insider_cluster,
+        detect_unusual_options_activity,
+        calculate_quality_score,
+        analyze_competitors,
+        generate_trading_signal
+    )
+    _new_tools_available = True
+except ImportError:
+    _new_tools_available = False
+    logger.warning("New scanner enhancement tools not available")
+
 
 def _parse_numeric(value, default=0):
     """Parse numeric value from string, handling currency symbols and N/A."""
@@ -1014,15 +1041,110 @@ class ScannerAnalyzer:
             technical_data or {}, tv_data, direction
         )
         scores['pattern_score'] = self._score_pattern(
-            tv_data, direction, trend_days
+            tv_data, direction, trend_days, volume_data  # Pass volume_data for CVD bonus
         )
         scores['catalyst_score'] = self._score_catalyst(ml_data, direction, ticker)
         scores['brooks_score'] = self._score_brooks(brooks_analysis)
+
+        # 9. Exhaustion Score Analysis (NEW - Tier 4 Exclusion Check)
+        exhaustion_data = None
+        if _volumetric_available:
+            try:
+                exhaustion_data = calculate_exhaustion_score(ticker, direction.upper(), "3mo")
+                result['exhaustion'] = exhaustion_data
+
+                # Apply tiered exhaustion response
+                exhaustion_score = exhaustion_data.get('score', 0)
+                exhaustion_level = exhaustion_data.get('level', 'UNKNOWN')
+                exhaustion_action = exhaustion_data.get('suggested_action', 'PROCEED')
+
+                if exhaustion_action == 'EXCLUDE':
+                    result['tier4_exclusion'] = {
+                        'excluded': True,
+                        'reason': f"Exhaustion score {exhaustion_score}/100 - {exhaustion_level}",
+                        'action': 'EXCLUDE'
+                    }
+                elif exhaustion_action == 'REDUCE_SIZE':
+                    result['tier4_exclusion'] = {
+                        'excluded': False,
+                        'reason': f"Exhaustion score {exhaustion_score}/100 - reduce position by 50%",
+                        'action': 'REDUCE_SIZE',
+                        'size_multiplier': 0.5
+                    }
+                elif exhaustion_action == 'FLAG':
+                    result['tier4_exclusion'] = {
+                        'excluded': False,
+                        'reason': f"Exhaustion warning: score {exhaustion_score}/100",
+                        'action': 'FLAG'
+                    }
+                else:
+                    result['tier4_exclusion'] = {
+                        'excluded': False,
+                        'reason': 'No exhaustion concern',
+                        'action': 'PROCEED'
+                    }
+            except Exception as e:
+                logger.warning(f"Exhaustion analysis failed for {ticker}: {e}")
+                result['exhaustion'] = {'error': str(e)}
+                result['tier4_exclusion'] = {'excluded': False, 'action': 'PROCEED'}
+        else:
+            result['tier4_exclusion'] = {'excluded': False, 'action': 'PROCEED'}
+
+        # 10. Liquidity Zone Checks (from volume_data) - Tier 4 enhancements
+        if volume_data and _volumetric_available:
+            liquidity_zones = volume_data.get('liquidity_zones', {})
+            multi_vwap = volume_data.get('multi_vwap', {})
+
+            # Store liquidity analysis in result
+            result['liquidity_zones'] = liquidity_zones
+            result['multi_vwap'] = multi_vwap
+
+            current_tier4 = result.get('tier4_exclusion', {})
+
+            # Check for Low Volume Gap - FLAG, don't exclude (per plan revision)
+            if liquidity_zones.get('current_zone_type') == 'LOW_VOLUME_GAP':
+                if current_tier4.get('action') == 'PROCEED':
+                    result['tier4_exclusion'] = {
+                        'excluded': False,
+                        'reason': 'Price in Low Volume Gap - wider stop recommended (3x ATR)',
+                        'action': 'FLAG_LVG',
+                        'stop_multiplier': 3.0,
+                        'size_multiplier': 0.7  # Reduce position by 30%
+                    }
+                else:
+                    # Append to existing reason
+                    current_tier4['reason'] += '; Also in Low Volume Gap'
+                    current_tier4['stop_multiplier'] = 3.0
+                    result['tier4_exclusion'] = current_tier4
+
+            # Check for VWAP extreme extension - FLAG, don't exclude
+            if multi_vwap.get('extreme_extension', False):
+                sigma_dist = multi_vwap.get('sigma_distance', 0)
+                if current_tier4.get('action') in ['PROCEED', 'FLAG_LVG']:
+                    if current_tier4.get('action') == 'PROCEED':
+                        result['tier4_exclusion'] = {
+                            'excluded': False,
+                            'reason': f'Price extended {sigma_dist:.1f}σ from VWAP - mean reversion risk',
+                            'action': 'FLAG_EXTENDED',
+                            'mean_reversion_target': multi_vwap.get('mean_reversion_target')
+                        }
+                    else:
+                        current_tier4['reason'] += f'; Also extended {sigma_dist:.1f}σ from VWAP'
+                        current_tier4['mean_reversion_target'] = multi_vwap.get('mean_reversion_target')
+                        result['tier4_exclusion'] = current_tier4
 
         # Calculate composite score using new weights
         composite = self._calculate_composite(scores)
         result['composite_score'] = composite
         result['scores'] = scores
+
+        # Apply exhaustion penalty to composite if flagged
+        if exhaustion_data and exhaustion_data.get('suggested_action') == 'REDUCE_SIZE':
+            result['composite_score_adjusted'] = composite * 0.8  # 20% penalty
+        elif exhaustion_data and exhaustion_data.get('suggested_action') == 'FLAG':
+            result['composite_score_adjusted'] = composite * 0.9  # 10% penalty
+        else:
+            result['composite_score_adjusted'] = composite
 
         # Generate recommendation
         result['recommendation'] = self._generate_recommendation(
@@ -1111,14 +1233,16 @@ class ScannerAnalyzer:
         self,
         tv_data: dict,
         direction: str,
-        trend_days: int = 0
+        trend_days: int = 0,
+        volume_data: dict = None
     ) -> int:
-        """Score pattern quality (0-25 points).
+        """Score pattern quality (0-25 points + CVD bonus).
 
         Tier 2 Pattern Scoring:
         - Consolidation Breakout: 10 pts
         - Volume Surge 1.5-4x: 8 pts
         - Trend Day Counter < 6: 7 pts
+        - CVD Confirmation Bonus: +3 pts (if CVD aligns with direction)
         """
         score = 0
 
@@ -1155,7 +1279,27 @@ class ScannerAnalyzer:
         elif trend_days >= 6:
             score += 0  # Exhausted - no points
 
-        return max(0, min(25, score))
+        # CVD Confirmation Bonus (0-3 pts) - NEW
+        # If CVD trend aligns with trade direction, add bonus points
+        if volume_data and _volumetric_available:
+            cvd_analysis = volume_data.get('cvd_analysis', {})
+            cvd_trend = cvd_analysis.get('cvd_trend', 'FLAT')
+            cvd_divergence = cvd_analysis.get('divergence', {}).get('signal', 'NONE')
+
+            if direction == 'long':
+                # For LONG: Rising CVD or bullish divergence = confirmation
+                if cvd_trend == 'RISING':
+                    score += 3
+                elif cvd_divergence == 'BULLISH_DIVERGENCE':
+                    score += 2  # Sellers exhausted at support
+            else:  # short
+                # For SHORT: Falling CVD or bearish divergence = confirmation
+                if cvd_trend == 'FALLING':
+                    score += 3
+                elif cvd_divergence == 'BEARISH_DIVERGENCE':
+                    score += 2  # Buyers exhausted at resistance
+
+        return max(0, min(28, score))  # Max 28 with CVD bonus
 
     def _get_days_to_earnings(self, ticker: str) -> int:
         """Get days until next earnings announcement.
@@ -1230,16 +1374,42 @@ class ScannerAnalyzer:
     def _score_catalyst(self, ml_data: dict, direction: str, ticker: str = None) -> int:
         """Score catalyst quality (0-20 points).
 
-        Tier 3 Catalyst Scoring:
-        - Earnings 7-30 days: 8 pts (ideal timing)
-        - Earnings 30-45 days: 4 pts (acceptable)
-        - Earnings < 5 days: -5 pts (binary risk)
-        - Beat rate > 60% (longs) or < 50% (shorts): 5 pts
-        - ML Alignment: 6 pts
+        ENHANCED (December 2025): Now uses detect_catalyst_strength for comprehensive
+        catalyst analysis including earnings, insider, options, and institutional data.
 
-        Note: Full catalyst scoring requires McMillan options data
-        which is integrated separately. This uses ML + earnings as proxy.
+        Catalyst Scoring:
+        - STRONG catalyst: 20 pts
+        - MODERATE catalyst: 15 pts
+        - WEAK catalyst: 8 pts
+        - NONE: 0 pts (trade not allowed)
         """
+        # Try new comprehensive catalyst detection
+        if ticker and _new_tools_available:
+            try:
+                catalyst_data = detect_catalyst_strength(ticker)
+
+                if isinstance(catalyst_data, dict) and 'error' not in catalyst_data:
+                    strength = catalyst_data.get('catalyst_strength', 'NONE')
+                    catalyst_score = catalyst_data.get('catalyst_score', 0)
+
+                    # Store for later use in report
+                    self._last_catalyst_data = catalyst_data
+
+                    # Map strength to score
+                    if strength == 'STRONG':
+                        return 20
+                    elif strength == 'MODERATE':
+                        return 15
+                    elif strength == 'WEAK':
+                        return 8
+                    else:  # NONE
+                        return 0
+
+            except Exception as e:
+                logger.warning(f"New catalyst detection failed for {ticker}: {e}")
+                # Fall back to legacy method
+
+        # LEGACY METHOD (fallback)
         score = 10  # Start neutral
 
         # Earnings proximity scoring (if ticker provided)
@@ -1562,6 +1732,7 @@ def format_analysis_report(analysis: dict) -> str:
     Format analysis result as rich text report.
 
     This produces the Al Brooks style output that the user expects.
+    Enhanced December 2025 with catalyst, freshness, and trading signal sections.
     """
     lines = []
 
@@ -1571,15 +1742,66 @@ def format_analysis_report(analysis: dict) -> str:
     direction = analysis.get('direction', 'LONG')
     recommendation = analysis.get('recommendation', {})
 
-    # Header
+    # Header with trading signal if available
     label = recommendation.get('label', 'UNKNOWN')
-    if composite >= 80:
+    trading_signal = analysis.get('trading_signal', {})
+    signal = trading_signal.get('signal', '') if trading_signal else ''
+
+    if composite >= 80 or signal in ['STRONG_BUY', 'STRONG_SELL']:
         star = "⭐ "
     else:
         star = ""
 
-    lines.append(f"\n#{analysis.get('rank', '?')} {symbol} - ${price:.2f} | Score: {composite}/100 | {star}{label}")
-    lines.append("─" * 65)
+    # Add signal emoji
+    signal_emoji = ""
+    if signal == 'STRONG_BUY':
+        signal_emoji = "🟢🟢 "
+    elif signal == 'BUY':
+        signal_emoji = "🟢 "
+    elif signal == 'STRONG_SELL':
+        signal_emoji = "🔴🔴 "
+    elif signal == 'SELL':
+        signal_emoji = "🔴 "
+    elif signal == 'WATCH':
+        signal_emoji = "👁️ "
+    elif signal == 'NO_TRADE':
+        signal_emoji = "⛔ "
+
+    lines.append(f"\n#{analysis.get('rank', '?')} {symbol} - ${price:.2f} | Score: {composite}/100 | {signal_emoji}{star}{label}")
+    lines.append("═" * 65)
+
+    # NEW: Catalyst Analysis Section
+    catalyst = analysis.get('catalyst_analysis', {})
+    if catalyst and 'error' not in catalyst:
+        strength = catalyst.get('strength', 'N/A')
+        cat_score = catalyst.get('score', 0)
+        catalysts = catalyst.get('catalysts', [])
+
+        strength_emoji = "🔥" if strength == 'STRONG' else "✅" if strength == 'MODERATE' else "⚠️" if strength == 'WEAK' else "❌"
+
+        lines.append(f"\n📊 CATALYST ANALYSIS (CORE):")
+        lines.append(f"   Strength: {strength_emoji} {strength} ({cat_score}/100)")
+        if catalysts:
+            for cat in catalysts[:3]:
+                lines.append(f"   • {cat}")
+        if not catalysts:
+            lines.append(f"   ⚠️ No catalyst detected - trade not recommended")
+
+    # NEW: Freshness Status
+    freshness = analysis.get('freshness_analysis', {})
+    if freshness:
+        cvd = freshness.get('cvd_trend', 'N/A')
+        exhaustion = freshness.get('exhaustion_score', 'N/A')
+        trend_days = freshness.get('trend_days', 'N/A')
+
+        cvd_emoji = "↗️" if cvd == 'RISING' else "↘️" if cvd == 'FALLING' else "➡️"
+        exhaustion_emoji = "✅" if isinstance(exhaustion, (int, float)) and exhaustion < 50 else "⚠️"
+
+        lines.append(f"\n🌱 FRESHNESS STATUS:")
+        lines.append(f"   CVD Trend: {cvd_emoji} {cvd}")
+        lines.append(f"   Exhaustion: {exhaustion_emoji} {exhaustion}/100")
+        if trend_days != 'N/A':
+            lines.append(f"   Trend Days: {trend_days}")
 
     # Technical Analysis Summary
     tech = analysis.get('technical', {})
@@ -1587,7 +1809,7 @@ def format_analysis_report(analysis: dict) -> str:
         rsi = tech.get('rsi', 'N/A')
         macd = tech.get('macd_trend', tech.get('recommendation', 'N/A'))
         ma = tech.get('ma_trend', 'N/A')
-        lines.append(f"📊 Technical Analysis:")
+        lines.append(f"\n📈 Technical Analysis:")
         lines.append(f"   RSI: {rsi} | MACD: {macd} | MA Trend: {ma}")
 
     # ML Prediction
@@ -1595,7 +1817,7 @@ def format_analysis_report(analysis: dict) -> str:
     if ml and 'error' not in ml:
         trend = ml.get('trend_direction', 'N/A')
         conf = ml.get('confidence', 0)
-        lines.append(f"📈 ML Prediction: {trend} ({conf:.0%} confidence)")
+        lines.append(f"🤖 ML Prediction: {trend} ({conf:.0%} confidence)")
 
     # Relative Strength
     rs = analysis.get('relative_strength', {})
@@ -1616,7 +1838,7 @@ def format_analysis_report(analysis: dict) -> str:
     # Al Brooks Analysis (THE MAIN EVENT)
     brooks = analysis.get('brooks_analysis', {})
     if brooks and brooks.get('always_in') != 'UNKNOWN':
-        lines.append(f"\n🎯 AL BROOKS ANALYSIS:")
+        lines.append(f"\n🎯 AL BROOKS ANALYSIS (CENTRAL):")
         lines.append(f"   Pattern: {brooks.get('pattern_description', 'Unknown')}")
         lines.append(f"   Always-In: {brooks.get('always_in', 'UNKNOWN')}")
         lines.append(f"   Bar Reading: {brooks.get('bar_reading', 'N/A')}")
@@ -1646,6 +1868,48 @@ def format_analysis_report(analysis: dict) -> str:
         commentary = brooks.get('commentary', '')
         if commentary:
             lines.append(f"\n   \"{commentary}\"")
+
+    # NEW: Trading Plan Section
+    trading_plan = analysis.get('trading_plan', {})
+    if trading_plan and 'error' not in trading_plan:
+        entry_price = trading_plan.get('entry_price', 0)
+        stop_loss = trading_plan.get('stop_loss', {})
+        target_1 = trading_plan.get('target_1', {})
+        target_2 = trading_plan.get('target_2', {})
+        rr_ratio = trading_plan.get('risk_reward_ratio', 0)
+        pos_size = trading_plan.get('position_size', {})
+
+        lines.append(f"\n📋 TRADING PLAN:")
+        lines.append(f"   Entry: ${entry_price:.2f}")
+        if stop_loss:
+            lines.append(f"   Stop Loss: ${stop_loss.get('price', 0):.2f} ({stop_loss.get('risk_pct', 0):.1f}% risk)")
+        if target_1:
+            lines.append(f"   Target 1: ${target_1.get('price', 0):.2f} (+{target_1.get('reward_pct', 0):.1f}%)")
+        if target_2:
+            lines.append(f"   Target 2: ${target_2.get('price', 0):.2f} (+{target_2.get('reward_pct', 0):.1f}%)")
+        lines.append(f"   Risk/Reward: {rr_ratio:.1f}:1")
+        if pos_size:
+            lines.append(f"   Position Size: {pos_size.get('shares', 0)} shares (${pos_size.get('dollar_risk', 0):.0f} risk)")
+
+    # NEW: Proof of Validity Section
+    proof = analysis.get('proof_of_validity', {})
+    if proof and 'error' not in proof:
+        setups = proof.get('similar_setups', 0)
+        success = proof.get('success_rate', 0)
+        confidence = proof.get('confidence', 'N/A')
+
+        lines.append(f"\n✅ PROOF OF VALIDITY:")
+        lines.append(f"   Similar Setups: {setups} found")
+        lines.append(f"   Historical Success: {success:.0f}%")
+        lines.append(f"   Confidence: {confidence}")
+
+    # NEW: Gate Status Summary
+    gates = analysis.get('gate_status', {})
+    if gates:
+        lines.append(f"\n🚦 GATE STATUS:")
+        for gate, status in gates.items():
+            emoji = "✅" if status == 'PASS' else "❌" if status == 'FAIL' else "⚠️"
+            lines.append(f"   {emoji} {gate.upper()}: {status}")
 
     lines.append("")
     return "\n".join(lines)

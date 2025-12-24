@@ -603,21 +603,28 @@ class TechnicalAnalysis:
         highs = df['High'].values
         lows = df['Low'].values
         closes = df['Close'].values
-        
+        current_price = closes[-1]
+
         # Find local maxima (resistance) and minima (support)
         resistance_indices = argrelextrema(highs, np.greater, order=order)[0]
         support_indices = argrelextrema(lows, np.less, order=order)[0]
-        
-        # Get the levels
-        resistance_levels = sorted(highs[resistance_indices], reverse=True)[:3]
-        support_levels = sorted(lows[support_indices])[:3]
-        
+
+        # Filter resistance levels to only those ABOVE current price
+        resistance_candidates = [highs[i] for i in resistance_indices if highs[i] > current_price]
+        # Sort ascending and take closest 3
+        resistance_levels = sorted(resistance_candidates)[:3] if resistance_candidates else []
+
+        # Filter support levels to only those BELOW current price
+        support_candidates = [lows[i] for i in support_indices if lows[i] < current_price]
+        # Sort descending and take closest 3
+        support_levels = sorted(support_candidates, reverse=True)[:3] if support_candidates else []
+
         return {
-            "current_price": f"${closes[-1]:.2f}",
+            "current_price": f"${current_price:.2f}",
             "resistance_levels": [f"${level:.2f}" for level in resistance_levels],
             "support_levels": [f"${level:.2f}" for level in support_levels],
             "nearest_resistance": f"${resistance_levels[0]:.2f}" if resistance_levels else "N/A",
-            "nearest_support": f"${support_levels[-1]:.2f}" if support_levels else "N/A"
+            "nearest_support": f"${support_levels[0]:.2f}" if support_levels else "N/A"
         }
     
     @staticmethod

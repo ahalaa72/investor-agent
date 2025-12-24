@@ -1,6 +1,7 @@
 """
-Bootstrap Tools Enhancement Module - IMPROVED VERSION v2
+Bootstrap Tools Enhancement Module - IMPROVED VERSION v3
 Fixes VWAP calculation to match TradingView behavior with proper daily reset
+Uses Questrade as primary data source, yfinance as fallback
 
 Key Fix: VWAP now properly resets daily for daily charts, matching TradingView exactly
 """
@@ -11,7 +12,69 @@ import numpy as np
 from datetime import datetime, timedelta
 from typing import Dict, Any
 import warnings
+import logging
+
 warnings.filterwarnings('ignore')
+logger = logging.getLogger(__name__)
+
+
+def _get_price_history(ticker: str, period: str = "3mo") -> pd.DataFrame:
+    """
+    Get price history with Questrade as primary, yfinance as fallback.
+    """
+    # Map period to days
+    period_days = {
+        '1d': 1, '5d': 5, '1mo': 30, '3mo': 90, '6mo': 180,
+        '1y': 365, '2y': 730, '5y': 1825
+    }
+    days = period_days.get(period, 90)
+
+    # Try Questrade first
+    try:
+        from .questrade import get_questrade_client
+
+        qt_client = get_questrade_client()
+        symbol_info = qt_client.get_symbol_info(ticker)
+
+        if symbol_info and symbol_info.get('symbols'):
+            end_time = datetime.now()
+            start_time = end_time - timedelta(days=days + 10)
+
+            interval = "OneDay" if days > 30 else "OneHour"
+            start_str = start_time.strftime('%Y-%m-%dT%H:%M:%S-05:00')
+            end_str = end_time.strftime('%Y-%m-%dT%H:%M:%S-05:00')
+
+            candles = qt_client.get_candles(ticker, interval, start_str, end_str)
+
+            if candles and candles.get('candles'):
+                df = pd.DataFrame(candles['candles'])
+                df = df.rename(columns={
+                    'start': 'Date', 'open': 'Open', 'high': 'High',
+                    'low': 'Low', 'close': 'Close', 'volume': 'Volume'
+                })
+                # Convert with utc=True to handle timezone-aware strings properly
+                df['Date'] = pd.to_datetime(df['Date'], utc=True)
+                df.set_index('Date', inplace=True)
+                # Remove timezone info for consistent downstream processing
+                df.index = df.index.tz_convert(None)
+
+                if len(df) >= 10:
+                    logger.info(f"Using Questrade data for {ticker}")
+                    return df
+
+    except Exception as e:
+        logger.warning(f"Questrade unavailable for {ticker}: {e}")
+
+    # Fallback to yfinance
+    logger.info(f"Using yfinance for {ticker}")
+    stock = yf.Ticker(ticker)
+    df = stock.history(period=period)
+
+    # Normalize timezone-aware index to avoid pandas conversion issues
+    if isinstance(df.index, pd.DatetimeIndex) and df.index.tz is not None:
+        df.index = df.index.tz_localize(None)
+
+    return df
 
 
 def analyze_volume(ticker: str, period: str = "3mo", vwap_mode: str = "session") -> dict:
@@ -30,9 +93,9 @@ def analyze_volume(ticker: str, period: str = "3mo", vwap_mode: str = "session")
         Dictionary containing volume metrics
     """
     try:
-        stock = yf.Ticker(ticker)
-        df = stock.history(period=period)
-        
+        # Use Questrade-first approach
+        df = _get_price_history(ticker, period)
+
         if df.empty:
             return {"error": f"No data available for {ticker}"}
         
@@ -146,11 +209,197 @@ def analyze_volume(ticker: str, period: str = "3mo", vwap_mode: str = "session")
         
         # Volume surges and dry-ups
         volume_2x = df[df['Volume'] > avg_volume * 2].tail(5)
-        volume_surge_dates = volume_2x.index.strftime('%Y-%m-%d').tolist() if len(volume_2x) > 0 else []
-        
+        # Ensure index is DatetimeIndex before calling strftime
+        if len(volume_2x) > 0:
+            if isinstance(volume_2x.index, pd.DatetimeIndex):
+                volume_surge_dates = volume_2x.index.strftime('%Y-%m-%d').tolist()
+            else:
+                # Convert to DatetimeIndex if needed
+                volume_surge_dates = pd.to_datetime(volume_2x.index).strftime('%Y-%m-%d').tolist()
+        else:
+            volume_surge_dates = []
+
         volume_dry = df[df['Volume'] < avg_volume * 0.5].tail(5)
-        volume_dryup_dates = volume_dry.index.strftime('%Y-%m-%d').tolist() if len(volume_dry) > 0 else []
+        # Ensure index is DatetimeIndex before calling strftime
+        if len(volume_dry) > 0:
+            if isinstance(volume_dry.index, pd.DatetimeIndex):
+                volume_dryup_dates = volume_dry.index.strftime('%Y-%m-%d').tolist()
+            else:
+                # Convert to DatetimeIndex if needed
+                volume_dryup_dates = pd.to_datetime(volume_dry.index).strftime('%Y-%m-%d').tolist()
+        else:
+            volume_dryup_dates = []
         
+        # ========== CVD (Cumulative Volume Delta) Analysis ==========
+        # Calculate volume delta and CVD
+        delta = calculate_volume_delta(df)
+        cvd = delta.cumsum()
+
+        current_cvd = float(cvd.iloc[-1])
+        current_delta = float(delta.iloc[-1])
+
+        # CVD trend (20-day slope normalized)
+        cvd_20d = cvd.tail(20)
+        if len(cvd_20d) >= 20:
+            x = np.arange(len(cvd_20d))
+            slope, _ = np.polyfit(x, cvd_20d.values, 1)
+            avg_cvd = abs(cvd_20d).mean()
+            normalized_slope = slope / avg_cvd if avg_cvd > 0 else 0
+        else:
+            normalized_slope = 0
+
+        if normalized_slope > 0.02:
+            cvd_trend = "RISING"
+            cvd_interpretation = "Buying pressure dominant - accumulation"
+        elif normalized_slope < -0.02:
+            cvd_trend = "FALLING"
+            cvd_interpretation = "Selling pressure dominant - distribution"
+        else:
+            cvd_trend = "FLAT"
+            cvd_interpretation = "Balanced buying/selling pressure"
+
+        # Delta for last 5 bars
+        delta_bars = []
+        for i in range(-5, 0):
+            if abs(i) <= len(df):
+                delta_bars.append({
+                    "date": df.index[i].strftime('%Y-%m-%d') if hasattr(df.index[i], 'strftime') else str(df.index[i]),
+                    "delta": round(float(delta.iloc[i]), 0),
+                    "cumulative": round(float(cvd.iloc[i]), 0),
+                    "price": round(float(df['Close'].iloc[i]), 2),
+                    "interpretation": "Buyers" if delta.iloc[i] > 0 else "Sellers"
+                })
+
+        # Detect CVD divergence
+        divergence = detect_cvd_divergence(df)
+
+        # Overall CVD assessment
+        if divergence["signal"] == "BULLISH_DIVERGENCE":
+            cvd_assessment = f"BULLISH - {divergence.get('strength', 'MODERATE')} divergence (sellers exhausted)"
+        elif divergence["signal"] == "BEARISH_DIVERGENCE":
+            cvd_assessment = f"BEARISH - {divergence.get('strength', 'MODERATE')} divergence (buyers exhausted)"
+        elif cvd_trend == "RISING":
+            cvd_assessment = "BULLISH - Accumulation in progress"
+        elif cvd_trend == "FALLING":
+            cvd_assessment = "BEARISH - Distribution in progress"
+        else:
+            cvd_assessment = "NEUTRAL - No clear directional pressure"
+
+        # ========== Multi-VWAP Analysis (for swing trading) ==========
+        df['Typical_Price_VWAP'] = (df['High'] + df['Low'] + df['Close']) / 3
+        df['PV_VWAP'] = df['Typical_Price_VWAP'] * df['Volume']
+
+        # Rolling 20-day VWAP
+        df['Rolling_VWAP'] = (
+            df['PV_VWAP'].rolling(window=20).sum() /
+            df['Volume'].rolling(window=20).sum()
+        )
+        rolling_vwap = float(df['Rolling_VWAP'].iloc[-1])
+        rolling_std = float(df['Typical_Price_VWAP'].tail(20).std())
+
+        # Anchored VWAP from period start
+        df['Anchored_VWAP'] = df['PV_VWAP'].cumsum() / df['Volume'].cumsum()
+        anchored_vwap = float(df['Anchored_VWAP'].iloc[-1])
+
+        # VWAP positions and alignment
+        def get_vwap_position(price, vwap, std):
+            if price > vwap + 2 * std:
+                return "EXTREME_ABOVE"
+            elif price > vwap + std:
+                return "EXTENDED_ABOVE"
+            elif price > vwap:
+                return "ABOVE"
+            elif price < vwap - 2 * std:
+                return "EXTREME_BELOW"
+            elif price < vwap - std:
+                return "EXTENDED_BELOW"
+            else:
+                return "BELOW"
+
+        rolling_position = get_vwap_position(current_price, rolling_vwap, rolling_std)
+        anchored_position = get_vwap_position(current_price, anchored_vwap, rolling_std)
+
+        above_count = sum(1 for p in [rolling_position, anchored_position] if "ABOVE" in p)
+        extreme_count = sum(1 for p in [rolling_position, anchored_position] if "EXTREME" in p)
+
+        if above_count == 2:
+            vwap_alignment = "STRONG_BULLISH"
+        elif above_count == 0:
+            vwap_alignment = "STRONG_BEARISH"
+        else:
+            vwap_alignment = "MIXED"
+
+        extreme_extension = extreme_count >= 1
+        sigma_distance = (current_price - rolling_vwap) / rolling_std if rolling_std > 0 else 0
+
+        # ========== Liquidity Zones (HVN/LVN) Analysis ==========
+        # Classify volume at each price level as High Volume Node or Low Volume Node
+        volume_at_price = volume_profile.values  # Already sorted by volume descending
+        mean_volume_at_price = volume_at_price.mean()
+        std_volume_at_price = volume_at_price.std() if len(volume_at_price) > 1 else 0
+
+        hvn_threshold = mean_volume_at_price + std_volume_at_price  # Above avg = HVN
+        lvn_threshold = mean_volume_at_price - 0.5 * std_volume_at_price  # Below avg = LVN
+
+        high_volume_nodes = []
+        low_volume_nodes = []
+
+        for idx, vol in enumerate(volume_profile.items()):
+            price_bin, volume_val = vol
+            price_level = (price_bin.left + price_bin.right) / 2
+            relative_vol = volume_val / mean_volume_at_price if mean_volume_at_price > 0 else 0
+
+            if volume_val > hvn_threshold:
+                high_volume_nodes.append({
+                    "price": round(float(price_level), 2),
+                    "volume": int(volume_val),
+                    "relative_volume": round(float(relative_vol), 2),
+                    "type": "HVN"
+                })
+            elif volume_val < lvn_threshold:
+                low_volume_nodes.append({
+                    "price_low": round(float(price_bin.left), 2),
+                    "price_high": round(float(price_bin.right), 2),
+                    "volume": int(volume_val),
+                    "relative_volume": round(float(relative_vol), 2),
+                    "type": "LVN"
+                })
+
+        # Sort by proximity to current price
+        high_volume_nodes.sort(key=lambda x: abs(x["price"] - current_price))
+        low_volume_nodes.sort(key=lambda x: abs((x["price_low"] + x["price_high"]) / 2 - current_price))
+
+        # Determine current zone type
+        nearest_hvn = high_volume_nodes[0] if high_volume_nodes else None
+        nearest_lvn = low_volume_nodes[0] if low_volume_nodes else None
+
+        # Check if current price is in HVN zone (within 2% of HVN level)
+        if nearest_hvn and abs(current_price - nearest_hvn["price"]) / current_price < 0.02:
+            current_zone_type = "HIGH_VOLUME_NODE"
+            expected_behavior = "CONSOLIDATION"
+            zone_interpretation = "Price at HVN (magnet) - expect sideways consolidation"
+        # Check if current price is in LVN zone
+        elif nearest_lvn and (nearest_lvn["price_low"] <= current_price <= nearest_lvn["price_high"]):
+            current_zone_type = "LOW_VOLUME_GAP"
+            expected_behavior = "FAST_MOVE"
+            zone_interpretation = "Price in LVN (gap) - expect fast, volatile movement"
+        else:
+            current_zone_type = "NORMAL"
+            expected_behavior = "NORMAL"
+            zone_interpretation = "Price in normal volume zone - standard price action expected"
+
+        liquidity_zones = {
+            "poc": round(float(poc_price), 2),
+            "value_area_high": round(float(value_area_high), 2),
+            "value_area_low": round(float(value_area_low), 2),
+            "high_volume_nodes": high_volume_nodes[:5],  # Top 5 nearest
+            "low_volume_nodes": low_volume_nodes[:3],    # Top 3 nearest
+            "current_zone_type": current_zone_type,
+            "expected_behavior": expected_behavior,
+            "nearest_liquidity_magnet": nearest_hvn["price"] if nearest_hvn else round(float(poc_price), 2),
+            "interpretation": zone_interpretation
+        }
+
         return {
             "ticker": ticker,
             "analysis_date": datetime.now().strftime("%Y-%m-%d"),
@@ -169,7 +418,7 @@ def analyze_volume(ticker: str, period: str = "3mo", vwap_mode: str = "session")
             "current_volume": int(current_volume),
             "avg_volume_20d": int(avg_volume),
             "relative_volume": round(relative_volume, 2),
-            "relative_volume_interpretation": 
+            "relative_volume_interpretation":
                 "VERY HIGH (2x+ average)" if relative_volume > 2.0 else
                 "HIGH (1.5x+ average)" if relative_volume > 1.5 else
                 "Above Average" if relative_volume > 1.0 else
@@ -182,6 +431,32 @@ def analyze_volume(ticker: str, period: str = "3mo", vwap_mode: str = "session")
             "mfi": round(current_mfi, 2),
             "mfi_signal": mfi_signal,
             "price_volume_confirmation": confirmation,
+            # ========== NEW: CVD Analysis ==========
+            "cvd_analysis": {
+                "current_cvd": round(current_cvd, 0),
+                "current_delta": round(current_delta, 0),
+                "cvd_trend": cvd_trend,
+                "cvd_slope_20d": round(normalized_slope, 4),
+                "trend_interpretation": cvd_interpretation,
+                "divergence": divergence,
+                "delta_bars": delta_bars,
+                "assessment": cvd_assessment,
+                "methodology_note": "CVD approximated from OHLCV. Bullish/Bearish divergence = exhaustion signal."
+            },
+            # ========== NEW: Multi-VWAP Analysis ==========
+            "multi_vwap": {
+                "rolling_vwap": round(rolling_vwap, 2),
+                "anchored_vwap": round(anchored_vwap, 2),
+                "rolling_position": rolling_position,
+                "anchored_position": anchored_position,
+                "alignment": vwap_alignment,
+                "extreme_extension": extreme_extension,
+                "sigma_distance": round(sigma_distance, 2),
+                "mean_reversion_target": round(rolling_vwap, 2) if extreme_extension else None,
+                "interpretation": f"Price is {vwap_alignment} vs VWAPs. {'Extended - expect reversion.' if extreme_extension else 'Sustainable move.'}"
+            },
+            # ========== NEW: Liquidity Zones Analysis ==========
+            "liquidity_zones": liquidity_zones,
             "professional_note": vwap_note
         }
     except Exception as e:
@@ -313,10 +588,10 @@ def analyze_volatility(ticker: str, period: str = "6mo") -> dict:
         Dictionary containing volatility metrics
     """
     try:
-        stock = yf.Ticker(ticker)
-        df = stock.history(period=period)
-        spy = yf.Ticker("SPY").history(period=period)
-        
+        # Use Questrade-first approach
+        df = _get_price_history(ticker, period)
+        spy = _get_price_history("SPY", period)
+
         if df.empty:
             return {"error": f"No data available for {ticker}"}
         
@@ -481,9 +756,10 @@ def calculate_relative_strength(ticker: str, benchmark: str = "SPY", period: str
         Dictionary containing RS metrics
     """
     try:
-        stock = yf.Ticker(ticker).history(period=period)
-        bench = yf.Ticker(benchmark).history(period=period)
-        
+        # Use Questrade-first approach
+        stock = _get_price_history(ticker, period)
+        bench = _get_price_history(benchmark, period)
+
         if stock.empty or bench.empty:
             return {"error": f"No data available"}
         
@@ -761,7 +1037,7 @@ def calculate_fundamental_scores(ticker: str, max_periods: int = 8) -> dict:
                 "roa_%": round(roa_current * 100, 2),
                 "gross_margin_%": round(gross_margin * 100, 2)
             },
-            "overall_assessment": 
+            "overall_assessment":
                 "STRONG BUY candidate" if f_score >= 7 and z_score > 2.99 else
                 "Quality company" if f_score >= 5 and z_score > 2.99 else
                 "Proceed with caution" if f_score >= 3 or z_score > 1.81 else
@@ -769,3 +1045,1115 @@ def calculate_fundamental_scores(ticker: str, max_periods: int = 8) -> dict:
         }
     except Exception as e:
         return {"error": str(e), "ticker": ticker}
+
+
+# ============================================================================
+# CVD (Cumulative Volume Delta) Analysis - Volumetric Liquidity Sequencing
+# Based on Reddit trader methodology ($122k YTD, 54% win rate, 2.31 PF)
+# Key insight: "Price is simply an ad seeking liquidity"
+# ============================================================================
+
+def calculate_volume_delta(df: pd.DataFrame) -> pd.Series:
+    """
+    Approximate buy/sell volume using OHLCV data.
+
+    Logic: If close is near high, more buying pressure.
+           If close is near low, more selling pressure.
+
+    This is the standard approximation used by TradingView and most
+    retail platforms without tick data.
+
+    Formula:
+        buy_ratio = (Close - Low) / (High - Low)
+        sell_ratio = (High - Close) / (High - Low)
+        delta = buy_volume - sell_volume
+    """
+    high_low_range = df['High'] - df['Low']
+
+    # Avoid division by zero (doji bars where High = Low)
+    high_low_range = high_low_range.replace(0, 0.0001)
+
+    # Buy volume: proportion of bar that closed higher
+    buy_ratio = (df['Close'] - df['Low']) / high_low_range
+    buy_volume = buy_ratio * df['Volume']
+
+    # Sell volume: proportion of bar that closed lower
+    sell_ratio = (df['High'] - df['Close']) / high_low_range
+    sell_volume = sell_ratio * df['Volume']
+
+    # Delta = Buy - Sell
+    delta = buy_volume - sell_volume
+
+    return delta
+
+
+def calculate_cvd(df: pd.DataFrame) -> pd.Series:
+    """
+    Cumulative Volume Delta - running sum of delta.
+
+    Interpretation:
+    - Rising CVD = buying pressure dominant
+    - Falling CVD = selling pressure dominant
+    - CVD divergence from price = exhaustion signal
+    """
+    delta = calculate_volume_delta(df)
+    cvd = delta.cumsum()
+    return cvd
+
+
+def find_swing_points(df: pd.DataFrame, min_bars_each_side: int = 3, min_swing_pct: float = 2.0) -> dict:
+    """
+    Identify swing highs and lows for divergence detection.
+
+    Parameters:
+    - min_bars_each_side: Bars required on each side to qualify as swing
+      (3 = swing must be highest/lowest of 7 bars: 3-1-3)
+    - min_swing_pct: Minimum % move to qualify as significant swing
+
+    Why these defaults:
+    - 3 bars: Filters noise, but catches real swings in 3-month period
+    - 2%: Significant enough to matter, not so high we miss smaller divergences
+
+    Returns:
+        {
+            "highs": [{"index": i, "date": ..., "price": ..., "swing_pct": ...}, ...],
+            "lows": [{"index": i, "date": ..., "price": ..., "swing_pct": ...}, ...]
+        }
+    """
+    swings = {"highs": [], "lows": []}
+
+    # Need at least min_bars_each_side * 2 + 1 bars
+    if len(df) < min_bars_each_side * 2 + 1:
+        return swings
+
+    for i in range(min_bars_each_side, len(df) - min_bars_each_side):
+        # Check for swing high
+        window_high = df['High'].iloc[i-min_bars_each_side:i+min_bars_each_side+1]
+        if df['High'].iloc[i] == window_high.max():
+            # Verify minimum swing percentage
+            nearby_low = df['Low'].iloc[i-min_bars_each_side:i+min_bars_each_side+1].min()
+            swing_pct = ((df['High'].iloc[i] - nearby_low) / nearby_low * 100) if nearby_low > 0 else 0
+            if swing_pct >= min_swing_pct:
+                swings["highs"].append({
+                    "index": i,
+                    "date": df.index[i].strftime('%Y-%m-%d') if hasattr(df.index[i], 'strftime') else str(df.index[i]),
+                    "price": float(df['High'].iloc[i]),
+                    "swing_pct": round(swing_pct, 2)
+                })
+
+        # Check for swing low
+        window_low = df['Low'].iloc[i-min_bars_each_side:i+min_bars_each_side+1]
+        if df['Low'].iloc[i] == window_low.min():
+            nearby_high = df['High'].iloc[i-min_bars_each_side:i+min_bars_each_side+1].max()
+            swing_pct = ((nearby_high - df['Low'].iloc[i]) / df['Low'].iloc[i] * 100) if df['Low'].iloc[i] > 0 else 0
+            if swing_pct >= min_swing_pct:
+                swings["lows"].append({
+                    "index": i,
+                    "date": df.index[i].strftime('%Y-%m-%d') if hasattr(df.index[i], 'strftime') else str(df.index[i]),
+                    "price": float(df['Low'].iloc[i]),
+                    "swing_pct": round(swing_pct, 2)
+                })
+
+    return swings
+
+
+def _calculate_divergence_strength(price_change_pct: float, cvd_change_pct: float) -> str:
+    """Calculate strength of divergence based on magnitude."""
+    # Larger divergence = stronger signal
+    divergence_magnitude = abs(price_change_pct) + abs(cvd_change_pct)
+
+    if divergence_magnitude > 15:
+        return "STRONG"
+    elif divergence_magnitude > 8:
+        return "MODERATE"
+    else:
+        return "WEAK"
+
+
+def detect_cvd_divergence(df: pd.DataFrame, lookback: int = 20) -> dict:
+    """
+    Detect CVD divergence from price action using explicit swing detection.
+
+    BULLISH DIVERGENCE (Sellers Exhausted):
+    - Price makes LOWER LOW
+    - CVD makes HIGHER LOW
+    - Meaning: Sellers pushing price down but volume delta improving
+
+    BEARISH DIVERGENCE (Buyers Exhausted):
+    - Price makes HIGHER HIGH
+    - CVD makes LOWER HIGH
+    - Meaning: Buyers pushing price up but volume delta weakening
+
+    Returns:
+        {
+            "signal": "BULLISH_DIVERGENCE" | "BEARISH_DIVERGENCE" | "NONE",
+            "price_swing": {"from": price1, "to": price2, "change_pct": X},
+            "cvd_swing": {"from": cvd1, "to": cvd2, "change_pct": Y},
+            "strength": "STRONG" | "MODERATE" | "WEAK",
+            "bars_ago": N,
+            "interpretation": "Sellers exhausted at support..."
+        }
+    """
+    if len(df) < lookback + 10:
+        return {"signal": "NONE", "interpretation": "Insufficient data for divergence detection"}
+
+    # Calculate CVD
+    cvd = calculate_cvd(df)
+
+    # Find swing points
+    swings = find_swing_points(df)
+
+    # Filter to lookback period
+    recent_lows = [s for s in swings["lows"] if s["index"] >= len(df) - lookback]
+    recent_highs = [s for s in swings["highs"] if s["index"] >= len(df) - lookback]
+
+    divergences = []
+
+    # Check for bullish divergence (price lower low, CVD higher low)
+    if len(recent_lows) >= 2:
+        prev_low = recent_lows[-2]
+        curr_low = recent_lows[-1]
+
+        prev_cvd_low = float(cvd.iloc[prev_low["index"]])
+        curr_cvd_low = float(cvd.iloc[curr_low["index"]])
+
+        # Price makes lower low but CVD makes higher low
+        if curr_low["price"] < prev_low["price"] and curr_cvd_low > prev_cvd_low:
+            price_change_pct = ((curr_low["price"] - prev_low["price"]) / prev_low["price"]) * 100
+            cvd_change_pct = ((curr_cvd_low - prev_cvd_low) / abs(prev_cvd_low)) * 100 if prev_cvd_low != 0 else 0
+
+            divergences.append({
+                "signal": "BULLISH_DIVERGENCE",
+                "strength": _calculate_divergence_strength(price_change_pct, cvd_change_pct),
+                "price_swing": {
+                    "from": prev_low["price"],
+                    "to": curr_low["price"],
+                    "change_pct": round(price_change_pct, 2)
+                },
+                "cvd_swing": {
+                    "from": prev_cvd_low,
+                    "to": curr_cvd_low,
+                    "change_pct": round(cvd_change_pct, 2)
+                },
+                "bars_ago": len(df) - curr_low["index"],
+                "interpretation": "Sellers exhausted - price making lower lows but selling pressure decreasing. Potential reversal or bounce."
+            })
+
+    # Check for bearish divergence (price higher high, CVD lower high)
+    if len(recent_highs) >= 2:
+        prev_high = recent_highs[-2]
+        curr_high = recent_highs[-1]
+
+        prev_cvd_high = float(cvd.iloc[prev_high["index"]])
+        curr_cvd_high = float(cvd.iloc[curr_high["index"]])
+
+        # Price makes higher high but CVD makes lower high
+        if curr_high["price"] > prev_high["price"] and curr_cvd_high < prev_cvd_high:
+            price_change_pct = ((curr_high["price"] - prev_high["price"]) / prev_high["price"]) * 100
+            cvd_change_pct = ((curr_cvd_high - prev_cvd_high) / abs(prev_cvd_high)) * 100 if prev_cvd_high != 0 else 0
+
+            divergences.append({
+                "signal": "BEARISH_DIVERGENCE",
+                "strength": _calculate_divergence_strength(price_change_pct, cvd_change_pct),
+                "price_swing": {
+                    "from": prev_high["price"],
+                    "to": curr_high["price"],
+                    "change_pct": round(price_change_pct, 2)
+                },
+                "cvd_swing": {
+                    "from": prev_cvd_high,
+                    "to": curr_cvd_high,
+                    "change_pct": round(cvd_change_pct, 2)
+                },
+                "bars_ago": len(df) - curr_high["index"],
+                "interpretation": "Buyers exhausted - price making higher highs but buying pressure decreasing. Potential reversal or pullback."
+            })
+
+    # Return most recent divergence if multiple found
+    if divergences:
+        return min(divergences, key=lambda x: x["bars_ago"])
+
+    return {"signal": "NONE", "interpretation": "No divergence detected in recent price action"}
+
+
+def analyze_cvd(ticker: str, period: str = "3mo") -> dict:
+    """
+    Comprehensive CVD (Cumulative Volume Delta) analysis.
+
+    This is the core of volumetric liquidity sequencing - understanding
+    whether buyers or sellers are in control at the order flow level.
+
+    Args:
+        ticker: Stock ticker symbol
+        period: Historical period to analyze
+
+    Returns:
+        Dictionary containing:
+        - current_cvd: Latest CVD value
+        - cvd_trend: RISING / FALLING / FLAT
+        - delta_bars: Last 5 bars with delta values
+        - divergence: Divergence detection result
+        - cvd_slope: Normalized slope for trend detection
+    """
+    try:
+        df = _get_price_history(ticker, period)
+
+        if df.empty or len(df) < 20:
+            return {"error": f"Insufficient data for {ticker}"}
+
+        # Calculate CVD
+        delta = calculate_volume_delta(df)
+        cvd = delta.cumsum()
+
+        # Current values
+        current_cvd = float(cvd.iloc[-1])
+        current_delta = float(delta.iloc[-1])
+
+        # CVD trend (20-day slope normalized)
+        cvd_20d = cvd.tail(20)
+        if len(cvd_20d) >= 20:
+            x = np.arange(len(cvd_20d))
+            slope, _ = np.polyfit(x, cvd_20d.values, 1)
+            # Normalize by average CVD magnitude
+            avg_cvd = abs(cvd_20d).mean()
+            normalized_slope = slope / avg_cvd if avg_cvd > 0 else 0
+        else:
+            normalized_slope = 0
+
+        # Determine trend
+        if normalized_slope > 0.02:
+            cvd_trend = "RISING"
+            trend_interpretation = "Buying pressure dominant - accumulation"
+        elif normalized_slope < -0.02:
+            cvd_trend = "FALLING"
+            trend_interpretation = "Selling pressure dominant - distribution"
+        else:
+            cvd_trend = "FLAT"
+            trend_interpretation = "Balanced buying/selling pressure"
+
+        # Delta for last 5 bars
+        delta_bars = []
+        for i in range(-5, 0):
+            if abs(i) <= len(df):
+                delta_bars.append({
+                    "date": df.index[i].strftime('%Y-%m-%d') if hasattr(df.index[i], 'strftime') else str(df.index[i]),
+                    "delta": round(float(delta.iloc[i]), 0),
+                    "cumulative": round(float(cvd.iloc[i]), 0),
+                    "price": round(float(df['Close'].iloc[i]), 2),
+                    "interpretation": "Buyers" if delta.iloc[i] > 0 else "Sellers"
+                })
+
+        # Detect divergence
+        divergence = detect_cvd_divergence(df)
+
+        # Overall CVD assessment
+        if divergence["signal"] == "BULLISH_DIVERGENCE":
+            assessment = f"BULLISH - {divergence['strength']} divergence detected (sellers exhausted)"
+        elif divergence["signal"] == "BEARISH_DIVERGENCE":
+            assessment = f"BEARISH - {divergence['strength']} divergence detected (buyers exhausted)"
+        elif cvd_trend == "RISING":
+            assessment = "BULLISH - Accumulation in progress"
+        elif cvd_trend == "FALLING":
+            assessment = "BEARISH - Distribution in progress"
+        else:
+            assessment = "NEUTRAL - No clear directional pressure"
+
+        return {
+            "ticker": ticker,
+            "analysis_date": datetime.now().strftime("%Y-%m-%d"),
+            "current_cvd": round(current_cvd, 0),
+            "current_delta": round(current_delta, 0),
+            "cvd_trend": cvd_trend,
+            "cvd_slope_20d": round(normalized_slope, 4),
+            "trend_interpretation": trend_interpretation,
+            "delta_bars": delta_bars,
+            "divergence": divergence,
+            "assessment": assessment,
+            "methodology_note": "CVD approximated from OHLCV data. For precise order flow, tick data required."
+        }
+
+    except Exception as e:
+        return {"error": str(e), "ticker": ticker}
+
+
+def calculate_multi_vwap(ticker: str, period: str = "3mo", trading_style: str = "swing") -> dict:
+    """
+    Calculate and compare multiple VWAP anchors simultaneously.
+
+    For swing trading (multi-week holds), we focus on:
+    - Rolling 20-day VWAP (PRIMARY)
+    - Anchored VWAP from last significant swing (SECONDARY)
+    - Skip session VWAP (not relevant for swing timeframe)
+
+    For day trading, all three are calculated.
+
+    Standard Deviation Bands:
+    - 1σ: Normal trading range
+    - 2σ: Extended - potential mean reversion
+
+    Args:
+        ticker: Stock ticker symbol
+        period: Historical period
+        trading_style: "swing" or "day"
+
+    Returns:
+        Multi-VWAP synthesis with alignment and sustainability assessment
+    """
+    try:
+        df = _get_price_history(ticker, period)
+
+        if df.empty or len(df) < 20:
+            return {"error": f"Insufficient data for {ticker}"}
+
+        current_price = float(df['Close'].iloc[-1])
+
+        # Calculate Typical Price
+        df['Typical_Price'] = (df['High'] + df['Low'] + df['Close']) / 3
+        df['PV'] = df['Typical_Price'] * df['Volume']
+
+        # Rolling 20-day VWAP (PRIMARY for swing trading)
+        df['Rolling_VWAP'] = (
+            df['PV'].rolling(window=20).sum() /
+            df['Volume'].rolling(window=20).sum()
+        )
+        rolling_vwap = float(df['Rolling_VWAP'].iloc[-1])
+
+        # Calculate standard deviation for rolling VWAP
+        rolling_std = float(df['Typical_Price'].tail(20).std())
+
+        rolling_bands = {
+            "vwap": round(rolling_vwap, 2),
+            "upper_1sigma": round(rolling_vwap + rolling_std, 2),
+            "upper_2sigma": round(rolling_vwap + 2 * rolling_std, 2),
+            "lower_1sigma": round(rolling_vwap - rolling_std, 2),
+            "lower_2sigma": round(rolling_vwap - 2 * rolling_std, 2),
+            "std": round(rolling_std, 2)
+        }
+
+        # Anchored VWAP from period start
+        df['Anchored_VWAP'] = df['PV'].cumsum() / df['Volume'].cumsum()
+        anchored_vwap = float(df['Anchored_VWAP'].iloc[-1])
+        anchored_std = float(df['Typical_Price'].std())
+
+        anchored_bands = {
+            "vwap": round(anchored_vwap, 2),
+            "upper_1sigma": round(anchored_vwap + anchored_std, 2),
+            "upper_2sigma": round(anchored_vwap + 2 * anchored_std, 2),
+            "lower_1sigma": round(anchored_vwap - anchored_std, 2),
+            "lower_2sigma": round(anchored_vwap - 2 * anchored_std, 2),
+            "std": round(anchored_std, 2)
+        }
+
+        # Position vs each VWAP
+        def get_position(price, bands):
+            if price > bands["upper_2sigma"]:
+                return "EXTREME_ABOVE"
+            elif price > bands["upper_1sigma"]:
+                return "EXTENDED_ABOVE"
+            elif price > bands["vwap"]:
+                return "ABOVE"
+            elif price < bands["lower_2sigma"]:
+                return "EXTREME_BELOW"
+            elif price < bands["lower_1sigma"]:
+                return "EXTENDED_BELOW"
+            else:
+                return "BELOW"
+
+        positions = {
+            "rolling": get_position(current_price, rolling_bands),
+            "anchored": get_position(current_price, anchored_bands)
+        }
+
+        # Calculate alignment
+        above_count = sum(1 for p in positions.values() if "ABOVE" in p)
+        below_count = sum(1 for p in positions.values() if "BELOW" in p)
+        extreme_count = sum(1 for p in positions.values() if "EXTREME" in p)
+
+        if above_count == 2:
+            alignment = "STRONG_BULLISH"
+        elif below_count == 2:
+            alignment = "STRONG_BEARISH"
+        elif above_count >= 1:
+            alignment = "BULLISH"
+        elif below_count >= 1:
+            alignment = "BEARISH"
+        else:
+            alignment = "MIXED"
+
+        # Sustainability assessment
+        extreme_extension = extreme_count >= 1
+        if extreme_count >= 2:
+            sustainability = "UNSUSTAINABLE"
+            mean_reversion_target = rolling_vwap
+        elif extreme_count == 1:
+            sustainability = "EXTENDED"
+            mean_reversion_target = rolling_vwap
+        else:
+            sustainability = "SUSTAINABLE"
+            mean_reversion_target = None
+
+        # VWAP distance percentages
+        rolling_distance_pct = ((current_price - rolling_vwap) / rolling_vwap) * 100
+        anchored_distance_pct = ((current_price - anchored_vwap) / anchored_vwap) * 100
+
+        # Sigma distance (how many std devs from VWAP)
+        rolling_sigma = (current_price - rolling_vwap) / rolling_std if rolling_std > 0 else 0
+
+        return {
+            "ticker": ticker,
+            "current_price": round(current_price, 2),
+            "trading_style": trading_style,
+            "rolling_vwap": rolling_bands,
+            "anchored_vwap": anchored_bands,
+            "positions": positions,
+            "alignment": alignment,
+            "sustainability": sustainability,
+            "extreme_extension": extreme_extension,
+            "mean_reversion_target": round(mean_reversion_target, 2) if mean_reversion_target else None,
+            "distances": {
+                "rolling_pct": round(rolling_distance_pct, 2),
+                "anchored_pct": round(anchored_distance_pct, 2),
+                "sigma_from_rolling": round(rolling_sigma, 2)
+            },
+            "interpretation": f"Price is {alignment} vs VWAPs. Move is {sustainability}."
+        }
+
+    except Exception as e:
+        return {"error": str(e), "ticker": ticker}
+
+
+# ============================================================================
+# EXHAUSTION SCORE FUNCTIONS (Phase 2 of Volumetric Liquidity Enhancement)
+# ============================================================================
+
+def detect_rsi_divergence(df: pd.DataFrame, rsi_period: int = 14, lookback: int = 20) -> dict:
+    """
+    Detect RSI divergence from price action.
+
+    BULLISH DIVERGENCE:
+    - Price makes LOWER LOW
+    - RSI makes HIGHER LOW
+    - Meaning: Momentum improving despite price decline
+
+    BEARISH DIVERGENCE:
+    - Price makes HIGHER HIGH
+    - RSI makes LOWER HIGH
+    - Meaning: Momentum weakening despite price rise
+
+    Returns:
+        {
+            "signal": "BULLISH_DIVERGENCE" | "BEARISH_DIVERGENCE" | "NONE",
+            "strength": "STRONG" | "MODERATE" | "WEAK",
+            "rsi_current": XX.X,
+            "interpretation": "..."
+        }
+    """
+    if len(df) < rsi_period + lookback:
+        return {"signal": "NONE", "strength": "NONE", "rsi_current": 50.0, "interpretation": "Insufficient data"}
+
+    # Calculate RSI
+    delta = df['Close'].diff()
+    gain = delta.where(delta > 0, 0.0)
+    loss = (-delta).where(delta < 0, 0.0)
+
+    avg_gain = gain.rolling(window=rsi_period).mean()
+    avg_loss = loss.rolling(window=rsi_period).mean()
+
+    rs = avg_gain / avg_loss.replace(0, 0.0001)
+    rsi = 100 - (100 / (1 + rs))
+
+    current_rsi = float(rsi.iloc[-1])
+
+    # Get price and RSI swings in lookback period
+    recent_df = df.tail(lookback)
+    recent_rsi = rsi.tail(lookback)
+
+    # Find swing lows and highs in price
+    price_swings = find_swing_points(recent_df, min_bars_each_side=2, min_swing_pct=1.0)
+
+    # Check for bullish divergence (price lower low, RSI higher low)
+    if len(price_swings["lows"]) >= 2:
+        prev_low = price_swings["lows"][-2]
+        curr_low = price_swings["lows"][-1]
+
+        # Indices are relative to recent_df/recent_rsi slice, use directly
+        try:
+            prev_rsi = float(recent_rsi.iloc[prev_low["index"]])
+            curr_rsi_at_low = float(recent_rsi.iloc[curr_low["index"]])
+        except (IndexError, KeyError):
+            prev_rsi = float(recent_rsi.iloc[-1])
+            curr_rsi_at_low = float(recent_rsi.iloc[-1])
+
+        if curr_low["price"] < prev_low["price"] and curr_rsi_at_low > prev_rsi:
+            strength = "STRONG" if (curr_rsi_at_low - prev_rsi) > 10 else "MODERATE" if (curr_rsi_at_low - prev_rsi) > 5 else "WEAK"
+            return {
+                "signal": "BULLISH_DIVERGENCE",
+                "strength": strength,
+                "rsi_current": round(current_rsi, 1),
+                "interpretation": "Price making lower lows but RSI improving - momentum strengthening"
+            }
+
+    # Check for bearish divergence (price higher high, RSI lower high)
+    if len(price_swings["highs"]) >= 2:
+        prev_high = price_swings["highs"][-2]
+        curr_high = price_swings["highs"][-1]
+
+        # Indices are relative to recent_df/recent_rsi slice, use directly
+        try:
+            prev_rsi = float(recent_rsi.iloc[prev_high["index"]])
+            curr_rsi_at_high = float(recent_rsi.iloc[curr_high["index"]])
+        except (IndexError, KeyError):
+            prev_rsi = float(recent_rsi.iloc[-1])
+            curr_rsi_at_high = float(recent_rsi.iloc[-1])
+
+        if curr_high["price"] > prev_high["price"] and curr_rsi_at_high < prev_rsi:
+            strength = "STRONG" if (prev_rsi - curr_rsi_at_high) > 10 else "MODERATE" if (prev_rsi - curr_rsi_at_high) > 5 else "WEAK"
+            return {
+                "signal": "BEARISH_DIVERGENCE",
+                "strength": strength,
+                "rsi_current": round(current_rsi, 1),
+                "interpretation": "Price making higher highs but RSI weakening - momentum fading"
+            }
+
+    return {
+        "signal": "NONE",
+        "strength": "NONE",
+        "rsi_current": round(current_rsi, 1),
+        "interpretation": "No RSI divergence detected"
+    }
+
+
+def detect_volume_decline(df: pd.DataFrame, lookback: int = 10) -> dict:
+    """
+    Detect declining volume trend (sign of exhaustion).
+
+    Volume declining during a price move indicates:
+    - Decreasing participation
+    - Potential exhaustion of the move
+    - Possible reversal ahead
+
+    Returns:
+        {
+            "declining": bool,
+            "days_declining": int,
+            "volume_trend_pct": float,  # Negative = declining
+            "interpretation": "..."
+        }
+    """
+    if 'Volume' not in df.columns or len(df) < lookback:
+        return {"declining": False, "days_declining": 0, "volume_trend_pct": 0.0, "interpretation": "Insufficient data"}
+
+    volumes = df['Volume'].tail(lookback)
+
+    # Count consecutive declining days from most recent
+    days_declining = 0
+    for i in range(len(volumes) - 1, 0, -1):
+        if volumes.iloc[i] < volumes.iloc[i - 1]:
+            days_declining += 1
+        else:
+            break
+
+    # Calculate volume trend (slope)
+    x = np.arange(len(volumes))
+    slope, _ = np.polyfit(x, volumes.values, 1)
+    avg_volume = volumes.mean()
+    trend_pct = (slope * lookback / avg_volume) * 100 if avg_volume > 0 else 0
+
+    declining = trend_pct < -10  # 10% decline threshold
+
+    if declining and days_declining >= 5:
+        interpretation = f"Strong volume decline ({days_declining} consecutive days) - exhaustion signal"
+    elif declining:
+        interpretation = "Moderate volume decline - watch for exhaustion"
+    else:
+        interpretation = "Volume stable or increasing"
+
+    return {
+        "declining": declining,
+        "days_declining": days_declining,
+        "volume_trend_pct": round(trend_pct, 1),
+        "interpretation": interpretation
+    }
+
+
+def count_trend_days(df: pd.DataFrame, direction: str = "LONG") -> int:
+    """
+    Count consecutive up/down days to detect trend extension.
+
+    For LONG positions: Count consecutive up days (close > close[-1])
+    For SHORT positions: Count consecutive down days (close < close[-1])
+
+    Returns:
+        Number of consecutive trend days
+    """
+    if df is None or len(df) < 2:
+        return 0
+
+    closes = df['Close'].values
+    count = 0
+
+    if direction.upper() == "LONG":
+        # Count consecutive up days from most recent
+        for i in range(len(closes) - 1, 0, -1):
+            if closes[i] > closes[i - 1]:
+                count += 1
+            else:
+                break
+    else:  # SHORT
+        # Count consecutive down days from most recent
+        for i in range(len(closes) - 1, 0, -1):
+            if closes[i] < closes[i - 1]:
+                count += 1
+            else:
+                break
+
+    return count
+
+
+def calculate_exhaustion_score(
+    ticker: str,
+    direction: str = "LONG",
+    period: str = "3mo"
+) -> dict:
+    """
+    Composite exhaustion score (0-100) combining multiple signals.
+
+    PURPOSE: Detect when a move is running out of steam.
+
+    For LONG positions:
+    - HIGH exhaustion score (>70) = Move may be ending, consider TRIM
+    - LOW exhaustion score (<30) = Move has room to run, HOLD
+
+    For SHORT candidates:
+    - HIGH bullish exhaustion = Good SHORT entry (buyers exhausted)
+    - HIGH bearish exhaustion = Avoid SHORT (sellers exhausted)
+
+    Scoring Components (100 points total, revised weighting):
+    - CVD Divergence: 20 pts (reduced - OHLCV approximation)
+    - RSI Divergence: 20 pts (momentum confirmation)
+    - Trend Day Count: 25 pts (increased - high reliability)
+    - VWAP Extension: 15 pts (reduced - less relevant for swing)
+    - Volume Decline: 20 pts (increased - very reliable)
+
+    Tiered Response:
+    - 0-59: PROCEED - No exhaustion concern
+    - 60-69: FLAG as "Exhaustion Warning"
+    - 70-79: REDUCE position size by 50%
+    - 80+: EXCLUDE from scanner
+
+    Returns:
+        {
+            "score": int (0-100),
+            "level": "NO_EXHAUSTION" | "LOW_EXHAUSTION" | "MODERATE_EXHAUSTION" | "HIGH_EXHAUSTION",
+            "suggested_action": "PROCEED" | "FLAG" | "REDUCE_SIZE" | "EXCLUDE",
+            "components": {...},
+            "interpretation": "..."
+        }
+    """
+    try:
+        df = _get_price_history(ticker, period)
+
+        if df.empty or len(df) < 30:
+            return {"error": f"Insufficient data for {ticker}", "score": 0, "level": "UNKNOWN"}
+
+        score = 0
+        components = {}
+        direction = direction.upper()
+
+        # Component 1: CVD Divergence (20 pts max)
+        cvd_result = detect_cvd_divergence(df)
+        cvd_pts = 0
+
+        if direction == "LONG":
+            # For LONG, bearish divergence = exhausted buyers = bad for position
+            if cvd_result["signal"] == "BEARISH_DIVERGENCE":
+                if cvd_result["strength"] == "STRONG":
+                    cvd_pts = 20
+                elif cvd_result["strength"] == "MODERATE":
+                    cvd_pts = 13
+                else:
+                    cvd_pts = 7
+                components["cvd_divergence"] = {"points": cvd_pts, "signal": "BEARISH", "note": "Buyers exhausted"}
+        else:  # SHORT
+            # For SHORT, bullish divergence = exhausted sellers = bad for short
+            if cvd_result["signal"] == "BULLISH_DIVERGENCE":
+                if cvd_result["strength"] == "STRONG":
+                    cvd_pts = 20
+                elif cvd_result["strength"] == "MODERATE":
+                    cvd_pts = 13
+                else:
+                    cvd_pts = 7
+                components["cvd_divergence"] = {"points": cvd_pts, "signal": "BULLISH", "note": "Sellers exhausted"}
+
+        if "cvd_divergence" not in components:
+            components["cvd_divergence"] = {"points": 0, "signal": "NONE", "note": "No opposing divergence"}
+        score += cvd_pts
+
+        # Component 2: RSI Divergence (20 pts max)
+        rsi_result = detect_rsi_divergence(df)
+        rsi_pts = 0
+
+        if direction == "LONG" and rsi_result["signal"] == "BEARISH_DIVERGENCE":
+            if rsi_result["strength"] == "STRONG":
+                rsi_pts = 20
+            elif rsi_result["strength"] == "MODERATE":
+                rsi_pts = 13
+            else:
+                rsi_pts = 7
+            components["rsi_divergence"] = {"points": rsi_pts, "signal": "BEARISH", "rsi": rsi_result["rsi_current"]}
+        elif direction == "SHORT" and rsi_result["signal"] == "BULLISH_DIVERGENCE":
+            if rsi_result["strength"] == "STRONG":
+                rsi_pts = 20
+            elif rsi_result["strength"] == "MODERATE":
+                rsi_pts = 13
+            else:
+                rsi_pts = 7
+            components["rsi_divergence"] = {"points": rsi_pts, "signal": "BULLISH", "rsi": rsi_result["rsi_current"]}
+        else:
+            components["rsi_divergence"] = {"points": 0, "signal": "NONE", "rsi": rsi_result["rsi_current"]}
+        score += rsi_pts
+
+        # Component 3: Trend Day Count (25 pts max - highest weight)
+        trend_days = count_trend_days(df, direction)
+        trend_pts = 0
+
+        if trend_days >= 8:
+            trend_pts = 25
+        elif trend_days >= 6:
+            trend_pts = 18
+        elif trend_days >= 4:
+            trend_pts = 10
+        elif trend_days >= 2:
+            trend_pts = 4
+
+        components["trend_days"] = {"points": trend_pts, "count": trend_days, "note": f"{trend_days} consecutive days"}
+        score += trend_pts
+
+        # Component 4: VWAP Extension (15 pts max)
+        multi_vwap = calculate_multi_vwap(ticker, period, "swing")
+        vwap_pts = 0
+
+        if not multi_vwap.get("error"):
+            sigma_distance = abs(multi_vwap.get("distances", {}).get("sigma_from_rolling", 0))
+            extreme_ext = multi_vwap.get("extreme_extension", False)
+
+            if extreme_ext or sigma_distance >= 2.0:
+                vwap_pts = 15
+            elif sigma_distance >= 1.5:
+                vwap_pts = 10
+            elif sigma_distance >= 1.0:
+                vwap_pts = 5
+
+            components["vwap_extension"] = {
+                "points": vwap_pts,
+                "sigma_distance": round(sigma_distance, 2),
+                "extreme": extreme_ext
+            }
+        else:
+            components["vwap_extension"] = {"points": 0, "error": "VWAP calculation failed"}
+        score += vwap_pts
+
+        # Component 5: Volume Decline (20 pts max)
+        vol_result = detect_volume_decline(df)
+        vol_pts = 0
+
+        if vol_result["declining"]:
+            if vol_result["days_declining"] >= 5:
+                vol_pts = 20
+            elif vol_result["days_declining"] >= 3:
+                vol_pts = 12
+            else:
+                vol_pts = 6
+
+        components["volume_decline"] = {
+            "points": vol_pts,
+            "declining": vol_result["declining"],
+            "days": vol_result["days_declining"],
+            "trend_pct": vol_result["volume_trend_pct"]
+        }
+        score += vol_pts
+
+        # Classify exhaustion level and determine action (tiered response)
+        if score >= 80:
+            level = "HIGH_EXHAUSTION"
+            action = "EXCLUDE"
+            action_detail = "Exclude from scanner - high exhaustion risk"
+        elif score >= 70:
+            level = "HIGH_EXHAUSTION"
+            action = "REDUCE_SIZE"
+            action_detail = "Reduce position size by 50%"
+        elif score >= 60:
+            level = "MODERATE_EXHAUSTION"
+            action = "FLAG"
+            action_detail = "Proceed with caution - exhaustion warning"
+        elif score >= 30:
+            level = "LOW_EXHAUSTION"
+            action = "PROCEED"
+            action_detail = "Minor exhaustion signals - acceptable"
+        else:
+            level = "NO_EXHAUSTION"
+            action = "PROCEED"
+            action_detail = "No significant exhaustion detected"
+
+        return {
+            "ticker": ticker,
+            "direction": direction,
+            "score": score,
+            "level": level,
+            "suggested_action": action,
+            "action_detail": action_detail,
+            "components": components,
+            "interpretation": f"{level} detected (score: {score}/100). {action_detail}.",
+            "component_weights": {
+                "cvd_divergence": 20,
+                "rsi_divergence": 20,
+                "trend_days": 25,
+                "vwap_extension": 15,
+                "volume_decline": 20
+            }
+        }
+
+    except Exception as e:
+        return {"error": str(e), "ticker": ticker, "score": 0, "level": "ERROR"}
+
+
+# ============================================================================
+# CVD + AL BROOKS INTEGRATION (Phase 3 of Volumetric Liquidity Enhancement)
+# ============================================================================
+
+def enhance_brooks_with_cvd(
+    brooks_pattern: str,
+    direction: str,
+    cvd_analysis: dict,
+    base_probability: float = 50.0
+) -> dict:
+    """
+    Enhance Al Brooks pattern probability based on CVD confirmation.
+
+    Brooks teaches: Volume confirms. CVD is directional volume.
+
+    Pattern-Specific Adjustments:
+    - Wedge Reversal: CVD divergence at apex = higher reversal probability
+    - Breakout: Positive delta on breakout bar = confirmed breakout
+    - Bull Flag Pullback: Declining CVD on pullback = healthy consolidation
+    - Failed Breakout: Delta spike then reversal = trap confirmation
+    - Measured Move: CVD rising throughout = strong continuation
+
+    Args:
+        brooks_pattern: Al Brooks pattern name (e.g., 'high_2', 'wedge_reversal')
+        direction: Trade direction ('LONG' or 'SHORT')
+        cvd_analysis: Output from analyze_cvd() or detect_cvd_divergence()
+        base_probability: Starting probability from Al Brooks analysis
+
+    Returns:
+        {
+            "adjusted_probability": float,
+            "adjustment": int,
+            "confirmation": "STRONG" | "MODERATE" | "WEAK" | "NONE" | "NEGATIVE",
+            "explanation": str
+        }
+    """
+    adjustment = 0
+    explanation = ""
+    confirmation = "NONE"
+
+    # Normalize inputs
+    pattern = brooks_pattern.lower() if brooks_pattern else ""
+    direction = direction.upper() if direction else "LONG"
+
+    # Get CVD data
+    divergence_signal = cvd_analysis.get("divergence", {}).get("signal", "NONE")
+    divergence_strength = cvd_analysis.get("divergence", {}).get("strength", "NONE")
+    cvd_trend = cvd_analysis.get("cvd_trend", "FLAT")
+    current_delta = cvd_analysis.get("current_delta", 0)
+
+    # Get last few deltas for recent trend
+    delta_bars = cvd_analysis.get("delta_bars", [])
+    recent_deltas = [bar.get("delta", 0) for bar in delta_bars[-3:]] if delta_bars else [0]
+    avg_recent_delta = sum(recent_deltas) / len(recent_deltas) if recent_deltas else 0
+
+    # -------------------------------------------------------------------------
+    # Pattern-Specific CVD Enhancements
+    # -------------------------------------------------------------------------
+
+    # 1. WEDGE REVERSAL PATTERNS
+    if pattern in ['wedge_reversal', 'wedge_top', 'double_bottom', 'double_top']:
+        # CVD divergence at reversal point = STRONG confirmation
+        if direction == "LONG" and divergence_signal == "BULLISH_DIVERGENCE":
+            if divergence_strength == "STRONG":
+                adjustment = +10
+                confirmation = "STRONG"
+                explanation = "CVD bullish divergence confirms wedge reversal (sellers exhausted)"
+            elif divergence_strength == "MODERATE":
+                adjustment = +6
+                confirmation = "MODERATE"
+                explanation = "CVD moderate divergence supports reversal"
+            else:
+                adjustment = +3
+                confirmation = "WEAK"
+                explanation = "CVD weak divergence - partial confirmation"
+        elif direction == "SHORT" and divergence_signal == "BEARISH_DIVERGENCE":
+            if divergence_strength == "STRONG":
+                adjustment = +10
+                confirmation = "STRONG"
+                explanation = "CVD bearish divergence confirms top reversal (buyers exhausted)"
+            elif divergence_strength == "MODERATE":
+                adjustment = +6
+                confirmation = "MODERATE"
+                explanation = "CVD moderate divergence supports top"
+            else:
+                adjustment = +3
+                confirmation = "WEAK"
+                explanation = "CVD weak divergence - partial confirmation"
+        elif divergence_signal != "NONE":
+            # Divergence against trade direction
+            adjustment = -8
+            confirmation = "NEGATIVE"
+            explanation = f"CVD divergence AGAINST trade direction - caution"
+
+    # 2. BREAKOUT/BREAKDOWN PATTERNS
+    elif pattern in ['breakout_pullback', 'breakdown_pullback', 'tight_trading_range_breakout']:
+        # Positive delta on breakout = confirmed
+        if direction == "LONG":
+            if current_delta > 0 and avg_recent_delta > 0:
+                adjustment = +8
+                confirmation = "STRONG"
+                explanation = "Positive CVD delta confirms breakout (buying pressure)"
+            elif current_delta > 0:
+                adjustment = +4
+                confirmation = "MODERATE"
+                explanation = "Current delta positive - partial confirmation"
+            elif current_delta < 0:
+                adjustment = -5
+                confirmation = "NEGATIVE"
+                explanation = "Negative delta on breakout - likely failed breakout"
+        else:  # SHORT
+            if current_delta < 0 and avg_recent_delta < 0:
+                adjustment = +8
+                confirmation = "STRONG"
+                explanation = "Negative CVD delta confirms breakdown (selling pressure)"
+            elif current_delta < 0:
+                adjustment = +4
+                confirmation = "MODERATE"
+                explanation = "Current delta negative - partial confirmation"
+            elif current_delta > 0:
+                adjustment = -5
+                confirmation = "NEGATIVE"
+                explanation = "Positive delta on breakdown - likely failed breakdown"
+
+    # 3. PULLBACK PATTERNS (High 1/2, Low 1/2, Bull/Bear Flags)
+    elif pattern in ['high_1', 'high_2', 'low_1', 'low_2', 'higher_low', 'lower_high']:
+        # Healthy pullback has declining volume/CVD
+        if direction == "LONG":
+            if cvd_trend == "FALLING" and current_delta < 0:
+                adjustment = +5
+                confirmation = "MODERATE"
+                explanation = "Declining CVD on pullback - healthy consolidation"
+            elif cvd_trend == "RISING" and current_delta > 0:
+                adjustment = +3
+                confirmation = "WEAK"
+                explanation = "CVD still rising - aggressive buyers"
+            elif cvd_trend == "FALLING" and avg_recent_delta < 0:
+                adjustment = +2
+                confirmation = "WEAK"
+                explanation = "Recent CVD declining - consolidation in progress"
+        else:  # SHORT
+            if cvd_trend == "RISING" and current_delta > 0:
+                adjustment = +5
+                confirmation = "MODERATE"
+                explanation = "Rising CVD on bounce - weak rally (healthy for short)"
+            elif cvd_trend == "FALLING" and current_delta < 0:
+                adjustment = +3
+                confirmation = "WEAK"
+                explanation = "CVD falling - confirms selling pressure"
+
+    # 4. FAILED BREAKOUT/BREAKDOWN (Traps)
+    elif pattern in ['failed_breakout', 'failed_breakdown']:
+        # Delta spike then reversal = trap confirmation
+        if len(recent_deltas) >= 2:
+            delta_reversal = (recent_deltas[0] > 0 and recent_deltas[-1] < 0) or \
+                           (recent_deltas[0] < 0 and recent_deltas[-1] > 0)
+            if delta_reversal:
+                adjustment = +8
+                confirmation = "STRONG"
+                explanation = "CVD delta reversal confirms trap pattern"
+            else:
+                adjustment = +3
+                confirmation = "WEAK"
+                explanation = "No clear CVD reversal - trap less reliable"
+
+    # 5. CLIMACTIC/EXHAUSTION PATTERNS
+    elif pattern in ['climactic_exhaustion', 'high_3', 'high_4', 'low_3', 'low_4']:
+        # Divergence = confirms exhaustion
+        if direction == "LONG" and divergence_signal == "BULLISH_DIVERGENCE":
+            adjustment = +7
+            confirmation = "MODERATE"
+            explanation = "CVD divergence confirms selling exhaustion"
+        elif direction == "SHORT" and divergence_signal == "BEARISH_DIVERGENCE":
+            adjustment = +7
+            confirmation = "MODERATE"
+            explanation = "CVD divergence confirms buying exhaustion"
+        # CVD trend continuation = not yet exhausted
+        elif (direction == "SHORT" and cvd_trend == "RISING") or \
+             (direction == "LONG" and cvd_trend == "FALLING"):
+            adjustment = -5
+            confirmation = "NEGATIVE"
+            explanation = "CVD trend not exhausted - wait for divergence"
+
+    # 6. MEASURED MOVE / CONTINUATION
+    elif pattern in ['ema_bounce', 'ema_rejection']:
+        # CVD trending in direction = confirms continuation
+        if direction == "LONG" and cvd_trend == "RISING":
+            adjustment = +5
+            confirmation = "MODERATE"
+            explanation = "Rising CVD confirms bullish continuation"
+        elif direction == "SHORT" and cvd_trend == "FALLING":
+            adjustment = +5
+            confirmation = "MODERATE"
+            explanation = "Falling CVD confirms bearish continuation"
+        elif cvd_trend == "FLAT":
+            adjustment = 0
+            confirmation = "NONE"
+            explanation = "CVD neutral - no additional confirmation"
+        else:
+            adjustment = -3
+            confirmation = "WEAK"
+            explanation = "CVD trending against direction"
+
+    # 7. DEFAULT - No specific pattern match
+    else:
+        # Generic CVD alignment check
+        if direction == "LONG":
+            if cvd_trend == "RISING":
+                adjustment = +3
+                confirmation = "WEAK"
+                explanation = "CVD rising - general bullish confirmation"
+            elif cvd_trend == "FALLING":
+                adjustment = -2
+                confirmation = "NEGATIVE"
+                explanation = "CVD falling - general bearish pressure"
+        else:  # SHORT
+            if cvd_trend == "FALLING":
+                adjustment = +3
+                confirmation = "WEAK"
+                explanation = "CVD falling - general bearish confirmation"
+            elif cvd_trend == "RISING":
+                adjustment = -2
+                confirmation = "NEGATIVE"
+                explanation = "CVD rising - general bullish pressure"
+
+    # Calculate adjusted probability
+    adjusted_probability = base_probability + adjustment
+    adjusted_probability = max(20, min(80, adjusted_probability))  # Clamp to 20-80%
+
+    return {
+        "base_probability": round(base_probability, 1),
+        "adjusted_probability": round(adjusted_probability, 1),
+        "adjustment": adjustment,
+        "confirmation": confirmation,
+        "reason": explanation,  # Added for compatibility with test
+        "explanation": explanation,
+        "cvd_trend": cvd_trend,
+        "divergence": divergence_signal,
+        "pattern_analyzed": pattern
+    }

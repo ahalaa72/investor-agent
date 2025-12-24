@@ -752,12 +752,23 @@ class SimilarityEngine:
             return {'5d': 0.0, '10d': 0.0, '20d': 0.0}
 
         entry_price = data['Close'].iloc[idx]
+
+        # Handle NaN or zero entry price
+        if pd.isna(entry_price) or entry_price == 0:
+            return {'5d': 0.0, '10d': 0.0, '20d': 0.0}
+
         outcomes = {}
 
         for horizon in [5, 10, 20]:
             if idx + horizon < len(data):
                 exit_price = data['Close'].iloc[idx + horizon]
-                outcomes[f'{horizon}d'] = (exit_price / entry_price - 1)
+                # Handle NaN exit price
+                if pd.isna(exit_price):
+                    outcomes[f'{horizon}d'] = 0.0
+                else:
+                    ret = (exit_price / entry_price - 1)
+                    # Handle NaN result (shouldn't happen but defensive)
+                    outcomes[f'{horizon}d'] = float(ret) if not pd.isna(ret) else 0.0
             else:
                 outcomes[f'{horizon}d'] = 0.0
 
@@ -846,9 +857,18 @@ class SimilarityEngine:
         entry_price = data['Close'].iloc[idx]
         target_return_decimal = target_return_pct / 100.0
 
+        # Handle NaN or zero entry price
+        if pd.isna(entry_price) or entry_price == 0:
+            return {'return': 0.0}, 0.0
+
         if idx + holding_period_days < len(data):
             exit_price = data['Close'].iloc[idx + holding_period_days]
-            actual_return = (exit_price / entry_price - 1)
+            # Handle NaN exit price
+            if pd.isna(exit_price):
+                actual_return = 0.0
+            else:
+                ret = (exit_price / entry_price - 1)
+                actual_return = float(ret) if not pd.isna(ret) else 0.0
         else:
             actual_return = 0.0
 

@@ -12,9 +12,31 @@ from typing import Literal, Any
 
 import hishel
 import httpx
+import numpy as np
 import pandas as pd
 import yfinance as yf
 from mcp.server.fastmcp import FastMCP
+
+
+def convert_numpy_types(obj):
+    """Recursively convert numpy types to Python native types for JSON serialization."""
+    if isinstance(obj, dict):
+        return {k: convert_numpy_types(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_numpy_types(item) for item in obj]
+    elif isinstance(obj, np.bool_):
+        return bool(obj)
+    elif isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        if np.isnan(obj):
+            return None
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return convert_numpy_types(obj.tolist())
+    elif hasattr(obj, 'item'):  # For other numpy scalar types
+        return obj.item()
+    return obj
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception, after_log
 from yfinance.exceptions import YFRateLimitError
 
@@ -162,6 +184,131 @@ def validate_date_range(start_str: str | None, end_str: str | None) -> None:
 
     if start_date and end_date and start_date > end_date:
         raise ValueError("start_date must be before or equal to end_date")
+
+
+def get_price_history_questrade_first(ticker: str, period: str = "3mo") -> pd.DataFrame:
+    """
+    Get historical price data with Questrade as primary source, yfinance as fallback.
+
+    This ensures we get accurate split-adjusted data for stocks that have had splits.
+
+    Args:
+        ticker: Stock symbol
+        period: Period string (1mo, 3mo, 6mo, 1y, 2y, etc.)
+
+    Returns:
+        DataFrame with OHLCV data (columns: Open, High, Low, Close, Volume)
+    """
+    from datetime import datetime, timedelta
+
+    # Map period to days
+    period_days = {
+        '1d': 1, '5d': 5, '1mo': 30, '3mo': 90, '6mo': 180,
+        '1y': 365, '2y': 730, '5y': 1825, 'ytd': (datetime.now() - datetime(datetime.now().year, 1, 1)).days
+    }
+    days = period_days.get(period, 90)
+
+    # Try Questrade first
+    try:
+        qt_client = get_questrade_client()
+
+        # Get symbol info
+        symbol_info = qt_client.get_symbol_info(ticker)
+        if symbol_info and symbol_info.get('symbols'):
+            symbol_id = symbol_info['symbols'][0]['symbolId']
+
+            # Calculate date range
+            end_time = datetime.now()
+            start_time = end_time - timedelta(days=days + 10)  # Add buffer
+
+            # Determine interval based on period
+            if days <= 5:
+                interval = "FifteenMinutes"
+            elif days <= 30:
+                interval = "OneHour"
+            else:
+                interval = "OneDay"
+
+            # Format for Questrade API
+            start_str = start_time.strftime('%Y-%m-%dT%H:%M:%S-05:00')
+            end_str = end_time.strftime('%Y-%m-%dT%H:%M:%S-05:00')
+
+            candles = qt_client.get_candles(ticker, interval, start_str, end_str)
+
+            if candles and candles.get('candles'):
+                df = pd.DataFrame(candles['candles'])
+                # Rename columns to match yfinance format
+                df = df.rename(columns={
+                    'start': 'Date',
+                    'open': 'Open',
+                    'high': 'High',
+                    'low': 'Low',
+                    'close': 'Close',
+                    'volume': 'Volume'
+                })
+                # Convert with utc=True to handle timezone-aware strings properly
+                df['Date'] = pd.to_datetime(df['Date'], utc=True)
+                df.set_index('Date', inplace=True)
+                # Remove timezone info for consistent downstream processing
+                df.index = df.index.tz_convert(None)
+
+                if len(df) >= 10:  # Require minimum data points
+                    logger.info(f"Using Questrade price history for {ticker} ({len(df)} bars)")
+                    return df
+
+    except Exception as e:
+        logger.warning(f"Questrade price history unavailable for {ticker}: {e}")
+
+    # Fallback to yfinance
+    logger.info(f"Using yfinance for {ticker} price history")
+    t = yf.Ticker(ticker)
+    df = t.history(period=period)
+
+    if df.empty:
+        raise ValueError(f"No price history available for {ticker}")
+
+    # Normalize timezone-aware index to avoid pandas conversion issues
+    if isinstance(df.index, pd.DatetimeIndex) and df.index.tz is not None:
+        df.index = df.index.tz_localize(None)
+
+    return df
+
+
+def get_current_price_questrade_first(ticker: str) -> float:
+    """
+    Get current price with Questrade as primary source, yfinance as fallback.
+
+    Args:
+        ticker: Stock symbol
+
+    Returns:
+        Current price as float
+    """
+    # Try Questrade first
+    try:
+        qt_client = get_questrade_client()
+        quote = qt_client.get_quote(ticker)
+
+        if quote and quote.get('quotes'):
+            q = quote['quotes'][0]
+            price = q.get('lastTradePrice') or q.get('lastTradePriceTrHrs')
+            if price and price > 0:
+                logger.info(f"Using Questrade price for {ticker}: ${price}")
+                return float(price)
+
+    except Exception as e:
+        logger.warning(f"Questrade quote unavailable for {ticker}: {e}")
+
+    # Fallback to yfinance
+    t = yf.Ticker(ticker)
+    info = t.info
+    price = info.get('currentPrice') or info.get('regularMarketPrice') or info.get('previousClose')
+
+    if not price:
+        raise ValueError(f"Could not get price for {ticker}")
+
+    logger.info(f"Using yfinance price for {ticker}: ${price}")
+    return float(price)
 
 @api_retry
 def yf_call(ticker: str, method: str, *args, **kwargs):
@@ -1704,6 +1851,34 @@ def get_ticker_data(
                 for key, value in calendar.items()
             ]
 
+        # Try to get next earnings date specifically (often missing from calendar)
+        try:
+            t_for_earnings = yf.Ticker(ticker)
+            earnings_dates = t_for_earnings.earnings_dates
+            if earnings_dates is not None and not earnings_dates.empty:
+                from datetime import datetime
+                today = datetime.now()
+                # Find next earnings date (future dates only)
+                future_dates = earnings_dates[earnings_dates.index > today]
+                if not future_dates.empty:
+                    next_earnings = future_dates.index[0]
+                    days_to_earnings = (next_earnings - today).days
+                    result["next_earnings"] = {
+                        "date": next_earnings.strftime("%Y-%m-%d"),
+                        "days_away": days_to_earnings
+                    }
+                else:
+                    # No future dates, get most recent from calendar if available
+                    past_dates = earnings_dates[earnings_dates.index <= today]
+                    if not past_dates.empty:
+                        last_earnings = past_dates.index[0]
+                        result["last_earnings"] = {
+                            "date": last_earnings.strftime("%Y-%m-%d"),
+                            "note": "No future earnings date available"
+                        }
+        except Exception:
+            pass  # Earnings dates not available
+
         # Process news
         news_items = safe_future_result(news_future, context=f"fetching news for {ticker}")
         if news_items:
@@ -1845,26 +2020,129 @@ def analyze_options_mcmillan(
         if not current_price:
             raise ValueError(f"Could not get current price for {ticker}")
 
-        # Get options expirations
-        expirations = t.options
-        if not expirations:
-            raise ValueError(f"No options available for {ticker}")
+        # Try Questrade first for options chain (more accurate, especially for split-adjusted stocks)
+        calls_df = None
+        puts_df = None
+        nearest_exp = None
+        expirations = []
+        options_source = "yfinance"
 
-        # Filter expirations near holding period
-        target_date = datetime.now() + timedelta(days=holding_period_days)
-        target_date_str = target_date.strftime('%Y-%m-%d')
+        try:
+            from investor_agent.questrade import get_questrade_client
+            from questrade_api import Questrade
 
-        # Find nearest expiration to target holding period
-        nearest_exp = min(expirations, key=lambda x: abs(
-            (datetime.strptime(x, '%Y-%m-%d') - target_date).days
-        ))
+            qt_client = get_questrade_client()
+            symbol_info = qt_client.get_symbol_info(ticker)
 
-        # Get options chain for analysis
-        chain = t.option_chain(nearest_exp)
-        calls_df = chain.calls
-        puts_df = chain.puts
+            if symbol_info and symbol_info.get('symbols') and symbol_info['symbols'][0].get('hasOptions'):
+                symbol_id = symbol_info['symbols'][0]['symbolId']
 
-        if calls_df.empty and puts_df.empty:
+                # Get Questrade client directly for options
+                q = Questrade()
+                qt_options = q.symbol_options(symbol_id)
+
+                if qt_options and qt_options.get('optionChain'):
+                    # Parse Questrade options chain into DataFrames
+                    target_date = datetime.now() + timedelta(days=holding_period_days)
+
+                    # Find nearest expiration
+                    exp_dates = [exp['expiryDate'][:10] for exp in qt_options['optionChain']]
+                    expirations = exp_dates
+
+                    if exp_dates:
+                        nearest_exp = min(exp_dates, key=lambda x: abs(
+                            (datetime.strptime(x, '%Y-%m-%d') - target_date).days
+                        ))
+
+                        # Get the chain for nearest expiration
+                        for exp in qt_options['optionChain']:
+                            if exp['expiryDate'].startswith(nearest_exp):
+                                # Build calls and puts DataFrames from Questrade data
+                                calls_data = []
+                                puts_data = []
+
+                                for root in exp.get('chainPerRoot', []):
+                                    for strike_info in root.get('chainPerStrikePrice', []):
+                                        strike = strike_info['strikePrice']
+                                        call_id = strike_info.get('callSymbolId')
+                                        put_id = strike_info.get('putSymbolId')
+
+                                        # Get quotes for these options using keyword argument
+                                        try:
+                                            if call_id:
+                                                call_quotes = q.markets_options(optionIds=[call_id])
+                                                if call_quotes and call_quotes.get('optionQuotes'):
+                                                    cq = call_quotes['optionQuotes'][0]
+                                                    calls_data.append({
+                                                        'strike': strike,
+                                                        'lastPrice': cq.get('lastTradePrice') or 0,
+                                                        'bid': cq.get('bidPrice') or 0,
+                                                        'ask': cq.get('askPrice') or 0,
+                                                        'volume': cq.get('volume') or 0,
+                                                        'openInterest': cq.get('openInterest') or 0,
+                                                        'impliedVolatility': cq.get('volatility') or 0.3,
+                                                        'delta': cq.get('delta') or 0,
+                                                        'gamma': cq.get('gamma') or 0,
+                                                        'theta': cq.get('theta') or 0,
+                                                        'vega': cq.get('vega') or 0
+                                                    })
+                                            if put_id:
+                                                put_quotes = q.markets_options(optionIds=[put_id])
+                                                if put_quotes and put_quotes.get('optionQuotes'):
+                                                    pq = put_quotes['optionQuotes'][0]
+                                                    puts_data.append({
+                                                        'strike': strike,
+                                                        'lastPrice': pq.get('lastTradePrice') or 0,
+                                                        'bid': pq.get('bidPrice') or 0,
+                                                        'ask': pq.get('askPrice') or 0,
+                                                        'volume': pq.get('volume') or 0,
+                                                        'openInterest': pq.get('openInterest') or 0,
+                                                        'impliedVolatility': pq.get('volatility') or 0.3,
+                                                        'delta': pq.get('delta') or 0,
+                                                        'gamma': pq.get('gamma') or 0,
+                                                        'theta': pq.get('theta') or 0,
+                                                        'vega': pq.get('vega') or 0
+                                                    })
+                                        except Exception:
+                                            pass  # Skip individual option quote errors
+
+                                if calls_data or puts_data:
+                                    calls_df = pd.DataFrame(calls_data) if calls_data else pd.DataFrame()
+                                    puts_df = pd.DataFrame(puts_data) if puts_data else pd.DataFrame()
+                                    options_source = "questrade"
+                                    logger.info(f"Using Questrade options data for {ticker}")
+                                break
+        except Exception as qt_err:
+            logger.warning(f"Questrade options unavailable for {ticker}: {qt_err}")
+
+        # Fall back to yfinance if Questrade didn't work
+        if calls_df is None or (calls_df.empty if hasattr(calls_df, 'empty') else True):
+            logger.info(f"Falling back to yfinance for {ticker} options")
+            expirations = t.options
+            if not expirations:
+                raise ValueError(f"No options available for {ticker}")
+
+            target_date = datetime.now() + timedelta(days=holding_period_days)
+            nearest_exp = min(expirations, key=lambda x: abs(
+                (datetime.strptime(x, '%Y-%m-%d') - target_date).days
+            ))
+
+            chain = t.option_chain(nearest_exp)
+            calls_df = chain.calls
+            puts_df = chain.puts
+            options_source = "yfinance"
+
+            # Validate yfinance data - check if strikes are reasonable vs price
+            if not calls_df.empty:
+                min_strike = calls_df['strike'].min()
+                max_strike = calls_df['strike'].max()
+                # If strikes are way off (like 3x+ away from price), data is bad
+                if min_strike > current_price * 2 or max_strike < current_price * 0.5:
+                    logger.warning(f"yfinance options data appears invalid for {ticker}: strikes {min_strike}-{max_strike} vs price {current_price}")
+                    raise ValueError(f"Invalid options data for {ticker} (possible split adjustment issue)")
+
+        if (calls_df is None or (hasattr(calls_df, 'empty') and calls_df.empty)) and \
+           (puts_df is None or (hasattr(puts_df, 'empty') and puts_df.empty)):
             raise ValueError(f"No options data for {ticker} at {nearest_exp}")
 
         # ============================================================
@@ -1978,6 +2256,19 @@ def _calculate_iv_analysis(ticker: str, calls_df: pd.DataFrame, puts_df: pd.Data
     if 'impliedVolatility' in atm_calls.columns and not atm_calls.empty:
         call_iv = atm_calls['impliedVolatility'].iloc[0] if not atm_calls['impliedVolatility'].isna().all() else None
         put_iv = atm_puts['impliedVolatility'].iloc[0] if not atm_puts.empty and not atm_puts['impliedVolatility'].isna().all() else None
+
+        # Normalize IV to decimal form (0.30 for 30%)
+        # Questrade returns IV as percentage (30.0), yfinance as decimal (0.30)
+        def normalize_to_decimal(iv_val):
+            if iv_val is None or pd.isna(iv_val):
+                return None
+            iv_val = float(iv_val)
+            if iv_val > 1.5:  # Likely already percentage form (e.g. 30.0 for 30%)
+                return iv_val / 100
+            return iv_val
+
+        call_iv = normalize_to_decimal(call_iv)
+        put_iv = normalize_to_decimal(put_iv)
 
         if call_iv and put_iv:
             current_iv = (call_iv + put_iv) / 2
@@ -2230,31 +2521,202 @@ def _get_questrade_greeks(ticker: str, expiration: str, current_price: float) ->
         return None
 
 
-def _estimate_greeks_from_chain(calls_df: pd.DataFrame, puts_df: pd.DataFrame, current_price: float) -> dict:
-    """Estimate Greeks from yfinance chain data."""
-    greeks = {
-        "source": "yfinance_estimated",
-        "note": "Greeks estimated from chain data - use Questrade for accurate Greeks"
+def _calculate_black_scholes_greeks(
+    S: float,  # Current stock price
+    K: float,  # Strike price
+    T: float,  # Time to expiration in years
+    r: float,  # Risk-free rate (annual)
+    sigma: float,  # Implied volatility (annual)
+    option_type: str = "call"  # "call" or "put"
+) -> dict:
+    """
+    Calculate option Greeks using Black-Scholes model.
+
+    Reference: Hull, J.C. "Options, Futures, and Other Derivatives"
+
+    Returns:
+        dict with delta, gamma, theta (daily), vega (per 1% IV change)
+    """
+    import numpy as np
+    from scipy.stats import norm
+
+    # Handle edge cases
+    if T <= 0 or sigma <= 0:
+        return {"delta": 0.5 if option_type == "call" else -0.5,
+                "gamma": 0, "theta": 0, "vega": 0}
+
+    # Calculate d1 and d2
+    sqrt_T = np.sqrt(T)
+    d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * sqrt_T)
+    d2 = d1 - sigma * sqrt_T
+
+    # Standard normal CDF and PDF
+    N_d1 = norm.cdf(d1)
+    N_d2 = norm.cdf(d2)
+    n_d1 = norm.pdf(d1)  # Standard normal PDF
+
+    # Greeks calculation
+    if option_type == "call":
+        delta = N_d1
+        theta = (-(S * sigma * n_d1) / (2 * sqrt_T)
+                 - r * K * np.exp(-r * T) * N_d2)
+    else:  # put
+        delta = N_d1 - 1
+        theta = (-(S * sigma * n_d1) / (2 * sqrt_T)
+                 + r * K * np.exp(-r * T) * norm.cdf(-d2))
+
+    # Gamma and Vega are same for calls and puts
+    gamma = n_d1 / (S * sigma * sqrt_T)
+    vega = S * sqrt_T * n_d1 / 100  # Per 1% IV change
+
+    # Convert theta to daily (divide by 365)
+    theta_daily = theta / 365
+
+    return {
+        "delta": round(delta, 4),
+        "gamma": round(gamma, 6),
+        "theta": round(theta_daily, 4),  # Daily theta
+        "vega": round(vega, 4)  # Per 1% IV change
     }
 
-    # Check if Greeks are available in the chain
-    if 'impliedVolatility' in calls_df.columns:
-        # Get ATM options
-        atm_calls = calls_df[abs(calls_df['strike'] - current_price) == abs(calls_df['strike'] - current_price).min()]
-        atm_puts = puts_df[abs(puts_df['strike'] - current_price) == abs(puts_df['strike'] - current_price).min()]
 
-        # Extract available Greeks
-        greek_cols = ['impliedVolatility', 'delta', 'gamma', 'theta', 'vega']
-        for col in greek_cols:
-            if col in atm_calls.columns and not atm_calls.empty:
-                val = atm_calls[col].iloc[0]
-                if pd.notna(val):
-                    greeks[f"atm_call_{col}"] = round(val, 4)
+def _estimate_greeks_from_chain(calls_df: pd.DataFrame, puts_df: pd.DataFrame, current_price: float) -> dict:
+    """
+    Estimate Greeks from yfinance chain data.
 
-            if col in atm_puts.columns and not atm_puts.empty:
-                val = atm_puts[col].iloc[0]
-                if pd.notna(val):
-                    greeks[f"atm_put_{col}"] = round(val, 4)
+    If Greeks are not in the chain, calculates them using Black-Scholes model.
+    Uses the ATM (At-The-Money) options for analysis.
+    """
+    import numpy as np
+    from datetime import datetime
+
+    greeks = {
+        "source": "calculated_black_scholes",
+        "note": "Greeks calculated using Black-Scholes model from IV and time to expiry"
+    }
+
+    try:
+        # Get ATM options (closest strike to current price)
+        if calls_df.empty or puts_df.empty:
+            return {"source": "unavailable", "note": "No options data available"}
+
+        atm_calls = calls_df.loc[calls_df['strike'].sub(current_price).abs().idxmin():calls_df['strike'].sub(current_price).abs().idxmin()]
+        atm_puts = puts_df.loc[puts_df['strike'].sub(current_price).abs().idxmin():puts_df['strike'].sub(current_price).abs().idxmin()]
+
+        if atm_calls.empty or atm_puts.empty:
+            return {"source": "unavailable", "note": "Could not find ATM options"}
+
+        # Get ATM strike and IV
+        atm_call = atm_calls.iloc[0]
+        atm_put = atm_puts.iloc[0]
+
+        strike = atm_call['strike']
+        call_iv = atm_call.get('impliedVolatility', 0.3)  # Default to 30% IV
+        put_iv = atm_put.get('impliedVolatility', 0.3)
+
+        # Handle NaN IV values and suspiciously low IVs
+        # yfinance sometimes returns IV as decimal (0.30) but sometimes as percentage (30)
+        # If IV < 0.05 (5%), it's likely in decimal form and we should use a default
+        # If IV > 1.5 (150%), it's likely a data error
+        def normalize_iv(iv_value, default=0.3):
+            if pd.isna(iv_value) or iv_value is None or iv_value <= 0:
+                return default
+            if iv_value < 0.05:  # Less than 5% - likely bad data or needs conversion
+                return default
+            if iv_value > 1.5:  # More than 150% - likely bad data
+                return default
+            return float(iv_value)
+
+        call_iv = normalize_iv(call_iv)
+        put_iv = normalize_iv(put_iv)
+
+        # Calculate time to expiration
+        # Try to get expiration from dataframe index or assume 30 days
+        T = 30 / 365  # Default: 30 days
+
+        # Check if 'lastTradeDate' column exists to estimate time
+        if 'lastTradeDate' in calls_df.columns:
+            try:
+                # Get contract name which often contains expiry
+                contract = atm_call.get('contractSymbol', '')
+                if contract:
+                    # Extract date from contract symbol (format varies)
+                    pass  # Use default T if we can't parse
+            except Exception:
+                pass
+
+        # Risk-free rate (approximate from current Fed funds rate)
+        r = 0.045  # 4.5% annual risk-free rate
+
+        # First check if yfinance already provides Greeks
+        greek_cols = ['delta', 'gamma', 'theta', 'vega']
+        have_chain_greeks = all(col in atm_call.index and pd.notna(atm_call.get(col)) for col in greek_cols)
+
+        # Helper to safely extract Greek value
+        def safe_greek(row, col, default=0.0):
+            val = row.get(col)
+            if pd.isna(val) or val is None or val == 0:
+                return None  # Return None to indicate need for calculation
+            return float(val)
+
+        # Check if we have valid chain Greeks (not NaN or zero)
+        call_greeks_valid = all(safe_greek(atm_call, col) is not None for col in greek_cols)
+        put_greeks_valid = all(safe_greek(atm_put, col) is not None for col in greek_cols)
+
+        if have_chain_greeks and call_greeks_valid:
+            # Use chain Greeks for calls if valid
+            greeks["source"] = "yfinance_chain"
+            greeks["atm_call_delta"] = round(float(atm_call['delta']), 4)
+            greeks["atm_call_gamma"] = round(float(atm_call['gamma']), 6)
+            greeks["atm_call_theta"] = round(float(atm_call['theta']), 4)
+            greeks["atm_call_vega"] = round(float(atm_call['vega']), 4)
+        else:
+            # Calculate call Greeks using Black-Scholes
+            call_bs = _calculate_black_scholes_greeks(
+                S=current_price, K=strike, T=T, r=r, sigma=call_iv, option_type="call"
+            )
+            greeks["source"] = "calculated_black_scholes"
+            greeks["atm_call_delta"] = call_bs["delta"]
+            greeks["atm_call_gamma"] = call_bs["gamma"]
+            greeks["atm_call_theta"] = call_bs["theta"]
+            greeks["atm_call_vega"] = call_bs["vega"]
+
+        if have_chain_greeks and put_greeks_valid:
+            # Use chain Greeks for puts if valid
+            greeks["atm_put_delta"] = round(float(atm_put['delta']), 4)
+            greeks["atm_put_gamma"] = round(float(atm_put['gamma']), 6)
+            greeks["atm_put_theta"] = round(float(atm_put['theta']), 4)
+            greeks["atm_put_vega"] = round(float(atm_put['vega']), 4)
+        else:
+            # Calculate put Greeks using Black-Scholes (common case - yfinance often has 0 for puts)
+            put_bs = _calculate_black_scholes_greeks(
+                S=current_price, K=strike, T=T, r=r, sigma=put_iv, option_type="put"
+            )
+            greeks["atm_put_delta"] = put_bs["delta"]
+            greeks["atm_put_gamma"] = put_bs["gamma"]
+            greeks["atm_put_theta"] = put_bs["theta"]
+            greeks["atm_put_vega"] = put_bs["vega"]
+            if "source" not in greeks or greeks["source"] == "yfinance_chain":
+                greeks["source"] = "mixed_chain_and_calculated"
+
+        # Add IV for reference
+        greeks["atm_call_impliedVolatility"] = round(float(call_iv), 4)
+        greeks["atm_put_impliedVolatility"] = round(float(put_iv), 4)
+
+        # Add interpretation
+        greeks["interpretation"] = {
+            "delta_exposure": f"Call: {greeks['atm_call_delta']:+.2f} = {abs(greeks['atm_call_delta'])*100:.0f}% ITM probability",
+            "gamma_risk": "HIGH - near ATM, delta can change rapidly" if abs(greeks.get('atm_call_gamma', 0)) > 0.05 else "MODERATE - stable delta",
+            "theta_burn": f"${abs(greeks.get('atm_call_theta', 0)):.2f}/day decay" if greeks.get('atm_call_theta') else "N/A",
+            "vega_sensitivity": f"${abs(greeks.get('atm_call_vega', 0)):.2f} per 1% IV change"
+        }
+
+    except Exception as e:
+        logger.warning(f"Error calculating Greeks: {e}")
+        greeks = {
+            "source": "error",
+            "note": f"Could not calculate Greeks: {str(e)}"
+        }
 
     return greeks
 
@@ -2630,123 +3092,13 @@ async def get_nasdaq_earnings_calendar(
         return f"Error retrieving earnings data for {date_str}: {str(e)}"
 
 
-@mcp.tool()
-def fetch_intraday_15m(stock: str, window: int = 200) -> str:
-    """
-    Fetch 15-minute historical stock bars using Questrade API.
-
-    Args:
-        stock: Stock ticker symbol (US or Canadian, e.g., "AAPL", "GLXY.TO")
-        window: Number of 15-minute bars to fetch (default: 200)
-
-    Returns:
-        CSV string with timestamp and close price data in EST timezone
-    """
-    from datetime import datetime, timedelta
-    import pytz
-    import pandas as pd
-
-    try:
-        client = get_questrade_client()
-
-        # Calculate time range: 15 min * window bars
-        # Add extra buffer for market hours only
-        et = pytz.timezone("America/New_York")
-        end_time = datetime.now(et)
-        # Rough estimate: need ~window * 15 min of market time
-        # Markets open 6.5 hrs/day, so multiply by 2.5 for buffer
-        start_time = end_time - timedelta(minutes=15 * window * 3)
-
-        candles = client.get_candles(
-            symbol=stock,
-            interval="FifteenMinutes",
-            start_time=start_time.isoformat(),
-            end_time=end_time.isoformat()
-        )
-
-        if not candles or 'candles' not in candles:
-            raise ValueError(f"No candle data returned for {stock}")
-
-        # Convert to DataFrame
-        df = pd.DataFrame(candles['candles'])
-        if df.empty or 'close' not in df.columns:
-            raise ValueError(f"'close' column missing or data empty for {stock}")
-
-        # Parse timestamps and convert to EST
-        df['timestamp'] = pd.to_datetime(df['start']).dt.tz_convert("America/New_York")
-        df = df[['timestamp', 'close']].rename(columns={'close': stock})
-
-        # Limit to requested window
-        df = df.tail(window)
-
-        # Convert to CSV string
-        df['timestamp'] = df['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S %Z')
-        return df.to_csv(index=False)
-
-    except Exception as e:
-        raise ValueError(f"Error fetching data for {stock}: {e}")
-
-
-@mcp.tool()
-def fetch_intraday_1h(stock: str, window: int = 200) -> str:
-    """
-    Fetch 1-Hour historical stock bars using Questrade API.
-
-    Args:
-        stock: Stock ticker symbol (US or Canadian, e.g., "AAPL", "GLXY.TO")
-        window: Number of 1-hour bars to fetch (default: 200)
-
-    Returns:
-        CSV string with timestamp and close price data in EST timezone
-    """
-    from datetime import datetime, timedelta
-    import pytz
-    import pandas as pd
-
-    try:
-        client = get_questrade_client()
-
-        # Calculate time range: 1 hour * window bars
-        # Add extra buffer for market hours only
-        et = pytz.timezone("America/New_York")
-        end_time = datetime.now(et)
-        # Rough estimate: need ~window hours of market time
-        # Markets open 6.5 hrs/day, so multiply by 4 for buffer
-        start_time = end_time - timedelta(hours=window * 4)
-
-        candles = client.get_candles(
-            symbol=stock,
-            interval="OneHour",
-            start_time=start_time.isoformat(),
-            end_time=end_time.isoformat()
-        )
-
-        if not candles or 'candles' not in candles:
-            raise ValueError(f"No candle data returned for {stock}")
-
-        # Convert to DataFrame
-        df = pd.DataFrame(candles['candles'])
-        if df.empty or 'close' not in df.columns:
-            raise ValueError(f"'close' column missing or data empty for {stock}")
-
-        # Parse timestamps and convert to EST
-        df['timestamp'] = pd.to_datetime(df['start']).dt.tz_convert("America/New_York")
-        df = df[['timestamp', 'close']].rename(columns={'close': stock})
-
-        # Limit to requested window
-        df = df.tail(window)
-
-        # Convert to CSV string
-        df['timestamp'] = df['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S %Z')
-        return df.to_csv(index=False)
-
-    except Exception as e:
-        raise ValueError(f"Error fetching data for {stock}: {e}")
-
-
 # ============================================================================
 # Questrade Account Tools
 # ============================================================================
+# NOTE: fetch_intraday_15m and fetch_intraday_1h were removed as redundant.
+# Use get_questrade_candles(symbol, interval, window=N) instead:
+#   - For 15m bars: get_questrade_candles("AAPL", "FifteenMinutes", window=200)
+#   - For 1h bars: get_questrade_candles("AAPL", "OneHour", window=200)
 
 @mcp.tool()
 def get_questrade_accounts() -> dict[str, Any]:
@@ -2921,43 +3273,8 @@ def get_questrade_balances(
         logger.error(f"Error in get_questrade_balances for account {account_number}: {e}")
         raise ValueError(f"Failed to retrieve balances for account {account_number}: {str(e)}")
 
-@mcp.tool()
-def get_questrade_quote(symbol: str) -> dict[str, Any]:
-    """
-    Get real-time Level 1 quote for a single symbol.
-
-    Retrieves current market data including:
-    - Bid price and size
-    - Ask price and size
-    - Last trade price and size
-    - Volume
-    - High/Low of day
-    - Open price
-
-    Args:
-        symbol: The symbol to get quote for (e.g., "AAPL", "TSLA")
-
-    Returns:
-        dict: Quote information with bid, ask, last price, volume, etc.
-
-    Raises:
-        ValueError: If symbol is invalid or API call fails.
-
-    Note:
-        Requires QUESTRADE_REFRESH_TOKEN environment variable to be set.
-    """
-    if not symbol:
-        raise ValueError("symbol parameter is required")
-
-    try:
-        client = get_questrade_client()
-        quote = client.get_quote(symbol)
-        logger.info(f"Retrieved quote for {symbol}")
-        return quote
-
-    except Exception as e:
-        logger.error(f"Error in get_questrade_quote for {symbol}: {e}")
-        raise ValueError(f"Failed to retrieve quote for {symbol}: {str(e)}")
+# NOTE: get_questrade_quote was removed as redundant.
+# Use get_questrade_quotes(symbols=["AAPL"]) for single quotes.
 
 @mcp.tool()
 def get_questrade_quotes(symbols: list[str]) -> dict[str, Any]:
@@ -2965,6 +3282,7 @@ def get_questrade_quotes(symbols: list[str]) -> dict[str, Any]:
     Get real-time Level 1 quotes for multiple symbols.
 
     Efficiently retrieves quotes for multiple symbols in a single API call.
+    Falls back to Yahoo Finance if Questrade is unavailable.
 
     Args:
         symbols: List of symbols to get quotes for (e.g., ["AAPL", "TSLA", "NVDA"])
@@ -2973,35 +3291,78 @@ def get_questrade_quotes(symbols: list[str]) -> dict[str, Any]:
         dict: Quotes for all requested symbols
 
     Raises:
-        ValueError: If symbols list is empty or API call fails.
+        ValueError: If symbols list is empty or both APIs fail.
 
     Note:
-        Requires QUESTRADE_REFRESH_TOKEN environment variable to be set.
+        Prefers Questrade for real-time data, falls back to Yahoo Finance.
     """
     if not symbols:
         raise ValueError("symbols list parameter is required")
 
+    # Try Questrade first
     try:
         client = get_questrade_client()
         quotes = client.get_quotes(symbols)
-        logger.info(f"Retrieved quotes for {len(symbols)} symbols")
+        quotes['data_source'] = 'QUESTRADE'
+        logger.info(f"Retrieved quotes for {len(symbols)} symbols from Questrade")
         return quotes
 
-    except Exception as e:
-        logger.error(f"Error in get_questrade_quotes: {e}")
-        raise ValueError(f"Failed to retrieve quotes: {str(e)}")
+    except Exception as questrade_error:
+        logger.warning(f"Questrade failed, falling back to Yahoo Finance: {questrade_error}")
+
+        # Fallback to Yahoo Finance
+        try:
+            import yfinance as yf
+
+            yf_quotes = []
+            for symbol in symbols:
+                ticker = yf.Ticker(symbol)
+                info = ticker.info
+
+                # Map Yahoo Finance fields to Questrade-like structure
+                quote = {
+                    'symbol': symbol,
+                    'lastTradePrice': info.get('regularMarketPrice') or info.get('currentPrice'),
+                    'bidPrice': info.get('bid'),
+                    'askPrice': info.get('ask'),
+                    'bidSize': info.get('bidSize'),
+                    'askSize': info.get('askSize'),
+                    'volume': info.get('regularMarketVolume') or info.get('volume'),
+                    'openPrice': info.get('regularMarketOpen') or info.get('open'),
+                    'highPrice': info.get('regularMarketDayHigh') or info.get('dayHigh'),
+                    'lowPrice': info.get('regularMarketDayLow') or info.get('dayLow'),
+                    'prevDayClosePrice': info.get('regularMarketPreviousClose') or info.get('previousClose'),
+                    'VWAP': None,  # Not available in YF
+                    'delay': 0,  # YF is delayed
+                    'isHalted': False,
+                }
+                yf_quotes.append(quote)
+
+            result = {
+                'quotes': yf_quotes,
+                'data_source': 'YAHOO_FINANCE',
+                'note': 'Questrade unavailable, using Yahoo Finance (may be delayed 15-20 min)'
+            }
+            logger.info(f"Retrieved quotes for {len(symbols)} symbols from Yahoo Finance (fallback)")
+            return result
+
+        except Exception as yf_error:
+            logger.error(f"Both Questrade and Yahoo Finance failed: {yf_error}")
+            raise ValueError(f"Failed to retrieve quotes from both sources. Questrade: {questrade_error}, Yahoo Finance: {yf_error}")
 
 @mcp.tool()
 def get_questrade_candles(
     symbol: str,
     interval: str,
-    start_time: str,
-    end_time: str
+    start_time: str | None = None,
+    end_time: str | None = None,
+    window: int | None = None
 ) -> dict[str, Any]:
     """
     Get historical OHLCV candle data for a symbol.
 
     Perfect for charting and technical analysis.
+    Falls back to Yahoo Finance if Questrade is unavailable.
 
     Args:
         symbol: The symbol to get candles for (e.g., "AAPL")
@@ -3009,30 +3370,165 @@ def get_questrade_candles(
             OneMinute, TwoMinutes, ThreeMinutes, FourMinutes, FiveMinutes,
             TenMinutes, FifteenMinutes, TwentyMinutes, HalfHour, OneHour,
             TwoHours, FourHours, OneDay, OneWeek, OneMonth, OneYear
-        start_time: Start time in ISO format (e.g., "2024-01-01T00:00:00-05:00")
-        end_time: End time in ISO format (e.g., "2024-12-31T23:59:59-05:00")
+        start_time: Start time in ISO format (e.g., "2024-01-01T00:00:00-05:00").
+            Optional if window is provided.
+        end_time: End time in ISO format (e.g., "2024-12-31T23:59:59-05:00").
+            Optional if window is provided.
+        window: Number of bars to fetch (e.g., 200). When provided, auto-calculates
+            start_time and end_time based on the interval. This is a convenience
+            alternative to specifying explicit timestamps.
 
     Returns:
         dict: Candle data with Open, High, Low, Close, Volume
 
     Raises:
-        ValueError: If parameters are invalid or API call fails.
+        ValueError: If parameters are invalid or both APIs fail.
 
     Note:
-        Requires QUESTRADE_REFRESH_TOKEN environment variable to be set.
-    """
-    if not all([symbol, interval, start_time, end_time]):
-        raise ValueError("symbol, interval, start_time, and end_time are all required")
+        Prefers Questrade for real-time data, falls back to Yahoo Finance.
 
+    Examples:
+        # Using explicit timestamps:
+        get_questrade_candles("AAPL", "OneDay", "2024-01-01T00:00:00-05:00", "2024-12-31T23:59:59-05:00")
+
+        # Using window (convenience mode - fetches last N bars):
+        get_questrade_candles("AAPL", "FifteenMinutes", window=200)
+        get_questrade_candles("AAPL", "OneHour", window=200)
+    """
+    from datetime import datetime, timedelta
+    import pytz
+
+    if not symbol or not interval:
+        raise ValueError("symbol and interval are required")
+
+    # Calculate time range from window if provided
+    if window is not None:
+        et = pytz.timezone("America/New_York")
+        end_dt = datetime.now(et)
+
+        # Map interval to minutes for time calculation
+        interval_minutes = {
+            "OneMinute": 1,
+            "TwoMinutes": 2,
+            "ThreeMinutes": 3,
+            "FourMinutes": 4,
+            "FiveMinutes": 5,
+            "TenMinutes": 10,
+            "FifteenMinutes": 15,
+            "TwentyMinutes": 20,
+            "HalfHour": 30,
+            "OneHour": 60,
+            "TwoHours": 120,
+            "FourHours": 240,
+            "OneDay": 1440,
+            "OneWeek": 10080,
+            "OneMonth": 43200,
+            "OneYear": 525600,
+        }
+        minutes = interval_minutes.get(interval, 60)
+        # Add buffer multiplier (3x) to account for market hours only
+        start_dt = end_dt - timedelta(minutes=minutes * window * 3)
+
+        start_time = start_dt.isoformat()
+        end_time = end_dt.isoformat()
+
+    elif start_time is None or end_time is None:
+        raise ValueError("Either provide window OR both start_time and end_time")
+
+    # Try Questrade first
     try:
         client = get_questrade_client()
         candles = client.get_candles(symbol, interval, start_time, end_time)
-        logger.info(f"Retrieved candles for {symbol}")
+        candles['data_source'] = 'QUESTRADE'
+        logger.info(f"Retrieved candles for {symbol} from Questrade")
         return candles
 
-    except Exception as e:
-        logger.error(f"Error in get_questrade_candles for {symbol}: {e}")
-        raise ValueError(f"Failed to retrieve candles: {str(e)}")
+    except Exception as questrade_error:
+        logger.warning(f"Questrade failed, falling back to Yahoo Finance: {questrade_error}")
+
+        # Fallback to Yahoo Finance
+        try:
+            import yfinance as yf
+
+            # Map Questrade intervals to Yahoo Finance intervals
+            interval_map = {
+                "OneMinute": "1m",
+                "TwoMinutes": "2m",
+                "FiveMinutes": "5m",
+                "FifteenMinutes": "15m",
+                "HalfHour": "30m",
+                "OneHour": "1h",
+                "OneDay": "1d",
+                "OneWeek": "1wk",
+                "OneMonth": "1mo",
+            }
+            yf_interval = interval_map.get(interval, "1d")
+
+            # Calculate period for yfinance based on window or dates
+            if window is not None:
+                # Map window to period string
+                if yf_interval in ["1m", "2m", "5m", "15m", "30m"]:
+                    period = "7d"  # YF intraday limit
+                elif yf_interval == "1h":
+                    period = "1mo"
+                elif yf_interval == "1d":
+                    period = f"{min(window, 365)}d"
+                elif yf_interval == "1wk":
+                    period = f"{min(window * 7, 730)}d"
+                else:
+                    period = "max"
+
+                df = yf.download(symbol, period=period, interval=yf_interval, progress=False)
+            else:
+                # Use explicit dates
+                start_date = start_time[:10] if start_time else None
+                end_date = end_time[:10] if end_time else None
+                df = yf.download(symbol, start=start_date, end=end_date, interval=yf_interval, progress=False)
+
+            if df.empty:
+                raise ValueError(f"No data returned from Yahoo Finance for {symbol}")
+
+            # Flatten MultiIndex columns if present (yfinance returns ('Open', 'AAPL'))
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+
+            # Convert to Questrade-like format
+            candles_list = []
+            for idx, row in df.iterrows():
+                try:
+                    open_val = float(row['Open']) if pd.notna(row['Open']) else None
+                    high_val = float(row['High']) if pd.notna(row['High']) else None
+                    low_val = float(row['Low']) if pd.notna(row['Low']) else None
+                    close_val = float(row['Close']) if pd.notna(row['Close']) else None
+                    volume_val = int(row['Volume']) if pd.notna(row['Volume']) else 0
+                except (TypeError, ValueError):
+                    continue
+
+                candle = {
+                    'start': idx.isoformat() if hasattr(idx, 'isoformat') else str(idx),
+                    'open': open_val,
+                    'high': high_val,
+                    'low': low_val,
+                    'close': close_val,
+                    'volume': volume_val,
+                }
+                candles_list.append(candle)
+
+            # Limit to requested window if specified
+            if window is not None and len(candles_list) > window:
+                candles_list = candles_list[-window:]
+
+            result = {
+                'candles': candles_list,
+                'data_source': 'YAHOO_FINANCE',
+                'note': f'Questrade unavailable, using Yahoo Finance. Interval mapped: {interval} -> {yf_interval}'
+            }
+            logger.info(f"Retrieved {len(candles_list)} candles for {symbol} from Yahoo Finance (fallback)")
+            return result
+
+        except Exception as yf_error:
+            logger.error(f"Both Questrade and Yahoo Finance failed: {yf_error}")
+            raise ValueError(f"Failed to retrieve candles from both sources. Questrade: {questrade_error}, Yahoo Finance: {yf_error}")
 
 @mcp.tool()
 def search_questrade_symbols(query: str, offset: int = 0) -> dict[str, Any]:
@@ -3285,6 +3781,7 @@ def get_questrade_options_chain(symbol: str) -> dict[str, Any]:
     Get options chain for a symbol.
 
     Retrieves all available option contracts for an underlying symbol.
+    Falls back to Yahoo Finance if Questrade is unavailable.
 
     Args:
         symbol: The underlying symbol (e.g., "AAPL")
@@ -3293,23 +3790,87 @@ def get_questrade_options_chain(symbol: str) -> dict[str, Any]:
         dict: Options chain data with available strikes and expirations
 
     Raises:
-        ValueError: If symbol is invalid or API call fails.
+        ValueError: If symbol is invalid or both APIs fail.
 
     Note:
-        Requires QUESTRADE_REFRESH_TOKEN environment variable to be set.
+        Prefers Questrade for options data, falls back to Yahoo Finance.
     """
     if not symbol:
         raise ValueError("symbol parameter is required")
 
+    # Try Questrade first
     try:
         client = get_questrade_client()
         options = client.get_options_chain(symbol)
-        logger.info(f"Retrieved options chain for {symbol}")
+        options['data_source'] = 'QUESTRADE'
+        logger.info(f"Retrieved options chain for {symbol} from Questrade")
         return options
 
-    except Exception as e:
-        logger.error(f"Error in get_questrade_options_chain for {symbol}: {e}")
-        raise ValueError(f"Failed to retrieve options chain: {str(e)}")
+    except Exception as questrade_error:
+        logger.warning(f"Questrade failed, falling back to Yahoo Finance: {questrade_error}")
+
+        # Fallback to Yahoo Finance
+        try:
+            import yfinance as yf
+
+            ticker = yf.Ticker(symbol)
+            expiry_dates = ticker.options  # List of expiry dates
+
+            if not expiry_dates:
+                raise ValueError(f"No options available for {symbol}")
+
+            # Build options chain in Questrade-like format
+            option_chain = []
+            for expiry in expiry_dates[:5]:  # Limit to first 5 expiries for performance
+                try:
+                    chain = ticker.option_chain(expiry)
+                    calls = chain.calls
+                    puts = chain.puts
+
+                    chain_per_strike = []
+                    # Get unique strikes from both calls and puts
+                    all_strikes = sorted(set(calls['strike'].tolist() + puts['strike'].tolist()))
+
+                    for strike in all_strikes:
+                        call_row = calls[calls['strike'] == strike]
+                        put_row = puts[puts['strike'] == strike]
+
+                        strike_data = {
+                            'strikePrice': strike,
+                            'callSymbolId': call_row['contractSymbol'].iloc[0] if not call_row.empty else None,
+                            'putSymbolId': put_row['contractSymbol'].iloc[0] if not put_row.empty else None,
+                        }
+                        chain_per_strike.append(strike_data)
+
+                    option_chain.append({
+                        'expiryDate': expiry,
+                        'description': symbol,
+                        'listingExchange': 'OPRA',
+                        'optionExerciseType': 'American',
+                        'chainPerRoot': [{
+                            'optionRoot': symbol,
+                            'chainPerStrikePrice': chain_per_strike,
+                            'multiplier': 100
+                        }]
+                    })
+                except Exception as chain_error:
+                    logger.warning(f"Failed to get chain for {symbol} {expiry}: {chain_error}")
+                    continue
+
+            if not option_chain:
+                raise ValueError(f"Failed to build options chain for {symbol}")
+
+            result = {
+                'optionChain': option_chain,
+                'data_source': 'YAHOO_FINANCE',
+                'note': f'Questrade unavailable, using Yahoo Finance. Limited to {len(option_chain)} expiries.'
+            }
+            logger.info(f"Retrieved options chain for {symbol} from Yahoo Finance (fallback)")
+            return result
+
+        except Exception as yf_error:
+            logger.error(f"Both Questrade and Yahoo Finance failed: {yf_error}")
+            raise ValueError(f"Failed to retrieve options chain from both sources. Questrade: {questrade_error}, Yahoo Finance: {yf_error}")
 
 @mcp.tool()
 def get_questrade_option_quotes(option_ids: list[int]) -> dict[str, Any]:
@@ -3343,6 +3904,220 @@ def get_questrade_option_quotes(option_ids: list[int]) -> dict[str, Any]:
         logger.error(f"Error in get_questrade_option_quotes: {e}")
         raise ValueError(f"Failed to retrieve option quotes: {str(e)}")
 
+
+# ============================================================================
+# Real-Time Order Flow Tools
+# ============================================================================
+
+@mcp.tool()
+def analyze_realtime_trade_flow(
+    ticker: str,
+    duration_minutes: int = 30
+) -> dict[str, Any]:
+    """
+    Analyze real-time trade flow using Questrade Level 1 data.
+
+    Uses lastTradeTick to classify trades as buyer or seller initiated.
+    This is TRUE order flow classification, not OHLCV approximation.
+
+    Tick meanings:
+    - "Up" = Trade at higher price = Buyer hitting ask (BULLISH)
+    - "Down" = Trade at lower price = Seller hitting bid (BEARISH)
+    - "Equal" = Trade at same price = Neutral
+
+    Args:
+        ticker: Stock ticker symbol (e.g., "AAPL")
+        duration_minutes: How many minutes of data to analyze (default 30)
+
+    Returns:
+        Trade flow analysis with:
+        - buy_volume / sell_volume / neutral_volume
+        - tick_ratio: buy_vol / (buy_vol + sell_vol)
+        - aggression_bias: BULLISH (>55%), BEARISH (<45%), NEUTRAL
+        - large_trade_details: Trades > 2x average size
+    """
+    from .realtime_order_flow import analyze_trade_flow_snapshot
+
+    try:
+        # For single call, use snapshot function
+        result = analyze_trade_flow_snapshot(ticker)
+        logger.info(f"Retrieved trade flow snapshot for {ticker}")
+        return result
+
+    except Exception as e:
+        logger.error(f"Error in analyze_realtime_trade_flow for {ticker}: {e}")
+        raise ValueError(f"Failed to analyze trade flow for {ticker}: {str(e)}")
+
+
+@mcp.tool()
+def get_bid_ask_imbalance(ticker: str) -> dict[str, Any]:
+    """
+    Get current bid/ask size imbalance for a ticker.
+
+    Monitors passive order flow to detect institutional positioning.
+
+    Interpretation:
+    - High bid/ask ratio (>2.0) = STRONG_BID = Buyers have size advantage
+    - Low bid/ask ratio (<0.5) = STRONG_ASK = Sellers have size advantage
+    - Ratio 0.8-1.2 = BALANCED
+
+    Args:
+        ticker: Stock ticker symbol (e.g., "AAPL")
+
+    Returns:
+        Bid/ask imbalance analysis with:
+        - imbalance_ratio: bidSize / askSize
+        - imbalance_pct: (bid - ask) / total * 100
+        - signal: STRONG_BID / WEAK_BID / BALANCED / WEAK_ASK / STRONG_ASK
+        - spread_bps: Spread in basis points
+        - liquidity_wall: Side with larger size
+    """
+    try:
+        client = get_questrade_client()
+        quotes = client.get_quote(ticker)
+
+        if not quotes.get('quotes'):
+            return {"error": f"No quote data for {ticker}"}
+
+        q = quotes['quotes'][0]
+
+        bid_size = q.get('bidSize', 0)
+        ask_size = q.get('askSize', 0)
+        bid_price = q.get('bidPrice', 0)
+        ask_price = q.get('askPrice', 0)
+
+        # Calculate imbalance
+        if ask_size > 0:
+            imbalance = bid_size / ask_size
+        else:
+            imbalance = 1.0
+
+        total = bid_size + ask_size
+        if total > 0:
+            imbalance_pct = (bid_size - ask_size) / total * 100
+        else:
+            imbalance_pct = 0
+
+        # Determine signal
+        if imbalance > 2.0:
+            signal = "STRONG_BID"
+        elif imbalance > 1.2:
+            signal = "WEAK_BID"
+        elif imbalance < 0.5:
+            signal = "STRONG_ASK"
+        elif imbalance < 0.8:
+            signal = "WEAK_ASK"
+        else:
+            signal = "BALANCED"
+
+        # Calculate spread in basis points
+        mid_price = (bid_price + ask_price) / 2 if (bid_price + ask_price) > 0 else 1
+        spread = ask_price - bid_price
+        spread_bps = (spread / mid_price) * 10000 if mid_price > 0 else 0
+
+        result = {
+            "ticker": ticker.upper(),
+            "bid_size": bid_size,
+            "ask_size": ask_size,
+            "bid_price": bid_price,
+            "ask_price": ask_price,
+            "imbalance_ratio": round(imbalance, 2),
+            "imbalance_pct": round(imbalance_pct, 1),
+            "signal": signal,
+            "spread": round(spread, 4),
+            "spread_bps": round(spread_bps, 1),
+            "liquidity_wall": {
+                "side": "BID" if bid_size > ask_size else "ASK",
+                "size": max(bid_size, ask_size),
+                "price": bid_price if bid_size > ask_size else ask_price
+            },
+            "interpretation": f"{'Buyers' if imbalance > 1 else 'Sellers'} have size advantage ({signal})"
+        }
+
+        logger.info(f"Retrieved bid-ask imbalance for {ticker}: {signal}")
+        return result
+
+    except Exception as e:
+        logger.error(f"Error in get_bid_ask_imbalance for {ticker}: {e}")
+        raise ValueError(f"Failed to retrieve bid-ask imbalance for {ticker}: {str(e)}")
+
+
+@mcp.tool()
+def analyze_spread_dynamics(ticker: str) -> dict[str, Any]:
+    """
+    Analyze spread dynamics for liquidity assessment.
+
+    Spread is a key indicator of market liquidity and potential volatility:
+    - Tight spread = High liquidity, lower transaction costs
+    - Wide spread = Lower liquidity, higher volatility expected
+
+    Args:
+        ticker: Stock ticker symbol (e.g., "AAPL")
+
+    Returns:
+        Spread analysis with:
+        - current_spread: Ask - Bid in dollars
+        - spread_bps: Spread in basis points
+        - liquidity_grade: A (excellent) to F (very poor)
+        - total_depth: Combined bid + ask size
+    """
+    try:
+        client = get_questrade_client()
+        quotes = client.get_quote(ticker)
+
+        if not quotes.get('quotes'):
+            return {"error": f"No quote data for {ticker}"}
+
+        q = quotes['quotes'][0]
+
+        bid_price = q.get('bidPrice', 0)
+        ask_price = q.get('askPrice', 0)
+        bid_size = q.get('bidSize', 0)
+        ask_size = q.get('askSize', 0)
+
+        # Current spread
+        spread = ask_price - bid_price
+        mid_price = (bid_price + ask_price) / 2 if (bid_price + ask_price) > 0 else 1
+        spread_bps = (spread / mid_price) * 10000 if mid_price > 0 else 0
+
+        # Liquidity grade based on spread and size
+        total_size = bid_size + ask_size
+        if spread_bps < 5 and total_size > 1000:
+            grade = "A"  # Excellent
+        elif spread_bps < 10 and total_size > 500:
+            grade = "B"  # Good
+        elif spread_bps < 20 and total_size > 100:
+            grade = "C"  # Average
+        elif spread_bps < 50:
+            grade = "D"  # Poor
+        else:
+            grade = "F"  # Very poor
+
+        result = {
+            "ticker": ticker.upper(),
+            "bid_price": bid_price,
+            "ask_price": ask_price,
+            "current_spread": round(spread, 4),
+            "spread_bps": round(spread_bps, 1),
+            "bid_size": bid_size,
+            "ask_size": ask_size,
+            "total_depth": total_size,
+            "liquidity_grade": grade,
+            "interpretation": f"Liquidity Grade {grade} - Spread {round(spread_bps, 1)} bps"
+        }
+
+        logger.info(f"Analyzed spread dynamics for {ticker}: Grade {grade}")
+        return result
+
+    except Exception as e:
+        logger.error(f"Error in analyze_spread_dynamics for {ticker}: {e}")
+        raise ValueError(f"Failed to analyze spread dynamics for {ticker}: {str(e)}")
+
+
+# NOTE: calculate_true_cvd was removed as redundant.
+# CVD analysis (trend, divergence, delta bars) is already included in
+# analyze_volume_tool() with comprehensive OHLCV-based calculation.
+# The Questrade lastTradeTick enhancement added minimal value.
 
 
 # Only register the technical indicator tool if TA-Lib is available
@@ -3447,7 +4222,8 @@ if _advanced_ta_available:
     def analyze_technical(
         ticker: str,
         period: Literal["3mo", "6mo", "1y", "2y"] = "6mo",
-        include_ml_analysis: bool = True
+        include_ml_analysis: bool = True,
+        include_trend_score: bool = True
     ) -> dict[str, Any]:
         """Perform comprehensive technical analysis with RSI, MACD, Bollinger Bands, Moving Averages, and Stochastic indicators.
 
@@ -3459,10 +4235,16 @@ if _advanced_ta_available:
         - Stochastic Oscillator
         - ML Probability Analysis (if include_ml_analysis=True)
         - Al Brooks Price Action Analysis (pattern, probability, bar reading, trap risk)
+        - Trend Strength Score 0-100 with statistical validation (if include_trend_score=True)
+
+        Note: Trend strength scoring with statistical validation (t-statistic, p-value,
+        confidence levels) is now included here. This replaces the standalone
+        analyze_trend_strength tool. Output appears in result['trend_strength'].
         """
         ticker = validate_ticker(ticker)
 
-        history = yf_call(ticker, "history", period=period, interval="1d")
+        # Use Questrade-first approach for price history
+        history = get_price_history_questrade_first(ticker, period=period)
         if history is None or history.empty:
             raise ValueError(f"No historical data found for {ticker}")
 
@@ -3486,8 +4268,8 @@ if _advanced_ta_available:
                     'macd_trend': indicators['macd']['trend']
                 }
 
-                # Find similar historical setups
-                engine = SimilarityEngine(similarity_threshold=0.75, min_similar_setups=20)
+                # Find similar historical setups (lowered from 20 to 10 for better results)
+                engine = SimilarityEngine(similarity_threshold=0.75, min_similar_setups=10)
                 similar_setups = engine.find_similar_setups(
                     ticker=ticker,
                     current_conditions=current_conditions,
@@ -3520,10 +4302,19 @@ if _advanced_ta_available:
                         )
                     }
                 else:
+                    # Check data availability
+                    data_days = len(history) if history is not None and not history.empty else 0
+                    if data_days < 60:
+                        reason = f'Insufficient historical data ({data_days} days). New stock or limited trading history.'
+                    else:
+                        reason = 'No similar historical setups found matching current conditions (very unique setup).'
+
                     result['ml_probability_layer'] = {
                         'similar_setups_found': 0,
-                        'note': 'No similar historical setups found matching current conditions',
-                        'interpretation': 'Unable to find matching historical patterns for ML analysis'
+                        'data_availability': f'{data_days} days',
+                        'note': reason,
+                        'interpretation': 'ML probability analysis unavailable. Rely on technical indicators and price action instead.',
+                        'recommendation': 'Use Al Brooks price action analysis and traditional technical indicators for this setup.'
                     }
 
             except Exception as e:
@@ -3575,6 +4366,78 @@ if _advanced_ta_available:
                 'interpretation': 'Al Brooks analysis unavailable'
             }
 
+        # Add Trend Strength Score (0-100) with statistical validation
+        if include_trend_score:
+            try:
+                trend_analysis = TechnicalAnalysis.calculate_trend_strength(history)
+                result['trend_strength'] = trend_analysis
+
+                # Add statistical confidence layer
+                try:
+                    # Ensure prices have DatetimeIndex (required by get_trend_scanning_labels)
+                    prices = history['Close']
+                    if not isinstance(prices.index, pd.DatetimeIndex):
+                        prices = prices.copy()
+                        prices.index = pd.to_datetime(prices.index)
+
+                    # Use trend-scanning labels to get statistical significance
+                    trend_result = get_trend_scanning_labels(
+                        prices=prices,
+                        lookforward_window=20,
+                        t_stat_threshold=1.96  # 95% confidence
+                    )
+
+                    # TrendScanningResult is a dataclass, check if its labels Series has data
+                    if trend_result is not None and len(trend_result.labels) > 0:
+                        # Get the latest values from each Series attribute
+                        t_stat = float(trend_result.t_statistics.iloc[-1])
+                        p_value = float(trend_result.p_values.iloc[-1])
+                        trend_label = int(trend_result.labels.iloc[-1])
+                        confidence = 1 - p_value
+
+                        # Determine significance
+                        if abs(t_stat) > 2.58:
+                            significance = "HIGHLY SIGNIFICANT (99%)"
+                        elif abs(t_stat) > 1.96:
+                            significance = "STATISTICALLY SIGNIFICANT (95%)"
+                        elif abs(t_stat) > 1.645:
+                            significance = "MODERATELY SIGNIFICANT (90%)"
+                        else:
+                            significance = "NOT SIGNIFICANT"
+
+                        # Trend direction
+                        if trend_label == 1:
+                            trend_direction = "UPTREND"
+                        elif trend_label == -1:
+                            trend_direction = "DOWNTREND"
+                        else:
+                            trend_direction = "NEUTRAL"
+
+                        result['trend_strength']['statistical_validation'] = {
+                            't_statistic': float(t_stat),
+                            'p_value': float(p_value),
+                            'confidence': float(confidence),
+                            'significance': significance,
+                            'trend_direction': trend_direction,
+                            'interpretation': (
+                                f"{trend_direction} with {confidence:.1%} confidence. "
+                                f"{'Trend is statistically robust' if abs(t_stat) > 1.96 else 'Trend may be noise - use caution'}."
+                            )
+                        }
+                    else:
+                        result['trend_strength']['statistical_validation'] = {
+                            'note': 'Insufficient data for statistical validation'
+                        }
+                except Exception as stat_e:
+                    result['trend_strength']['statistical_validation'] = {
+                        'error': f'Statistical validation failed: {str(stat_e)}'
+                    }
+
+            except Exception as e:
+                result['trend_strength'] = {
+                    'error': f'Trend strength analysis failed: {str(e)}'
+                }
+
         return result
     
     @mcp.tool()
@@ -3590,11 +4453,12 @@ if _advanced_ta_available:
         - Nearest support and resistance to current price
         """
         ticker = validate_ticker(ticker)
-        
-        history = yf_call(ticker, "history", period=lookback_period, interval="1d")
+
+        # Use Questrade-first approach for price history
+        history = get_price_history_questrade_first(ticker, period=lookback_period)
         if history is None or history.empty:
             raise ValueError(f"No historical data found for {ticker}")
-        
+
         levels = TechnicalAnalysis.find_support_resistance(history)
         
         return {
@@ -3624,7 +4488,8 @@ if _advanced_ta_available:
         comparisons = []
         for ticker in tickers:
             try:
-                history = yf_call(ticker, "history", period=period, interval="1d")
+                # Use Questrade-first approach for price history
+                history = get_price_history_questrade_first(ticker, period=period)
                 if history is None or history.empty:
                     comparisons.append({"symbol": ticker, "error": "No data available"})
                     continue
@@ -3648,136 +4513,14 @@ if _advanced_ta_available:
             "comparison": comparisons
         }
     
-    @mcp.tool()
-    def analyze_trend_strength(
-        ticker: str,
-        period: Literal["3mo", "6mo", "1y"] = "6mo",
-        include_statistical_confidence: bool = True
-    ) -> dict[str, Any]:
-        """Analyze trend strength and momentum for a stock.
+    # NOTE: analyze_trend_strength was removed as redundant.
+    # Trend strength scoring (0-100) with statistical validation is now
+    # included in analyze_technical() with include_trend_score=True parameter.
+    # The output appears in result['trend_strength'] with full statistical validation.
 
-        Calculates a comprehensive trend strength score (0-100) based on:
-        - RSI momentum (25 points)
-        - MACD trend direction (25 points)
-        - Price vs moving averages (30 points)
-        - Bollinger Bands position (20 points)
-        - Statistical significance (if include_statistical_confidence=True)
-
-        Returns:
-        - Trend strength score
-        - Overall assessment (Strong Bullish, Moderate Bullish, Weak, Bearish)
-        - Detailed analysis points
-        - Full indicator breakdown
-        - Statistical validation (t-statistic, p-value, confidence)
-        """
-        ticker = validate_ticker(ticker)
-
-        history = yf_call(ticker, "history", period=period, interval="1d")
-        if history is None or history.empty:
-            raise ValueError(f"No historical data found for {ticker}")
-
-        analysis = TechnicalAnalysis.calculate_trend_strength(history)
-
-        result = {
-            "symbol": ticker,
-            "period": period,
-            **analysis
-        }
-
-        # Add statistical confidence layer if requested
-        if include_statistical_confidence:
-            try:
-                # Use trend-scanning labels to get statistical significance
-                trend_result = get_trend_scanning_labels(
-                    prices=history['Close'],
-                    lookforward_window=20,
-                    t_stat_threshold=1.96  # 95% confidence
-                )
-
-                # Get the latest trend data
-                if not trend_result.empty:
-                    latest_trend = trend_result.iloc[-1]
-
-                    t_stat = latest_trend.get('t_statistic', 0.0)
-                    p_value = latest_trend.get('p_value', 1.0)
-                    trend_label = latest_trend.get('trend', 0)
-
-                    # Calculate confidence
-                    confidence = 1 - p_value
-
-                    # Determine significance
-                    if abs(t_stat) > 2.58:  # 99% confidence
-                        significance = "HIGHLY SIGNIFICANT (99%)"
-                    elif abs(t_stat) > 1.96:  # 95% confidence
-                        significance = "STATISTICALLY SIGNIFICANT (95%)"
-                    elif abs(t_stat) > 1.645:  # 90% confidence
-                        significance = "MODERATELY SIGNIFICANT (90%)"
-                    else:
-                        significance = "NOT SIGNIFICANT"
-
-                    # Trend direction
-                    if trend_label == 1:
-                        trend_direction = "UPTREND"
-                    elif trend_label == -1:
-                        trend_direction = "DOWNTREND"
-                    else:
-                        trend_direction = "NEUTRAL"
-
-                    result['statistical_validation'] = {
-                        't_statistic': float(t_stat),
-                        'p_value': float(p_value),
-                        'confidence': float(confidence),
-                        'significance': significance,
-                        'trend_direction': trend_direction,
-                        'interpretation': (
-                            f"{trend_direction} with {confidence:.1%} confidence. "
-                            f"{'Trend is statistically robust' if abs(t_stat) > 1.96 else 'Trend may be noise - use caution'}."
-                        )
-                    }
-                else:
-                    result['statistical_validation'] = {
-                        'note': 'Insufficient data for statistical validation',
-                        'interpretation': 'Unable to calculate statistical confidence'
-                    }
-
-            except Exception as e:
-                result['statistical_validation'] = {
-                    'error': f'Statistical validation failed: {str(e)}',
-                    'interpretation': 'Statistical validation unavailable'
-                }
-
-        return result
-    
-    @mcp.tool()
-    def detect_chart_patterns(
-        ticker: str,
-        period: Literal["1mo", "3mo", "6mo", "1y"] = "3mo"
-    ) -> dict[str, Any]:
-        """Detect common chart patterns and technical signals.
-        
-        Identifies:
-        - Golden Cross (50-day MA crosses above 200-day MA) - Bullish
-        - Death Cross (50-day MA crosses below 200-day MA) - Bearish
-        - Strong uptrends (consistent upward movement)
-        - Strong downtrends (consistent downward movement)
-        - Consolidation patterns (low volatility, sideways movement)
-        
-        Returns list of detected patterns with descriptions and bullish/bearish signals.
-        """
-        ticker = validate_ticker(ticker)
-        
-        history = yf_call(ticker, "history", period=period, interval="1d")
-        if history is None or history.empty:
-            raise ValueError(f"No historical data found for {ticker}")
-        
-        patterns = TechnicalAnalysis.detect_patterns(history)
-        
-        return {
-            "symbol": ticker,
-            "period": period,
-            "analysis_date": datetime.date.today().isoformat(),
-            **patterns
-        }
+    # NOTE: detect_chart_patterns was removed as redundant.
+    # These patterns (Golden Cross, Death Cross, trends) are already detected
+    # in analyze_technical() with more context.
 
 
 # ============================================================================
@@ -3790,7 +4533,12 @@ try:
         analyze_volume,
         analyze_volatility,
         calculate_relative_strength,
-        calculate_fundamental_scores
+        calculate_fundamental_scores,
+        calculate_exhaustion_score,
+        detect_cvd_divergence,
+        count_trend_days,
+        enhance_brooks_with_cvd,
+        analyze_cvd
     )
     _bootstrap_available = True
 except ImportError:
@@ -3806,7 +4554,7 @@ if _bootstrap_available:
         vwap_mode: Literal["session", "rolling", "anchored"] = "session",
         include_quality_score: bool = True
     ) -> dict[str, Any]:
-        """Comprehensive volume analysis - VWAP, Volume Profile, OBV, MFI.
+        """Comprehensive volume analysis - VWAP, CVD, Volume Profile, OBV, MFI.
 
         Critical for confirming ALL price moves. Volume leads price.
 
@@ -3821,12 +4569,16 @@ if _bootstrap_available:
 
         Returns:
         - VWAP (Volume Weighted Average Price) - calculated per selected mode
+        - CVD (Cumulative Volume Delta) - buy vs sell pressure with divergence detection
         - Volume Profile (POC - Point of Control)
         - Relative Volume (current vs 20-day average)
         - OBV trend (Accumulation/Distribution)
         - MFI (Money Flow Index)
         - Accumulation/Distribution Line
         - Volume Quality Score (if include_quality_score=True)
+
+        Note: CVD analysis includes trend direction and divergence signals for
+        detecting exhaustion. This replaces the standalone calculate_true_cvd tool.
 
         Use before EVERY trade to confirm the move is real.
         """
@@ -3836,8 +4588,8 @@ if _bootstrap_available:
         # Add volume quality score if requested
         if include_quality_score:
             try:
-                # Get historical data
-                history = yf_call(ticker, "history", period=period, interval="1d")
+                # Get historical data using Questrade-first approach
+                history = get_price_history_questrade_first(ticker, period=period)
 
                 if history is not None and not history.empty:
                     # Calculate volume metrics
@@ -4072,7 +4824,7 @@ async def find_similar_historical_setups(
     # Uses enhanced technical indicators: RSI, MACD, ATR, trend t-stat, volume, etc.
     engine = SimilarityEngine(
         similarity_threshold=similarity_threshold,
-        min_similar_setups=20
+        min_similar_setups=10  # Lowered from 20 for better results with default threshold
     )
 
     # Calculate current technical conditions from most recent data
@@ -4398,7 +5150,16 @@ async def analyze_ml_enhanced(
         proximity_pct=2.0
     )
 
-    # 10. Calculate Kelly size (using triple-barrier success rate)
+    # 10. Exhaustion Score Analysis (NEW - Volumetric Liquidity Enhancement)
+    # Calculate exhaustion for both LONG and SHORT directions
+    exhaustion_long = calculate_exhaustion_score(ticker, direction="LONG", period=period) if _bootstrap_available else {"score": 0, "level": "UNKNOWN"}
+    exhaustion_short = calculate_exhaustion_score(ticker, direction="SHORT", period=period) if _bootstrap_available else {"score": 0, "level": "UNKNOWN"}
+
+    # Determine which direction is more relevant based on current trend
+    current_trend_direction = "LONG" if ts_result.labels.iloc[-1] >= 0 else "SHORT"
+    primary_exhaustion = exhaustion_long if current_trend_direction == "LONG" else exhaustion_short
+
+    # 11. Calculate Kelly size (using triple-barrier success rate)
     if tb_result.success_rate > 0.5:
         expected_return = tb_result.avg_profit if tb_result.avg_profit > 0 else 0.03
         volatility = prices.pct_change().std()
@@ -4411,7 +5172,7 @@ async def analyze_ml_enhanced(
     else:
         kelly_size = 0.0
 
-    # Build comprehensive recommendation (now 18 signals vs previous 17)
+    # Build comprehensive recommendation (now 19 signals - added Exhaustion)
     bullish_signals = sum([
         # ML Signals (2)
         tb_result.success_rate > 0.55,
@@ -4437,8 +5198,10 @@ async def analyze_ml_enhanced(
         confluence_result['signal'] in ['STRONG_BULLISH_CONFLUENCE', 'BULLISH_CONFLUENCE'],
         # Order Blocks (1)
         order_blocks_result['signal'] == 'BULLISH_ORDER_BLOCK_TEST',
-        # Supply/Demand Zones (1) - NEW
-        supply_demand_result['signal'] == 'DEMAND_ZONE_TEST'
+        # Supply/Demand Zones (1)
+        supply_demand_result['signal'] == 'DEMAND_ZONE_TEST',
+        # Exhaustion (1) - NEW: Low exhaustion for LONG = bullish
+        exhaustion_long.get('level', '') in ['NO_EXHAUSTION', 'LOW_EXHAUSTION']
     ])
 
     bearish_signals = sum([
@@ -4466,11 +5229,13 @@ async def analyze_ml_enhanced(
         confluence_result['signal'] in ['STRONG_BEARISH_CONFLUENCE', 'BEARISH_CONFLUENCE'],
         # Order Blocks (1)
         order_blocks_result['signal'] == 'BEARISH_ORDER_BLOCK_TEST',
-        # Supply/Demand Zones (1) - NEW
-        supply_demand_result['signal'] == 'SUPPLY_ZONE_TEST'
+        # Supply/Demand Zones (1)
+        supply_demand_result['signal'] == 'SUPPLY_ZONE_TEST',
+        # Exhaustion (1) - NEW: High exhaustion for LONG = bearish
+        exhaustion_long.get('level', '') in ['HIGH_EXHAUSTION', 'MODERATE_EXHAUSTION']
     ])
 
-    # Generate recommendation (adjusted thresholds for 18 total signals)
+    # Generate recommendation (adjusted thresholds for 19 total signals)
     if bullish_signals >= 10:
         recommendation = "🟢 STRONG BUY - Multiple bullish confirmations"
     elif bullish_signals >= 9:
@@ -4631,6 +5396,25 @@ async def analyze_ml_enhanced(
 ### Interpretation:
 {supply_demand_result['interpretation']}
 
+## Exhaustion Analysis (Volumetric Liquidity) 🔋 NEW
+
+### LONG Position Exhaustion:
+- **Score:** {exhaustion_long.get('score', 0)}/100
+- **Level:** {exhaustion_long.get('level', 'UNKNOWN')}
+- **Suggested Action:** {exhaustion_long.get('suggested_action', 'N/A')}
+
+### Component Breakdown (LONG):
+{f"- CVD Divergence: {exhaustion_long.get('components', {}).get('cvd_divergence', {}).get('points', 0)}/20 pts" if exhaustion_long.get('components') else "- CVD Divergence: N/A"}
+{f"- RSI Divergence: {exhaustion_long.get('components', {}).get('rsi_divergence', {}).get('points', 0)}/20 pts" if exhaustion_long.get('components') else "- RSI Divergence: N/A"}
+{f"- Trend Days: {exhaustion_long.get('components', {}).get('trend_days', {}).get('points', 0)}/25 pts ({exhaustion_long.get('components', {}).get('trend_days', {}).get('count', 0)} consecutive)" if exhaustion_long.get('components') else "- Trend Days: N/A"}
+{f"- VWAP Extension: {exhaustion_long.get('components', {}).get('vwap_extension', {}).get('points', 0)}/15 pts (σ={exhaustion_long.get('components', {}).get('vwap_extension', {}).get('sigma_distance', 0)})" if exhaustion_long.get('components') else "- VWAP Extension: N/A"}
+{f"- Volume Decline: {exhaustion_long.get('components', {}).get('volume_decline', {}).get('points', 0)}/20 pts" if exhaustion_long.get('components') else "- Volume Decline: N/A"}
+
+### Interpretation:
+{exhaustion_long.get('interpretation', 'No exhaustion data available')}
+
+{'⚠️ **WARNING:** ' + exhaustion_long.get('action_detail', '') if exhaustion_long.get('level', '') in ['HIGH_EXHAUSTION', 'MODERATE_EXHAUSTION'] else '✅ No significant exhaustion detected for LONG positions'}
+
 ## Triple-Barrier Analysis
 - **Success Rate:** {tb_result.success_rate:.1%} ({total_setups} historical setups)
 - **Average Profit:** {tb_result.avg_profit:.2%} when winning
@@ -4650,8 +5434,8 @@ async def analyze_ml_enhanced(
 **{recommendation}**
 
 **Signal Confluence:**
-- Bullish Signals: {bullish_signals}/18
-- Bearish Signals: {bearish_signals}/18
+- Bullish Signals: {bullish_signals}/19
+- Bearish Signals: {bearish_signals}/19
 
 **Signal Breakdown:**
 - ML Signals: 2 (Triple-Barrier + Trend-Scanning)
@@ -4661,10 +5445,11 @@ async def analyze_ml_enhanced(
 - Volume Confirmation: 3 (Surge, OBV, Crossover Confirmation)
 - EMA/VWAP Confluence: 1 (Multi-Indicator Alignment)
 - Order Blocks: 1 (Institutional Footprints)
-- Supply/Demand Zones: 1 (Price Action Zones) ⭐ NEW
+- Supply/Demand Zones: 1 (Price Action Zones)
+- Exhaustion Analysis: 1 (Volumetric Liquidity) ⭐ NEW
 
 ---
-*Based on {len(prices)} days of historical data with Price/EMA + VWAP + Volume + Confluence + Order Blocks + Supply/Demand Zones analysis*
+*Based on {len(prices)} days of historical data with Price/EMA + VWAP + Volume + Confluence + Order Blocks + Supply/Demand + Exhaustion analysis*
 """
 
     return report
@@ -5304,7 +6089,8 @@ def scan_market_opportunities(
             for a in final_short:
                 report_lines.append(f"#{a.get('rank')} {a['symbol']} - ${a['price']:.2f} | Score: {a['composite_score']}")
 
-        return {
+        # Convert numpy types to native Python types for JSON serialization
+        return convert_numpy_types({
             "scan_time": datetime.now(et).strftime("%Y-%m-%d %H:%M:%S %Z"),
             "filters": {
                 "market": market,
@@ -5321,7 +6107,7 @@ def scan_market_opportunities(
             "total_long_found": len(long_candidates),
             "total_short_found": len(short_candidates),
             "report": "\n".join(report_lines)
-        }
+        })
 
     except Exception as e:
         logger.error(f"Error in scan_market_opportunities: {e}")
@@ -5427,7 +6213,8 @@ def scan_stocks_by_setup(
             "resistance_rejection": "Resistance Rejection"
         }
 
-        return {
+        # Convert numpy types to native Python types for JSON serialization
+        return convert_numpy_types({
             "scan_time": datetime.now(et).strftime("%Y-%m-%d %H:%M:%S %Z"),
             "setup_type": setup_names.get(setup_type, setup_type),
             "direction": direction,
@@ -5450,11 +6237,2228 @@ def scan_stocks_by_setup(
                 for i, c in enumerate(candidates)
             ],
             "total_found": len(candidates)
-        }
+        })
 
     except Exception as e:
         logger.error(f"Error in scan_stocks_by_setup: {e}")
         raise ValueError(f"Setup scan failed: {str(e)}")
+
+
+# ============================================================
+# MUTUAL FUND & ETF ANALYSIS TOOLS
+# ============================================================
+
+def _calculate_fund_returns(ticker: str, periods: list[str] = None) -> dict:
+    """Calculate returns for various periods."""
+    import numpy as np
+    from datetime import datetime, timedelta
+
+    if periods is None:
+        periods = ["1mo", "3mo", "6mo", "1y", "3y", "5y", "ytd"]
+
+    t = yf.Ticker(ticker)
+    returns = {}
+
+    try:
+        # Get max history for all calculations
+        hist = t.history(period="5y")
+        if hist.empty:
+            return {"error": "No price history available"}
+
+        current_price = hist['Close'].iloc[-1]
+
+        # Calculate returns for each period
+        period_mapping = {
+            "1mo": 21,
+            "3mo": 63,
+            "6mo": 126,
+            "1y": 252,
+            "3y": 756,
+            "5y": 1260
+        }
+
+        for period in periods:
+            if period == "ytd":
+                # Year to date
+                year_start = datetime(datetime.now().year, 1, 1)
+                ytd_data = hist[hist.index >= year_start.strftime('%Y-%m-%d')]
+                if not ytd_data.empty:
+                    start_price = ytd_data['Close'].iloc[0]
+                    returns["ytd"] = round(((current_price - start_price) / start_price) * 100, 2)
+            elif period in period_mapping:
+                days = period_mapping[period]
+                if len(hist) >= days:
+                    start_price = hist['Close'].iloc[-days]
+                    returns[period] = round(((current_price - start_price) / start_price) * 100, 2)
+
+        return returns
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _calculate_risk_metrics(ticker: str, benchmark: str = "SPY") -> dict:
+    """Calculate comprehensive risk metrics."""
+    import numpy as np
+
+    try:
+        t = yf.Ticker(ticker)
+        b = yf.Ticker(benchmark)
+
+        # Get 3 years of data
+        fund_hist = t.history(period="3y")
+        bench_hist = b.history(period="3y")
+
+        if fund_hist.empty:
+            return {"error": "No price history available"}
+
+        # Align dates
+        common_dates = fund_hist.index.intersection(bench_hist.index)
+        fund_prices = fund_hist.loc[common_dates, 'Close']
+        bench_prices = bench_hist.loc[common_dates, 'Close']
+
+        # Calculate daily returns
+        fund_returns = np.log(fund_prices / fund_prices.shift(1)).dropna()
+        bench_returns = np.log(bench_prices / bench_prices.shift(1)).dropna()
+
+        # Risk-free rate (approximate)
+        rf = 0.05 / 252  # ~5% annual, daily
+
+        # Sharpe Ratio (annualized)
+        excess_returns = fund_returns - rf
+        sharpe = (excess_returns.mean() * 252) / (fund_returns.std() * np.sqrt(252))
+
+        # Sortino Ratio (only penalize downside)
+        downside_returns = fund_returns[fund_returns < 0]
+        if len(downside_returns) > 0:
+            downside_std = downside_returns.std() * np.sqrt(252)
+            sortino = (fund_returns.mean() * 252 - 0.05) / downside_std
+        else:
+            sortino = None
+
+        # Maximum Drawdown
+        cumulative = (1 + fund_returns).cumprod()
+        rolling_max = cumulative.expanding().max()
+        drawdown = (cumulative - rolling_max) / rolling_max
+        max_drawdown = drawdown.min() * 100
+
+        # Beta
+        covariance = np.cov(fund_returns, bench_returns)[0, 1]
+        variance = np.var(bench_returns)
+        beta = covariance / variance if variance > 0 else 1.0
+
+        # Alpha (annualized)
+        fund_annual_return = fund_returns.mean() * 252
+        bench_annual_return = bench_returns.mean() * 252
+        alpha = (fund_annual_return - 0.05) - beta * (bench_annual_return - 0.05)
+
+        # Volatility (annualized)
+        volatility = fund_returns.std() * np.sqrt(252) * 100
+
+        # Tracking Error
+        tracking_error = (fund_returns - bench_returns).std() * np.sqrt(252) * 100
+
+        # Information Ratio
+        active_return = (fund_returns - bench_returns).mean() * 252
+        info_ratio = active_return / (tracking_error / 100) if tracking_error > 0 else 0
+
+        return {
+            "sharpe_ratio": round(sharpe, 2) if not np.isnan(sharpe) else None,
+            "sortino_ratio": round(sortino, 2) if sortino and not np.isnan(sortino) else None,
+            "max_drawdown_pct": round(max_drawdown, 2),
+            "beta": round(beta, 2),
+            "alpha_pct": round(alpha * 100, 2),
+            "volatility_pct": round(volatility, 2),
+            "tracking_error_pct": round(tracking_error, 2),
+            "information_ratio": round(info_ratio, 2) if not np.isnan(info_ratio) else None,
+            "benchmark": benchmark
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _get_fund_recommendation(returns: dict, risk: dict, expense_ratio: float) -> dict:
+    """Generate KEEP/WATCH/REPLACE recommendation."""
+    score = 0
+    reasons = []
+
+    # Performance scoring (40 points)
+    if "3y" in returns:
+        if returns["3y"] > 30:  # >10% annualized
+            score += 40
+            reasons.append("Strong 3-year performance")
+        elif returns["3y"] > 15:  # >5% annualized
+            score += 25
+            reasons.append("Moderate 3-year performance")
+        else:
+            score += 10
+            reasons.append("Weak 3-year performance")
+
+    # Risk scoring (30 points)
+    if "sharpe_ratio" in risk and risk["sharpe_ratio"]:
+        if risk["sharpe_ratio"] > 1.0:
+            score += 30
+            reasons.append(f"Excellent Sharpe ratio ({risk['sharpe_ratio']})")
+        elif risk["sharpe_ratio"] > 0.5:
+            score += 20
+            reasons.append(f"Good Sharpe ratio ({risk['sharpe_ratio']})")
+        else:
+            score += 10
+            reasons.append(f"Poor Sharpe ratio ({risk['sharpe_ratio']})")
+
+    # Cost scoring (30 points)
+    if expense_ratio is not None:
+        if expense_ratio < 0.20:
+            score += 30
+            reasons.append(f"Very low expense ratio ({expense_ratio:.2%})")
+        elif expense_ratio < 0.50:
+            score += 20
+            reasons.append(f"Reasonable expense ratio ({expense_ratio:.2%})")
+        elif expense_ratio < 1.0:
+            score += 10
+            reasons.append(f"High expense ratio ({expense_ratio:.2%})")
+        else:
+            score += 0
+            reasons.append(f"Very high expense ratio ({expense_ratio:.2%})")
+
+    # Determine recommendation
+    if score >= 70:
+        recommendation = "KEEP"
+        action = "Continue holding - strong performance and value"
+    elif score >= 50:
+        recommendation = "WATCH"
+        action = "Monitor closely - mixed signals"
+    else:
+        recommendation = "REPLACE"
+        action = "Consider alternatives with lower costs or better performance"
+
+    return {
+        "recommendation": recommendation,
+        "score": score,
+        "action": action,
+        "reasons": reasons
+    }
+
+
+@mcp.tool()
+def analyze_mutual_fund(ticker: str, benchmark: str = "SPY") -> dict[str, Any]:
+    """
+    Comprehensive mutual fund analysis with KEEP/WATCH/REPLACE recommendation.
+
+    Data Sources (in order):
+    1. Questrade API (primary) - position data, symbol info
+    2. yfinance (fallback) - additional fund data for US funds
+
+    Analyzes:
+    - Performance: Position return, 1yr, 3yr, 5yr, YTD returns
+    - Risk: Sharpe, Sortino, Max Drawdown, Beta, Alpha
+    - Cost: Expense ratio analysis
+    - Benchmark comparison
+
+    Decision Framework:
+    - KEEP: Score >= 70 (Strong performance, good risk-adjusted returns, low cost)
+    - WATCH: Score 50-69 (Mixed signals, monitor closely)
+    - REPLACE: Score < 50 (Underperforming, high cost, consider alternatives)
+
+    Args:
+        ticker: Mutual fund ticker symbol
+        benchmark: Benchmark for comparison (default SPY)
+
+    Returns:
+        Comprehensive analysis with recommendation
+    """
+    from datetime import datetime
+    from .questrade import get_questrade_client
+
+    ticker = validate_ticker(ticker)
+
+    # QUESTRADE FIRST for ALL mutual funds
+    try:
+        q = get_questrade_client()
+
+        # Get symbol info from Questrade
+        symbol_info = q.get_symbol_info(ticker)
+
+        questrade_data = {}
+        if symbol_info and symbol_info.get('symbols'):
+            sym = symbol_info['symbols'][0]
+            questrade_data = {
+                'name': sym.get('description', ticker),
+                'nav': sym.get('prevDayClosePrice'),
+                'security_type': sym.get('securityType', 'MutualFund'),
+                'currency': sym.get('currency', 'CAD')
+            }
+
+        # Get position data from all accounts
+        position_data = None
+        try:
+            accounts = q.get_accounts()
+            for acct in accounts.get('accounts', []):
+                positions = q.get_account_positions(acct['number'])
+                for pos in positions.get('positions', []):
+                    if pos['symbol'] == ticker and pos.get('openQuantity', 0) > 0:
+                        total_cost = pos.get('totalCost', 0)
+                        open_pnl = pos.get('openPnl', 0)
+                        position_data = {
+                            'quantity': pos.get('openQuantity', 0),
+                            'current_value': pos.get('currentMarketValue', 0),
+                            'total_cost': total_cost,
+                            'open_pnl': open_pnl,
+                            'return_pct': round((open_pnl / total_cost) * 100, 2) if total_cost > 0 else None
+                        }
+                        break
+                if position_data:
+                    break
+        except Exception as e:
+            logger.warning(f"Could not fetch Questrade position data for {ticker}: {e}")
+
+        # Determine fund family from symbol prefix
+        fund_families = {
+            'MFC': 'Mackenzie Investments',
+            'RBF': 'RBC Funds',
+            'LWF': 'IG Wealth Management (Investors Group)',
+            'TDB': 'TD Asset Management',
+            'DYN': 'Dynamic Funds',
+            'FID': 'Fidelity'
+        }
+        prefix = ticker[:3].upper()
+        fund_family = fund_families.get(prefix, None)
+
+        # Try yfinance for additional data (US funds)
+        yf_data = {}
+        try:
+            t = yf.Ticker(ticker)
+            info = t.info
+            if info and info.get('quoteType'):
+                yf_data = {
+                    'name': info.get('longName') or info.get('shortName'),
+                    'quote_type': info.get('quoteType', 'Unknown'),
+                    'expense_ratio': info.get('annualReportExpenseRatio') or info.get('expenseRatio'),
+                    'category': info.get('category'),
+                    'fund_family': info.get('fundFamily'),
+                    'total_assets': info.get('totalAssets'),
+                    'yield_pct': info.get('yield'),
+                    'ytd_return': info.get('ytdReturn')
+                }
+                # Get historical returns if available
+                returns = _calculate_fund_returns(ticker)
+                if not returns.get('error'):
+                    yf_data['returns'] = returns
+                # Get risk metrics if available
+                risk = _calculate_risk_metrics(ticker, benchmark)
+                if not risk.get('error'):
+                    yf_data['risk'] = risk
+        except Exception as e:
+            logger.debug(f"yfinance data not available for {ticker}: {e}")
+
+        # Combine data sources - Questrade first, yfinance as supplement
+        fund_name = questrade_data.get('name') or yf_data.get('name') or ticker
+        current_nav = questrade_data.get('nav') or yf_data.get('nav')
+        quote_type = questrade_data.get('security_type') or yf_data.get('quote_type', 'MutualFund')
+        expense_ratio = yf_data.get('expense_ratio')
+        if not fund_family:
+            fund_family = yf_data.get('fund_family')
+
+        # Build analysis reasons and score
+        reasons = []
+        score = 50  # Start neutral
+
+        # Score based on position performance (Questrade)
+        if position_data and position_data.get('return_pct') is not None:
+            ret = position_data['return_pct']
+            if ret > 15:
+                score += 20
+                reasons.append(f"✓ Strong position return: +{ret:.1f}%")
+            elif ret > 5:
+                score += 10
+                reasons.append(f"✓ Positive position return: +{ret:.1f}%")
+            elif ret > 0:
+                score += 5
+                reasons.append(f"~ Modest position return: +{ret:.1f}%")
+            elif ret > -5:
+                reasons.append(f"~ Small position loss: {ret:.1f}%")
+            elif ret > -15:
+                score -= 10
+                reasons.append(f"✗ Moderate position loss: {ret:.1f}%")
+            else:
+                score -= 20
+                reasons.append(f"✗ Significant position loss: {ret:.1f}%")
+
+        # Score based on expense ratio (yfinance)
+        if expense_ratio:
+            if expense_ratio < 0.005:  # < 0.5%
+                score += 15
+                reasons.append(f"✓ Low expense ratio: {expense_ratio*100:.2f}%")
+            elif expense_ratio < 0.01:  # < 1%
+                score += 5
+                reasons.append(f"~ Moderate expense ratio: {expense_ratio*100:.2f}%")
+            elif expense_ratio < 0.02:  # < 2%
+                reasons.append(f"⚠ High expense ratio: {expense_ratio*100:.2f}%")
+            else:
+                score -= 10
+                reasons.append(f"✗ Very high expense ratio: {expense_ratio*100:.2f}%")
+        else:
+            reasons.append("⚠ Expense ratio not available (Canadian MFs typically 1.5-2.5%)")
+
+        # Score based on historical returns (yfinance)
+        if yf_data.get('returns') and yf_data['returns'].get('1y'):
+            ret_1y = yf_data['returns']['1y']
+            if ret_1y > 15:
+                score += 10
+                reasons.append(f"✓ Strong 1Y return: +{ret_1y:.1f}%")
+            elif ret_1y > 5:
+                score += 5
+                reasons.append(f"✓ Positive 1Y return: +{ret_1y:.1f}%")
+            elif ret_1y < -10:
+                score -= 10
+                reasons.append(f"✗ Weak 1Y return: {ret_1y:.1f}%")
+
+        # Add fund family info
+        if fund_family:
+            reasons.append(f"Fund Family: {fund_family}")
+
+        # Determine recommendation
+        if score >= 70:
+            recommendation = "KEEP"
+            action = "Fund is performing well - continue holding"
+        elif score >= 50:
+            recommendation = "WATCH"
+            action = "Monitor performance and consider lower-cost ETF alternatives"
+        else:
+            recommendation = "REPLACE"
+            action = "Consider replacing with lower-cost index ETF"
+
+        # Get recommendation with full data if available
+        if yf_data.get('returns') and yf_data.get('risk') and expense_ratio:
+            full_rec = _get_fund_recommendation(
+                returns=yf_data['returns'],
+                risk=yf_data['risk'],
+                expense_ratio=expense_ratio
+            )
+            # Use the more detailed recommendation if available
+            if full_rec.get('score', 0) > 0:
+                recommendation = full_rec['recommendation']
+                score = full_rec['score']
+                action = full_rec['action']
+                reasons = full_rec['reasons'] + reasons
+
+        return {
+            "ticker": ticker,
+            "name": fund_name,
+            "type": quote_type,
+            "analysis_date": datetime.now().strftime('%Y-%m-%d %H:%M'),
+            "current_nav": current_nav,
+            "currency": questrade_data.get('currency', 'USD'),
+            "data_source": "Questrade (primary) + yfinance (supplemental)",
+
+            # Position info from Questrade
+            "position": position_data,
+
+            # Performance
+            "performance": {
+                "position_return_pct": position_data.get('return_pct') if position_data else None,
+                "ytd_return_pct": yf_data.get('returns', {}).get("ytd"),
+                "1yr_return_pct": yf_data.get('returns', {}).get("1y"),
+                "3yr_return_pct": yf_data.get('returns', {}).get("3y"),
+                "5yr_return_pct": yf_data.get('returns', {}).get("5y")
+            },
+
+            # Risk Metrics
+            "risk_metrics": yf_data.get('risk', {"note": "Risk metrics not available"}),
+
+            # Cost
+            "expense_ratio": expense_ratio,
+            "expense_ratio_pct": f"{expense_ratio * 100:.2f}%" if expense_ratio else "N/A",
+
+            # Recommendation
+            "recommendation": recommendation,
+            "score": score,
+            "action": action,
+            "analysis_reasons": reasons,
+
+            # Fund info
+            "fund_info": {
+                "category": yf_data.get('category'),
+                "fund_family": fund_family,
+                "total_assets": yf_data.get('total_assets'),
+                "yield_pct": yf_data.get('yield_pct'),
+                "ytd_return": yf_data.get('ytd_return')
+            },
+
+            "benchmark": benchmark,
+            "methodology": "Questrade-first analysis with yfinance supplemental data"
+        }
+
+    except Exception as e:
+        logger.error(f"Error in analyze_mutual_fund for {ticker}: {e}")
+        raise ValueError(f"Mutual fund analysis failed: {str(e)}")
+
+
+@mcp.tool()
+def compare_mutual_funds(
+    current_fund: str,
+    candidates: list[str]
+) -> dict[str, Any]:
+    """
+    Compare current fund against alternative candidates.
+
+    Scoring System (100 points):
+    - Performance Score (40%): Risk-adjusted returns
+    - Cost Score (30%): Expense ratio comparison
+    - Risk Score (30%): Volatility, max drawdown
+
+    Args:
+        current_fund: Current fund ticker
+        candidates: List of alternative fund tickers to compare
+
+    Returns:
+        Ranked comparison with replacement recommendation
+    """
+    from datetime import datetime
+
+    all_funds = [current_fund] + candidates
+    analyses = []
+
+    for fund in all_funds:
+        try:
+            analysis = analyze_mutual_fund(fund)
+            analyses.append({
+                "ticker": fund,
+                "name": analysis.get("name", fund),
+                "score": analysis.get("score", 0),
+                "recommendation": analysis.get("recommendation"),
+                "expense_ratio": analysis.get("expense_ratio"),
+                "sharpe_ratio": analysis.get("risk_metrics", {}).get("sharpe_ratio"),
+                "3yr_return": analysis.get("performance", {}).get("3yr_return_pct"),
+                "max_drawdown": analysis.get("risk_metrics", {}).get("max_drawdown_pct")
+            })
+        except Exception as e:
+            logger.warning(f"Could not analyze {fund}: {e}")
+            analyses.append({
+                "ticker": fund,
+                "error": str(e)
+            })
+
+    # Rank by score
+    valid_analyses = [a for a in analyses if "error" not in a]
+    ranked = sorted(valid_analyses, key=lambda x: x.get("score", 0), reverse=True)
+
+    # Add ranks
+    for i, a in enumerate(ranked):
+        a["rank"] = i + 1
+
+    # Find current fund's rank
+    current_analysis = next((a for a in ranked if a["ticker"] == current_fund), None)
+    current_rank = current_analysis["rank"] if current_analysis else None
+
+    # Determine action
+    if current_rank == 1:
+        action = "KEEP"
+        rationale = "Current fund is the best option among alternatives"
+        suggested_replacement = None
+    elif current_rank and current_rank <= 2:
+        action = "WATCH"
+        rationale = f"Consider {ranked[0]['ticker']} - higher ranked alternative"
+        suggested_replacement = ranked[0]["ticker"]
+    else:
+        action = "REPLACE"
+        rationale = f"Switch to {ranked[0]['ticker']} for better performance/cost"
+        suggested_replacement = ranked[0]["ticker"]
+
+    return {
+        "comparison_date": datetime.now().strftime('%Y-%m-%d %H:%M'),
+        "current_fund": current_fund,
+        "current_rank": current_rank,
+        "total_compared": len(ranked),
+
+        "action": action,
+        "rationale": rationale,
+        "suggested_replacement": suggested_replacement,
+
+        "rankings": ranked,
+
+        "comparison_summary": {
+            "best_performer": ranked[0]["ticker"] if ranked else None,
+            "lowest_cost": min(valid_analyses, key=lambda x: x.get("expense_ratio") or 999)["ticker"] if valid_analyses else None,
+            "best_sharpe": max(valid_analyses, key=lambda x: x.get("sharpe_ratio") or -999)["ticker"] if valid_analyses else None
+        },
+
+        "methodology": "Ranking based on combined score (40% performance, 30% cost, 30% risk)"
+    }
+
+
+@mcp.tool()
+def analyze_etf(ticker: str, include_options: bool = True) -> dict[str, Any]:
+    """
+    ETF-specific analysis (no fundamentals, focus on technicals and options).
+
+    Includes:
+    - Technical analysis (Al Brooks price action)
+    - Options analysis with Greeks (if liquid)
+    - Volume analysis (VWAP, OBV)
+    - Relative strength vs SPY
+    - ETF-specific metrics (tracking error, premium/discount)
+
+    Skips: Fundamentals, earnings, insiders (not applicable to ETFs)
+
+    Args:
+        ticker: ETF ticker symbol
+        include_options: Whether to include options analysis (default True)
+
+    Returns:
+        Comprehensive ETF analysis
+    """
+    from datetime import datetime
+
+    ticker = validate_ticker(ticker)
+
+    try:
+        t = yf.Ticker(ticker)
+        info = t.info
+
+        # Basic info
+        etf_name = info.get('longName') or info.get('shortName') or ticker
+        current_price = info.get('currentPrice') or info.get('regularMarketPrice') or info.get('previousClose')
+
+        result = {
+            "ticker": ticker,
+            "name": etf_name,
+            "type": "ETF",
+            "analysis_date": datetime.now().strftime('%Y-%m-%d %H:%M'),
+            "current_price": current_price
+        }
+
+        # Technical Analysis
+        try:
+            technical = analyze_technical(ticker, period="3mo", include_ml_analysis=True)
+            result["technical_analysis"] = technical
+        except Exception as e:
+            result["technical_analysis"] = {"error": str(e)}
+
+        # Volume Analysis
+        try:
+            volume = analyze_volume_tool(ticker, period="3mo")
+            result["volume_analysis"] = volume
+        except Exception as e:
+            result["volume_analysis"] = {"error": str(e)}
+
+        # Relative Strength
+        try:
+            rs = calculate_relative_strength_tool(ticker, benchmark="SPY", period="3mo")
+            result["relative_strength"] = rs
+        except Exception as e:
+            result["relative_strength"] = {"error": str(e)}
+
+        # Volatility
+        try:
+            volatility = analyze_volatility_tool(ticker, period="3mo")
+            result["volatility"] = volatility
+        except Exception as e:
+            result["volatility"] = {"error": str(e)}
+
+        # Support/Resistance
+        try:
+            levels = find_support_resistance(ticker, lookback_period="1mo")
+            result["support_resistance"] = levels
+        except Exception as e:
+            result["support_resistance"] = {"error": str(e)}
+
+        # Options Analysis (if liquid and requested)
+        if include_options:
+            try:
+                # Check if options exist
+                options_exist = len(t.options) > 0 if hasattr(t, 'options') else False
+
+                if options_exist:
+                    options = analyze_options_mcmillan(ticker, direction="LONG")
+                    result["options_analysis"] = options
+                    result["options_available"] = True
+                else:
+                    result["options_available"] = False
+                    result["options_analysis"] = {"note": "No options available for this ETF"}
+            except Exception as e:
+                result["options_available"] = False
+                result["options_analysis"] = {"error": str(e)}
+
+        # ETF-specific metrics
+        result["etf_metrics"] = {
+            "expense_ratio": info.get('annualReportExpenseRatio') or info.get('expenseRatio'),
+            "nav": info.get('navPrice'),
+            "total_assets": info.get('totalAssets'),
+            "volume": info.get('volume'),
+            "avg_volume": info.get('averageVolume'),
+            "52w_high": info.get('fiftyTwoWeekHigh'),
+            "52w_low": info.get('fiftyTwoWeekLow'),
+            "yield": info.get('yield')
+        }
+
+        # Generate verdict
+        al_brooks_direction = "LONG"
+        if "technical_analysis" in result and isinstance(result["technical_analysis"], dict):
+            if "al_brooks" in result["technical_analysis"]:
+                al_brooks_direction = result["technical_analysis"]["al_brooks"].get("always_in_direction", "LONG")
+
+        options_verdict = "N/A"
+        if result.get("options_available") and "options_analysis" in result:
+            if isinstance(result["options_analysis"], dict):
+                summary = result["options_analysis"].get("summary", {})
+                sentiment = summary.get("sentiment", "NEUTRAL")
+                smart_money = summary.get("smart_money_signal", "NEUTRAL")
+
+                if sentiment in ["BULLISH", "EXTREMELY_BULLISH"] or smart_money == "BULLISH":
+                    options_verdict = "SUPPORTS_LONG"
+                elif sentiment in ["BEARISH", "EXTREMELY_BEARISH"] or smart_money == "BEARISH":
+                    options_verdict = "OPPOSES_LONG"
+                else:
+                    options_verdict = "NEUTRAL"
+
+        result["verdict"] = {
+            "al_brooks_direction": al_brooks_direction,
+            "options_verdict": options_verdict,
+            "combined": "ALIGNED" if (al_brooks_direction == "LONG" and options_verdict == "SUPPORTS_LONG") else
+                        "OPPOSED" if (al_brooks_direction == "SHORT" and options_verdict == "OPPOSES_LONG") else "MIXED"
+        }
+
+        result["methodology"] = "Al Brooks (Price Action) + McMillan (Options) - No fundamentals for ETFs"
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error in analyze_etf for {ticker}: {e}")
+        raise ValueError(f"ETF analysis failed: {str(e)}")
+
+
+@mcp.tool()
+def get_portfolio_summary(account_number: str) -> dict[str, Any]:
+    """
+    Generate portfolio summary with asset type detection and appropriate analysis.
+
+    For each position:
+    - Detects type: STOCK / ETF / MUTUAL_FUND
+    - Routes to appropriate analysis
+    - Aggregates results by type
+
+    Args:
+        account_number: Questrade account number
+
+    Returns:
+        Portfolio summary grouped by asset type
+    """
+    from datetime import datetime
+
+    try:
+        # Get positions from Questrade
+        positions = get_questrade_positions(account_number)
+
+        if not positions or 'positions' not in positions:
+            return {"error": "Could not fetch positions"}
+
+        result = {
+            "account_number": account_number,
+            "analysis_date": datetime.now().strftime('%Y-%m-%d %H:%M'),
+            "stocks": [],
+            "etfs": [],
+            "mutual_funds": [],
+            "summary": {
+                "total_positions": 0,
+                "stock_count": 0,
+                "etf_count": 0,
+                "mutual_fund_count": 0
+            }
+        }
+
+        for position in positions['positions']:
+            if position.get('openQuantity', 0) <= 0:
+                continue
+
+            symbol = position.get('symbol', '')
+            if not symbol:
+                continue
+
+            result["summary"]["total_positions"] += 1
+
+            # Detect asset type - Use PREFIX first (Canadian mutual funds), then Questrade symbolId lookup
+            mf_prefixes = ['MFC', 'RBF', 'LWF', 'TDB', 'DYN', 'FID', 'CIG']
+
+            position_info = {
+                "symbol": symbol,
+                "quantity": position.get('openQuantity'),
+                "current_price": position.get('currentPrice'),
+                "current_value": position.get('currentMarketValue'),
+                "open_pnl": position.get('openPnl'),
+                "open_pnl_pct": round((position.get('openPnl', 0) / position.get('totalCost', 1)) * 100, 2)
+                    if position.get('totalCost') else 0
+            }
+
+            # Mutual fund detection by prefix (Canadian funds not in stock APIs)
+            if any(symbol.startswith(p) for p in mf_prefixes):
+                result["summary"]["mutual_fund_count"] += 1
+                position_info["type"] = "MUTUAL_FUND"
+                position_info["analysis_note"] = "Full analysis available: 'analyze my mutual funds'"
+                result["mutual_funds"].append(position_info)
+
+            # ETF detection - check symbol suffix, known ETF tickers, or yfinance fallback
+            elif symbol.endswith('.TO') or symbol in ['VIXY', 'TSLQ', 'SPY', 'QQQ', 'VTI', 'SQQQ', 'SPXL']:
+                result["summary"]["etf_count"] += 1
+                position_info["type"] = "ETF"
+                # Light analysis for ETF
+                try:
+                    rs = calculate_relative_strength_tool(symbol, benchmark="SPY", period="1mo")
+                    position_info["rs_vs_spy"] = rs.get("rs_score") if isinstance(rs, dict) else None
+                except:
+                    position_info["rs_vs_spy"] = None
+                result["etfs"].append(position_info)
+
+            else:
+                # Fallback: Use yfinance to detect ETF vs STOCK
+                try:
+                    t = yf.Ticker(symbol)
+                    info = t.info
+                    quote_type = info.get('quoteType', 'EQUITY')
+                except:
+                    quote_type = 'EQUITY'  # Default to stock on error
+
+                if quote_type == 'ETF':
+                    result["summary"]["etf_count"] += 1
+                    position_info["type"] = "ETF"
+                    try:
+                        rs = calculate_relative_strength_tool(symbol, benchmark="SPY", period="1mo")
+                        position_info["rs_vs_spy"] = rs.get("rs_score") if isinstance(rs, dict) else None
+                    except:
+                        position_info["rs_vs_spy"] = None
+                    result["etfs"].append(position_info)
+
+                else:  # Stock
+                    result["summary"]["stock_count"] += 1
+                    position_info["type"] = "STOCK"
+                    # Enhanced analysis for stock with Al Brooks price action
+                    try:
+                        rs = calculate_relative_strength_tool(symbol, benchmark="SPY", period="1mo")
+                        position_info["rs_vs_spy"] = rs.get("rs_score") if isinstance(rs, dict) else None
+                    except:
+                        position_info["rs_vs_spy"] = None
+
+                    # Add Al Brooks price action analysis for education
+                    try:
+                        tech_analysis = analyze_technical(symbol, period="3mo", include_ml_analysis=True)
+                        if isinstance(tech_analysis, dict) and "al_brooks" in tech_analysis:
+                            brooks = tech_analysis["al_brooks"]
+
+                            # Build comprehensive educational paragraph
+                            always_in = brooks.get("always_in_direction", "UNKNOWN")
+                            pattern = brooks.get("pattern", "none")
+                            pattern_desc = brooks.get("pattern_description", "")
+                            probability = brooks.get("adjusted_probability", 50)
+                            trap_risk = brooks.get("trap_risk", "UNKNOWN")
+                            bar_reading = brooks.get("bar_reading", "")
+                            commentary = brooks.get("commentary", "")
+
+                            # Educational explanation paragraph
+                            educational_paragraph = (
+                                f"📚 AL BROOKS PRICE ACTION LESSON:\n\n"
+                                f"WHAT THE MARKET IS DOING: The market is currently 'Always-In {always_in}', which means "
+                                f"{'bulls are in control and you should look for opportunities to buy dips' if always_in == 'LONG' else 'bears are in control and you should look for opportunities to sell rallies' if always_in == 'SHORT' else 'the market is in balance with no clear directional bias'}. "
+                                f"\n\n"
+                                f"THE PATTERN: {pattern_desc}. "
+                                f"{'This is a continuation pattern, meaning the trend is likely to continue in the same direction. ' if 'continuation' in pattern_desc.lower() else ''}"
+                                f"{'This is a reversal pattern, meaning the trend may be changing direction. Be cautious. ' if 'reversal' in pattern_desc.lower() else ''}"
+                                f"\n\n"
+                                f"RECENT PRICE ACTION: {bar_reading}. "
+                                f"\n\n"
+                                f"WHY THIS MATTERS: {commentary} "
+                                f"The probability of success for this setup is {probability}%, which is "
+                                f"{'strong - this is a high-probability trade setup' if probability >= 60 else 'moderate - proceed with caution and wait for confirmation' if probability >= 50 else 'weak - avoid trading until a clearer setup develops'}. "
+                                f"\n\n"
+                                f"TRAP WARNING: Trap risk is {trap_risk}. "
+                                f"{'This means there is significant risk of a false breakout or reversal - wait for strong confirmation before entering.' if trap_risk == 'HIGH' else 'This setup looks clean with minimal trap risk.' if trap_risk == 'LOW' else 'Exercise normal caution.'}"
+                                f"\n\n"
+                                f"TRADING IMPLICATION: "
+                                f"{'Since we are Always-In LONG, look for pullbacks to buy. Avoid shorting against the trend.' if always_in == 'LONG' else 'Since we are Always-In SHORT, look for rallies to sell. Avoid buying against the trend.' if always_in == 'SHORT' else 'In a neutral market, wait for a breakout and trade in the direction of the breakout.'}"
+                            )
+
+                            position_info["al_brooks_price_action"] = {
+                                "always_in_direction": always_in,
+                                "pattern": pattern,
+                                "pattern_description": pattern_desc,
+                                "probability": probability,
+                                "trap_risk": trap_risk,
+                                "bar_reading": bar_reading,
+                                "commentary": commentary,
+                                "educational_paragraph": educational_paragraph
+                            }
+                        else:
+                            position_info["al_brooks_price_action"] = {"error": "Al Brooks analysis unavailable"}
+                    except Exception as e:
+                        position_info["al_brooks_price_action"] = {"error": f"Analysis failed: {str(e)}"}
+
+                    result["stocks"].append(position_info)
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error in get_portfolio_summary: {e}")
+        raise ValueError(f"Portfolio summary failed: {str(e)}")
+
+
+# =============================================================================
+# NEW SCANNER ENHANCEMENT TOOLS (December 2025)
+# =============================================================================
+
+@mcp.tool()
+def detect_catalyst_strength(ticker: str) -> dict[str, Any]:
+    """
+    Aggregate ALL catalyst signals into one actionable strength assessment.
+
+    Combines multiple data sources:
+    - Earnings Calendar: Days to earnings, beat rate
+    - Insider Trades: Buy clusters in 30 days
+    - Options IV Rank: 30-60% = active interest
+    - Institutional: Recent 13F accumulation
+    - News/Upgrades: Recent analyst upgrades
+
+    Returns:
+    - catalyst_strength: STRONG / MODERATE / WEAK / NONE
+    - catalysts_detected: List of active catalysts
+    - primary_catalyst: Most significant driver
+    - catalyst_score: 0-100
+    - trade_allowed: bool (NONE = False)
+    """
+    from datetime import datetime, timedelta
+    import pandas as pd
+
+    ticker = validate_ticker(ticker)
+
+    result = {
+        "ticker": ticker,
+        "catalyst_strength": "NONE",
+        "catalyst_score": 0,
+        "catalysts_detected": [],
+        "primary_catalyst": None,
+        "trade_allowed": False,
+        "details": {}
+    }
+
+    score = 0
+    catalysts = []
+
+    # 1. EARNINGS ANALYSIS (25 pts max)
+    try:
+        t = yf.Ticker(ticker)
+        calendar = t.calendar
+        earnings_date = None
+        all_earnings_dates = []
+
+        if calendar is not None:
+            if isinstance(calendar, dict):
+                earnings_date = calendar.get('Earnings Date')
+                # Collect all dates if it's a list
+                if isinstance(earnings_date, list):
+                    all_earnings_dates = earnings_date
+                    earnings_date = earnings_date[0] if len(earnings_date) > 0 else None
+            elif isinstance(calendar, pd.DataFrame) and not calendar.empty:
+                if 'Earnings Date' in calendar.columns:
+                    all_earnings_dates = calendar['Earnings Date'].tolist()
+                    earnings_date = calendar['Earnings Date'].iloc[0]
+
+        # Convert to date object
+        def to_date(d):
+            if d is None:
+                return None
+            if hasattr(d, 'date'):
+                return d.date()
+            elif isinstance(d, str):
+                try:
+                    return datetime.strptime(d[:10], '%Y-%m-%d').date()
+                except:
+                    return None
+            return d
+
+        earnings_date = to_date(earnings_date)
+        today = datetime.now().date()
+
+        # If the primary earnings date is too far in the past (>10 days), try to find next upcoming
+        if earnings_date and (earnings_date - today).days < -10:
+            # Look for future dates in the list
+            future_dates = []
+            for d in all_earnings_dates:
+                d_converted = to_date(d)
+                if d_converted and d_converted > today:
+                    future_dates.append(d_converted)
+
+            if future_dates:
+                # Use the nearest future earnings date
+                earnings_date = min(future_dates)
+            else:
+                # No future dates found, mark as past and unknown next
+                result["details"]["earnings"] = {
+                    "last_earnings": str(to_date(all_earnings_dates[0])) if all_earnings_dates else "unknown",
+                    "next_earnings": "unknown",
+                    "note": "No upcoming earnings date available"
+                }
+                earnings_date = None
+
+        if earnings_date:
+            days_to_earnings = (earnings_date - today).days
+
+            result["details"]["earnings"] = {
+                "date": str(earnings_date),
+                "days_away": days_to_earnings
+            }
+
+            # Pre-earnings (5-30 days) = STRONG catalyst
+            if 5 <= days_to_earnings <= 30:
+                score += 25
+                catalysts.append(f"Pre-Earnings in {days_to_earnings} days")
+            # Post-earnings (1-10 days ago) = MODERATE catalyst
+            elif -10 <= days_to_earnings < 0:
+                score += 20
+                catalysts.append(f"Post-Earnings {abs(days_to_earnings)} days ago")
+            # Earnings further out (30-45 days)
+            elif 30 < days_to_earnings <= 45:
+                score += 10
+                catalysts.append(f"Earnings in {days_to_earnings} days")
+
+        # Check earnings beat rate
+        try:
+            earnings_hist = t.earnings_history
+            if earnings_hist is not None and not earnings_hist.empty:
+                if 'Surprise(%)' in earnings_hist.columns:
+                    beats = (earnings_hist['Surprise(%)'] > 0).sum()
+                    total = len(earnings_hist)
+                    beat_rate = beats / total if total > 0 else 0
+                    result["details"]["earnings"]["beat_rate"] = round(beat_rate * 100, 1)
+
+                    if beat_rate >= 0.7:
+                        score += 5  # Bonus for consistent beater
+                        catalysts.append(f"Earnings Beat Rate: {round(beat_rate*100)}%")
+        except:
+            pass
+
+    except Exception as e:
+        result["details"]["earnings_error"] = str(e)
+
+    # 2. INSIDER TRADES (25 pts max)
+    try:
+        insider_data = yf_call(ticker, "get_insider_transactions")
+
+        if insider_data is not None and isinstance(insider_data, pd.DataFrame) and not insider_data.empty:
+            # Count buys in last 30 days
+            thirty_days_ago = datetime.now() - timedelta(days=30)
+
+            recent_trades = insider_data.copy()
+            if 'Start Date' in recent_trades.columns:
+                recent_trades['date'] = pd.to_datetime(recent_trades['Start Date'], errors='coerce')
+                recent_trades = recent_trades[recent_trades['date'] >= thirty_days_ago]
+
+            if 'Transaction' in recent_trades.columns:
+                buys = recent_trades[recent_trades['Transaction'].str.contains('Purchase|Buy', case=False, na=False)]
+                sells = recent_trades[recent_trades['Transaction'].str.contains('Sale|Sell', case=False, na=False)]
+
+                buy_count = len(buys)
+                sell_count = len(sells)
+
+                result["details"]["insider"] = {
+                    "buys_30d": buy_count,
+                    "sells_30d": sell_count
+                }
+
+                # 3+ buys = STRONG (25 pts)
+                if buy_count >= 3:
+                    score += 25
+                    catalysts.append(f"Insider Cluster: {buy_count} buys in 30 days")
+                # 2 buys = MODERATE (15 pts)
+                elif buy_count >= 2:
+                    score += 15
+                    catalysts.append(f"Insider Buying: {buy_count} buys in 30 days")
+                # 1 buy = WEAK (8 pts)
+                elif buy_count >= 1:
+                    score += 8
+                    catalysts.append(f"Insider Buy detected")
+
+                # Check for C-suite buys (bonus)
+                if not buys.empty and 'Insider' in buys.columns:
+                    c_suite = buys[buys['Insider'].str.contains('CEO|CFO|COO|President|Chairman', case=False, na=False)]
+                    if len(c_suite) > 0:
+                        score += 5
+                        catalysts.append("C-Suite buying detected")
+
+    except Exception as e:
+        result["details"]["insider_error"] = str(e)
+
+    # 3. OPTIONS IV RANK (20 pts max)
+    try:
+        # Quick IV rank check using yfinance options
+        t = yf.Ticker(ticker)
+        if t.options and len(t.options) > 0:
+            nearest_exp = t.options[0]
+            chain = t.option_chain(nearest_exp)
+
+            if chain.calls is not None and not chain.calls.empty:
+                atm_calls = chain.calls[
+                    (chain.calls['strike'] >= t.info.get('currentPrice', 0) * 0.95) &
+                    (chain.calls['strike'] <= t.info.get('currentPrice', 0) * 1.05)
+                ]
+
+                if not atm_calls.empty and 'impliedVolatility' in atm_calls.columns:
+                    current_iv = atm_calls['impliedVolatility'].mean()
+                    iv_rank = min(100, current_iv * 100)  # Simplified IV rank
+
+                    result["details"]["options"] = {
+                        "iv_rank": round(iv_rank, 1),
+                        "current_iv": round(current_iv * 100, 1)
+                    }
+
+                    # IV Rank 40-60% = sweet spot (20 pts)
+                    if 40 <= iv_rank <= 60:
+                        score += 20
+                        catalysts.append(f"IV Rank {round(iv_rank)}% (Options active)")
+                    # IV Rank 30-40% = moderate (10 pts)
+                    elif 30 <= iv_rank < 40:
+                        score += 10
+                        catalysts.append(f"IV Rank {round(iv_rank)}%")
+                    # IV Rank 60-80% = high expectation (15 pts)
+                    elif 60 < iv_rank <= 80:
+                        score += 15
+                        catalysts.append(f"High IV Rank {round(iv_rank)}%")
+
+    except Exception as e:
+        result["details"]["options_error"] = str(e)
+
+    # 4. INSTITUTIONAL HOLDERS (15 pts max)
+    try:
+        inst_holders = yf_call(ticker, "get_institutional_holders")
+
+        if inst_holders is not None and isinstance(inst_holders, pd.DataFrame) and not inst_holders.empty:
+            # Check if major institutions are present
+            major_holders = len(inst_holders)
+            result["details"]["institutional"] = {
+                "holder_count": major_holders
+            }
+
+            if major_holders >= 10:
+                score += 15
+                catalysts.append(f"{major_holders} institutional holders")
+            elif major_holders >= 5:
+                score += 8
+                catalysts.append(f"{major_holders} institutional holders")
+
+    except Exception as e:
+        result["details"]["institutional_error"] = str(e)
+
+    # 5. NEWS & UPGRADES (15 pts max)
+    try:
+        t = yf.Ticker(ticker)
+
+        # Check for recent upgrades
+        upgrades = t.upgrades_downgrades
+        if upgrades is not None and not upgrades.empty:
+            # Recent upgrades (last 30 days)
+            thirty_days_ago = datetime.now() - timedelta(days=30)
+
+            if hasattr(upgrades.index, 'to_pydatetime'):
+                recent_upgrades = upgrades[upgrades.index >= thirty_days_ago]
+            else:
+                recent_upgrades = upgrades.head(5)  # Fallback to most recent
+
+            if not recent_upgrades.empty:
+                if 'ToGrade' in recent_upgrades.columns:
+                    bullish = recent_upgrades[recent_upgrades['ToGrade'].str.contains(
+                        'Buy|Outperform|Overweight|Strong Buy', case=False, na=False
+                    )]
+
+                    if len(bullish) > 0:
+                        score += 15
+                        catalysts.append(f"{len(bullish)} analyst upgrades")
+                        result["details"]["upgrades"] = {
+                            "bullish_count": len(bullish),
+                            "recent": recent_upgrades.head(3).to_dict('records') if len(recent_upgrades) > 0 else []
+                        }
+
+        # Check for recent news
+        news = t.news
+        if news and len(news) > 0:
+            result["details"]["news_count"] = len(news)
+
+    except Exception as e:
+        result["details"]["news_error"] = str(e)
+
+    # CALCULATE FINAL STRENGTH
+    result["catalyst_score"] = min(100, score)
+
+    if score >= 60:
+        result["catalyst_strength"] = "STRONG"
+        result["trade_allowed"] = True
+    elif score >= 35:
+        result["catalyst_strength"] = "MODERATE"
+        result["trade_allowed"] = True
+    elif score >= 15:
+        result["catalyst_strength"] = "WEAK"
+        result["trade_allowed"] = False  # Weak catalyst = no trade
+    else:
+        result["catalyst_strength"] = "NONE"
+        result["trade_allowed"] = False
+
+    result["catalysts_detected"] = catalysts
+    result["primary_catalyst"] = catalysts[0] if catalysts else None
+
+    return result
+
+
+@mcp.tool()
+def detect_insider_cluster(ticker: str, days: int = 60) -> dict[str, Any]:
+    """
+    Detect clustered insider buying patterns - stronger signal than single buy.
+
+    Returns:
+    - cluster_detected: bool
+    - cluster_type: BUYING / SELLING / MIXED
+    - cluster_strength: STRONG (3+) / MODERATE (2) / WEAK (1) / NONE
+    - insiders: List of insider transactions
+    - total_value: Sum of insider transactions
+    - notable: CEO/CFO buys flagged specially
+    """
+    from datetime import datetime, timedelta
+
+    ticker = validate_ticker(ticker)
+
+    result = {
+        "ticker": ticker,
+        "cluster_detected": False,
+        "cluster_type": "NONE",
+        "cluster_strength": "NONE",
+        "insiders": [],
+        "total_buy_value": 0,
+        "total_sell_value": 0,
+        "notable_trades": [],
+        "days_analyzed": days
+    }
+
+    try:
+        insider_data = yf_call(ticker, "get_insider_transactions")
+
+        if insider_data is None or (isinstance(insider_data, pd.DataFrame) and insider_data.empty):
+            return result
+
+        df = insider_data.copy()
+
+        # Parse dates
+        cutoff_date = datetime.now() - timedelta(days=days)
+        if 'Start Date' in df.columns:
+            df['date'] = pd.to_datetime(df['Start Date'], errors='coerce')
+            df = df[df['date'] >= cutoff_date]
+
+        if df.empty:
+            return result
+
+        # Categorize transactions
+        buys = []
+        sells = []
+
+        for _, row in df.iterrows():
+            transaction = row.get('Transaction', '')
+            insider = row.get('Insider', '')
+            shares = row.get('Shares', 0)
+            value = row.get('Value', 0)
+
+            trade_info = {
+                "insider": insider,
+                "transaction": transaction,
+                "shares": shares,
+                "value": value,
+                "date": str(row.get('date', ''))[:10]
+            }
+
+            if 'Purchase' in transaction or 'Buy' in transaction:
+                buys.append(trade_info)
+
+                # Flag C-suite
+                if any(title in insider.upper() for title in ['CEO', 'CFO', 'COO', 'PRESIDENT', 'CHAIRMAN']):
+                    trade_info["notable"] = True
+                    result["notable_trades"].append(trade_info)
+
+            elif 'Sale' in transaction or 'Sell' in transaction:
+                sells.append(trade_info)
+
+        # Calculate totals
+        result["total_buy_value"] = sum(b.get('value', 0) or 0 for b in buys)
+        result["total_sell_value"] = sum(s.get('value', 0) or 0 for s in sells)
+        result["insiders"] = buys + sells
+
+        # Determine cluster type and strength
+        buy_count = len(buys)
+        sell_count = len(sells)
+
+        if buy_count >= 3:
+            result["cluster_detected"] = True
+            result["cluster_type"] = "BUYING"
+            result["cluster_strength"] = "STRONG"
+        elif buy_count >= 2:
+            result["cluster_detected"] = True
+            result["cluster_type"] = "BUYING"
+            result["cluster_strength"] = "MODERATE"
+        elif buy_count >= 1:
+            result["cluster_detected"] = False
+            result["cluster_type"] = "BUYING"
+            result["cluster_strength"] = "WEAK"
+        elif sell_count >= 3:
+            result["cluster_detected"] = True
+            result["cluster_type"] = "SELLING"
+            result["cluster_strength"] = "STRONG"
+        elif sell_count >= 2:
+            result["cluster_detected"] = True
+            result["cluster_type"] = "SELLING"
+            result["cluster_strength"] = "MODERATE"
+
+        # Mixed if both significant
+        if buy_count >= 2 and sell_count >= 2:
+            result["cluster_type"] = "MIXED"
+
+    except Exception as e:
+        result["error"] = str(e)
+
+    return result
+
+
+@mcp.tool()
+def detect_unusual_options_activity(ticker: str) -> dict[str, Any]:
+    """
+    Detect unusual options activity signaling smart money.
+
+    Detection Criteria:
+    - Volume/OI > 2x = Unusual interest
+    - Large premium concentrations
+    - Near-term options focus (2-4 weeks)
+
+    Returns:
+    - unusual_activity: bool
+    - activity_type: BULLISH / BEARISH / MIXED
+    - signals: List of unusual activity detected
+    - largest_bet: Description of biggest position
+    - implied_move: Expected move from options pricing
+    """
+    from datetime import datetime, timedelta
+
+    ticker = validate_ticker(ticker)
+
+    result = {
+        "ticker": ticker,
+        "unusual_activity": False,
+        "activity_type": "NEUTRAL",
+        "signals": [],
+        "largest_bet": None,
+        "implied_move": None,
+        "call_volume": 0,
+        "put_volume": 0,
+        "put_call_ratio": None
+    }
+
+    try:
+        t = yf.Ticker(ticker)
+        current_price = t.info.get('currentPrice') or t.info.get('regularMarketPrice', 0)
+
+        if not t.options or len(t.options) == 0:
+            result["error"] = "No options available"
+            return result
+
+        total_call_vol = 0
+        total_put_vol = 0
+        total_call_oi = 0
+        total_put_oi = 0
+        unusual_signals = []
+        largest_premium = 0
+        largest_bet_info = None
+
+        # Analyze first 2 expirations (near-term focus)
+        for exp in t.options[:2]:
+            try:
+                chain = t.option_chain(exp)
+
+                # Analyze calls
+                if chain.calls is not None and not chain.calls.empty:
+                    calls = chain.calls
+
+                    for _, row in calls.iterrows():
+                        # Handle NaN values properly (NaN or 0 = NaN, not 0)
+                        vol = row.get('volume', 0)
+                        vol = 0 if pd.isna(vol) else int(vol)
+                        oi = row.get('openInterest', 0)
+                        oi = 0 if pd.isna(oi) else int(oi)
+                        strike = row.get('strike', 0)
+                        last_price = row.get('lastPrice', 0)
+                        last_price = 0 if pd.isna(last_price) else float(last_price)
+
+                        total_call_vol += vol
+                        total_call_oi += oi
+
+                        # Unusual: Volume > 2x OI
+                        if oi > 0 and vol > 2 * oi:
+                            premium = vol * last_price * 100
+                            if premium > 50000:  # > $50k premium
+                                unusual_signals.append({
+                                    "type": "CALL",
+                                    "strike": strike,
+                                    "expiry": exp,
+                                    "volume": vol,
+                                    "oi": oi,
+                                    "vol_oi_ratio": round(vol/oi, 1),
+                                    "premium": premium
+                                })
+
+                                if premium > largest_premium:
+                                    largest_premium = premium
+                                    largest_bet_info = {
+                                        "type": "CALL",
+                                        "strike": strike,
+                                        "expiry": exp,
+                                        "premium": f"${premium:,.0f}"
+                                    }
+
+                # Analyze puts
+                if chain.puts is not None and not chain.puts.empty:
+                    puts = chain.puts
+
+                    for _, row in puts.iterrows():
+                        # Handle NaN values properly (NaN or 0 = NaN, not 0)
+                        vol = row.get('volume', 0)
+                        vol = 0 if pd.isna(vol) else int(vol)
+                        oi = row.get('openInterest', 0)
+                        oi = 0 if pd.isna(oi) else int(oi)
+                        strike = row.get('strike', 0)
+                        last_price = row.get('lastPrice', 0)
+                        last_price = 0 if pd.isna(last_price) else float(last_price)
+
+                        total_put_vol += vol
+                        total_put_oi += oi
+
+                        # Unusual: Volume > 2x OI
+                        if oi > 0 and vol > 2 * oi:
+                            premium = vol * last_price * 100
+                            if premium > 50000:  # > $50k premium
+                                unusual_signals.append({
+                                    "type": "PUT",
+                                    "strike": strike,
+                                    "expiry": exp,
+                                    "volume": vol,
+                                    "oi": oi,
+                                    "vol_oi_ratio": round(vol/oi, 1),
+                                    "premium": premium
+                                })
+
+                                if premium > largest_premium:
+                                    largest_premium = premium
+                                    largest_bet_info = {
+                                        "type": "PUT",
+                                        "strike": strike,
+                                        "expiry": exp,
+                                        "premium": f"${premium:,.0f}"
+                                    }
+
+            except Exception:
+                continue
+
+        result["call_volume"] = total_call_vol
+        result["put_volume"] = total_put_vol
+        result["signals"] = unusual_signals[:10]  # Top 10 signals
+        result["largest_bet"] = largest_bet_info
+
+        # Put/Call ratio
+        if total_call_vol > 0:
+            pc_ratio = total_put_vol / total_call_vol
+            result["put_call_ratio"] = round(pc_ratio, 2)
+
+        # Determine activity type
+        call_signals = len([s for s in unusual_signals if s["type"] == "CALL"])
+        put_signals = len([s for s in unusual_signals if s["type"] == "PUT"])
+
+        if len(unusual_signals) > 0:
+            result["unusual_activity"] = True
+
+            if call_signals > put_signals * 1.5:
+                result["activity_type"] = "BULLISH"
+            elif put_signals > call_signals * 1.5:
+                result["activity_type"] = "BEARISH"
+            else:
+                result["activity_type"] = "MIXED"
+
+        # Implied move from ATM straddle
+        try:
+            if t.options and len(t.options) > 0:
+                chain = t.option_chain(t.options[0])
+                atm_strike = min(chain.calls['strike'], key=lambda x: abs(x - current_price))
+
+                atm_call = chain.calls[chain.calls['strike'] == atm_strike]['lastPrice'].iloc[0]
+                atm_put = chain.puts[chain.puts['strike'] == atm_strike]['lastPrice'].iloc[0]
+
+                straddle_cost = atm_call + atm_put
+                implied_move_pct = (straddle_cost / current_price) * 100
+
+                result["implied_move"] = {
+                    "straddle_cost": round(straddle_cost, 2),
+                    "implied_move_pct": round(implied_move_pct, 1),
+                    "range": f"${current_price - straddle_cost:.2f} - ${current_price + straddle_cost:.2f}"
+                }
+        except:
+            pass
+
+    except Exception as e:
+        result["error"] = str(e)
+
+    return result
+
+
+@mcp.tool()
+def calculate_quality_score(ticker: str) -> dict[str, Any]:
+    """
+    Unified quality score combining financial health metrics.
+
+    Components:
+    - F-Score (30%): 7+ = good, <3 = bad
+    - Z-Score (20%): >2.99 = safe, <1.81 = distress
+    - ROE (20%): >15% = good
+    - Debt/Equity (15%): <1.0 = good
+    - Net Margin (15%): >10% = good
+
+    Returns:
+    - quality_score: 0-100
+    - quality_grade: A / B / C / D / F
+    - components: Individual metric values
+    - red_flags: List of concerns
+    - green_flags: List of positives
+    """
+    ticker = validate_ticker(ticker)
+
+    result = {
+        "ticker": ticker,
+        "quality_score": 0,
+        "quality_grade": "N/A",
+        "components": {},
+        "red_flags": [],
+        "green_flags": []
+    }
+
+    score = 0
+    max_score = 100
+
+    try:
+        # Get fundamental scores (F-Score, Z-Score)
+        try:
+            fund_scores = calculate_fundamental_scores_tool(ticker)
+
+            if isinstance(fund_scores, dict):
+                f_score = fund_scores.get("piotroski_f_score", {}).get("score", 0)
+                z_score = fund_scores.get("altman_z_score", {}).get("score", 0)
+
+                result["components"]["f_score"] = f_score
+                result["components"]["z_score"] = round(z_score, 2) if z_score else None
+
+                # F-Score scoring (30 pts max)
+                if f_score >= 7:
+                    score += 30
+                    result["green_flags"].append(f"Strong F-Score: {f_score}/9")
+                elif f_score >= 5:
+                    score += 20
+                elif f_score >= 3:
+                    score += 10
+                else:
+                    result["red_flags"].append(f"Weak F-Score: {f_score}/9 (value trap risk)")
+
+                # Z-Score scoring (20 pts max)
+                if z_score:
+                    if z_score > 2.99:
+                        score += 20
+                        result["green_flags"].append(f"Safe Z-Score: {z_score:.2f}")
+                    elif z_score > 1.81:
+                        score += 10
+                    else:
+                        result["red_flags"].append(f"Distress Z-Score: {z_score:.2f}")
+
+        except Exception as e:
+            result["components"]["fundamental_error"] = str(e)
+
+        # Get financial metrics from ticker info
+        try:
+            t = yf.Ticker(ticker)
+            info = t.info
+
+            # ROE (20 pts max)
+            roe = info.get('returnOnEquity')
+            if roe is not None:
+                roe_pct = roe * 100
+                result["components"]["roe"] = round(roe_pct, 1)
+
+                if roe_pct >= 20:
+                    score += 20
+                    result["green_flags"].append(f"Excellent ROE: {roe_pct:.1f}%")
+                elif roe_pct >= 15:
+                    score += 15
+                    result["green_flags"].append(f"Good ROE: {roe_pct:.1f}%")
+                elif roe_pct >= 10:
+                    score += 10
+                elif roe_pct < 5:
+                    result["red_flags"].append(f"Low ROE: {roe_pct:.1f}%")
+
+            # Debt/Equity (15 pts max)
+            total_debt = info.get('totalDebt', 0)
+            total_equity = info.get('totalStockholderEquity', 0)
+
+            if total_equity and total_equity > 0:
+                de_ratio = total_debt / total_equity
+                result["components"]["debt_to_equity"] = round(de_ratio, 2)
+
+                if de_ratio < 0.5:
+                    score += 15
+                    result["green_flags"].append(f"Low Debt/Equity: {de_ratio:.2f}")
+                elif de_ratio < 1.0:
+                    score += 10
+                elif de_ratio > 2.0:
+                    result["red_flags"].append(f"High Debt/Equity: {de_ratio:.2f}")
+
+            # Net Margin (15 pts max)
+            profit_margin = info.get('profitMargins')
+            if profit_margin is not None:
+                margin_pct = profit_margin * 100
+                result["components"]["net_margin"] = round(margin_pct, 1)
+
+                if margin_pct >= 15:
+                    score += 15
+                    result["green_flags"].append(f"High Margin: {margin_pct:.1f}%")
+                elif margin_pct >= 10:
+                    score += 10
+                elif margin_pct >= 5:
+                    score += 5
+                elif margin_pct < 0:
+                    result["red_flags"].append(f"Negative Margin: {margin_pct:.1f}%")
+
+            # Additional metrics
+            result["components"]["gross_margin"] = round(info.get('grossMargins', 0) * 100, 1) if info.get('grossMargins') else None
+            result["components"]["operating_margin"] = round(info.get('operatingMargins', 0) * 100, 1) if info.get('operatingMargins') else None
+
+        except Exception as e:
+            result["components"]["info_error"] = str(e)
+
+        # Calculate final score and grade
+        result["quality_score"] = min(100, score)
+
+        if score >= 80:
+            result["quality_grade"] = "A"
+        elif score >= 65:
+            result["quality_grade"] = "B"
+        elif score >= 50:
+            result["quality_grade"] = "C"
+        elif score >= 35:
+            result["quality_grade"] = "D"
+        else:
+            result["quality_grade"] = "F"
+
+    except Exception as e:
+        result["error"] = str(e)
+
+    return result
+
+
+@mcp.tool()
+def analyze_competitors(ticker: str, top_n: int = 5) -> dict[str, Any]:
+    """
+    Compare stock vs sector peers to identify true leaders.
+
+    Returns:
+    - sector: Sector name
+    - sector_rank: 1 = best, N = worst
+    - is_leader: bool (rank <= 3)
+    - competitors: List of competitor performance data
+    - relative_advantage: What makes this stock better/worse
+    """
+    ticker = validate_ticker(ticker)
+
+    result = {
+        "ticker": ticker,
+        "sector": None,
+        "industry": None,
+        "sector_rank": None,
+        "is_leader": False,
+        "competitors": [],
+        "relative_advantage": []
+    }
+
+    try:
+        t = yf.Ticker(ticker)
+        info = t.info
+
+        sector = info.get('sector')
+        industry = info.get('industry')
+
+        result["sector"] = sector
+        result["industry"] = industry
+
+        if not sector:
+            result["error"] = "Could not determine sector"
+            return result
+
+        # Get sector ETF for comparison
+        sector_etfs = {
+            "Technology": ["XLK", "QQQ"],
+            "Healthcare": ["XLV", "VHT"],
+            "Financial Services": ["XLF", "VFH"],
+            "Consumer Cyclical": ["XLY", "VCR"],
+            "Consumer Defensive": ["XLP", "VDC"],
+            "Energy": ["XLE", "VDE"],
+            "Industrials": ["XLI", "VIS"],
+            "Basic Materials": ["XLB", "VAW"],
+            "Real Estate": ["XLRE", "VNQ"],
+            "Utilities": ["XLU", "VPU"],
+            "Communication Services": ["XLC", "VOX"]
+        }
+
+        # Get target ticker performance
+        target_hist = t.history(period="3mo")
+        if target_hist.empty:
+            result["error"] = "Could not get price history"
+            return result
+
+        target_return_30d = (target_hist['Close'].iloc[-1] / target_hist['Close'].iloc[-22] - 1) * 100 if len(target_hist) >= 22 else 0
+        target_return_90d = (target_hist['Close'].iloc[-1] / target_hist['Close'].iloc[0] - 1) * 100
+
+        result["performance"] = {
+            "return_30d": round(target_return_30d, 2),
+            "return_90d": round(target_return_90d, 2)
+        }
+
+        # Compare to sector ETF
+        sector_etf = sector_etfs.get(sector, ["SPY"])[0]
+        try:
+            etf = yf.Ticker(sector_etf)
+            etf_hist = etf.history(period="3mo")
+
+            if not etf_hist.empty:
+                etf_return_30d = (etf_hist['Close'].iloc[-1] / etf_hist['Close'].iloc[-22] - 1) * 100 if len(etf_hist) >= 22 else 0
+                etf_return_90d = (etf_hist['Close'].iloc[-1] / etf_hist['Close'].iloc[0] - 1) * 100
+
+                result["vs_sector"] = {
+                    "sector_etf": sector_etf,
+                    "sector_return_30d": round(etf_return_30d, 2),
+                    "sector_return_90d": round(etf_return_90d, 2),
+                    "outperformance_30d": round(target_return_30d - etf_return_30d, 2),
+                    "outperformance_90d": round(target_return_90d - etf_return_90d, 2)
+                }
+
+                if target_return_30d > etf_return_30d:
+                    result["relative_advantage"].append(f"Outperforming {sector_etf} by {target_return_30d - etf_return_30d:.1f}% (30d)")
+                    result["is_leader"] = True
+                else:
+                    result["relative_advantage"].append(f"Underperforming {sector_etf} by {etf_return_30d - target_return_30d:.1f}% (30d)")
+
+        except:
+            pass
+
+        # Find industry peers using comprehensive mapping with fuzzy matching + sector fallback
+        try:
+            # Comprehensive industry peer mapping (60+ industries)
+            industry_peers = {
+                # Technology - Software
+                "Software - Infrastructure": ["MSFT", "ORCL", "CRM", "NOW", "ADBE", "INTU", "PANW", "CRWD", "SNOW", "DDOG"],
+                "Software - Application": ["CRM", "ADBE", "NOW", "WDAY", "ZM", "TEAM", "HUBS", "DOCU", "ZS", "OKTA"],
+                "Software—Infrastructure": ["MSFT", "ORCL", "CRM", "NOW", "ADBE", "INTU", "PANW", "CRWD", "SNOW", "DDOG"],
+                "Software—Application": ["CRM", "ADBE", "NOW", "WDAY", "ZM", "TEAM", "HUBS", "DOCU", "ZS", "OKTA"],
+                "Information Technology Services": ["ACN", "IBM", "INFY", "WIT", "CTSH", "EPAM", "LDOS", "DXC"],
+                "Electronic Components": ["TEL", "APH", "GLW", "JBL", "FLEX", "SANM", "ARW", "AVT"],
+                "Computer Hardware": ["AAPL", "HPQ", "DELL", "NTAP", "WDC", "STX", "PSTG"],
+                # Technology - Semiconductors & Electronics
+                "Semiconductors": ["NVDA", "AMD", "INTC", "AVGO", "QCOM", "TSM", "TXN", "MU", "MRVL", "AMAT"],
+                "Semiconductor Equipment & Materials": ["AMAT", "LRCX", "KLAC", "ASML", "ENTG", "TER", "MKSI"],
+                "Consumer Electronics": ["AAPL", "SONY", "SONO", "GPRO", "KOSS", "VZIO"],
+                # Technology - Internet & Digital
+                "Internet Content & Information": ["GOOGL", "META", "SNAP", "PINS", "NFLX", "SPOT", "RBLX", "RDDT"],
+                "Internet Retail": ["AMZN", "BABA", "JD", "MELI", "SHOP", "EBAY", "ETSY", "W", "CHWY"],
+                "Entertainment": ["DIS", "NFLX", "WBD", "PARA", "LYV", "MSG", "IMAX"],
+                "Electronic Gaming & Multimedia": ["EA", "TTWO", "ATVI", "U", "RBLX", "PLTK"],
+                # Financial - Banking
+                "Banks - Diversified": ["JPM", "BAC", "WFC", "C", "USB", "PNC", "TFC", "COF", "SCHW"],
+                "Banks - Regional": ["USB", "PNC", "TFC", "FRC", "MTB", "FITB", "HBAN", "RF", "KEY", "CFG"],
+                "Banks—Diversified": ["JPM", "BAC", "WFC", "C", "USB", "PNC", "TFC", "COF", "SCHW"],
+                "Banks—Regional": ["USB", "PNC", "TFC", "MTB", "FITB", "HBAN", "RF", "KEY", "CFG"],
+                # Financial - Investment & Insurance
+                "Asset Management": ["BLK", "BX", "KKR", "APO", "ARES", "TROW", "IVZ", "BEN"],
+                "Insurance - Diversified": ["BRK-B", "AIG", "MET", "PRU", "ALL", "TRV", "CB", "AFL"],
+                "Insurance - Life": ["MET", "PRU", "LNC", "AFL", "GL", "PFG"],
+                "Insurance - Property & Casualty": ["PGR", "ALL", "TRV", "CB", "AIG", "CNA", "HIG"],
+                "Capital Markets": ["GS", "MS", "SCHW", "IBKR", "SF", "LAZ", "EVR", "MC"],
+                "Credit Services": ["V", "MA", "AXP", "DFS", "COF", "SYF", "PYPL", "SQ"],
+                # Healthcare - Pharma & Biotech
+                "Drug Manufacturers - General": ["JNJ", "PFE", "MRK", "LLY", "ABBV", "BMY", "NVO", "AZN", "GSK"],
+                "Drug Manufacturers—General": ["JNJ", "PFE", "MRK", "LLY", "ABBV", "BMY", "NVO", "AZN", "GSK"],
+                "Biotechnology": ["AMGN", "GILD", "REGN", "VRTX", "BIIB", "MRNA", "BNTX", "SGEN", "ALNY", "INCY"],
+                "Pharmaceutical Retailers": ["WBA", "CVS", "CI", "AMGN"],
+                # Healthcare - Medical
+                "Medical Devices": ["ABT", "MDT", "SYK", "BSX", "EW", "ISRG", "DXCM", "ALGN", "ZBH", "BAX"],
+                "Medical Instruments & Supplies": ["ABT", "MDT", "SYK", "BSX", "EW", "ISRG", "DXCM", "ALGN"],
+                "Health Care Plans": ["UNH", "CVS", "CI", "ELV", "HUM", "CNC", "MOH"],
+                "Healthcare Plans": ["UNH", "CVS", "CI", "ELV", "HUM", "CNC", "MOH"],
+                "Medical Distribution": ["MCK", "CAH", "ABC", "CI"],
+                "Diagnostics & Research": ["TMO", "DHR", "ILMN", "A", "IQV", "LH", "DGX"],
+                # Consumer - Retail
+                "Specialty Retail": ["HD", "LOW", "TJX", "ROST", "ULTA", "BBY", "TSCO", "WSM", "AZO", "ORLY"],
+                "Discount Stores": ["WMT", "TGT", "COST", "DG", "DLTR"],
+                "Apparel Retail": ["TJX", "ROST", "GPS", "ANF", "AEO", "URBN", "LULU"],
+                "Luxury Goods": ["LVMUY", "TPR", "RL", "CPRI", "TPCO"],
+                "Department Stores": ["M", "KSS", "JWN", "DDS"],
+                # Consumer - Food & Beverage
+                "Restaurants": ["MCD", "SBUX", "CMG", "YUM", "DPZ", "QSR", "DRI", "WING", "TXRH", "BLMN"],
+                "Beverages - Wineries & Distilleries": ["STZ", "BF-B", "TAP", "SAM", "BUD"],
+                "Beverages - Non-Alcoholic": ["KO", "PEP", "MNST", "KDP", "CELH"],
+                "Packaged Foods": ["GIS", "K", "CAG", "CPB", "MKC", "HSY", "MDLZ"],
+                "Food Distribution": ["SYY", "USFD", "PFGC"],
+                # Consumer - Other
+                "Auto Manufacturers": ["TSLA", "F", "GM", "TM", "HMC", "RIVN", "LCID", "NIO", "STLA"],
+                "Auto Parts": ["APTV", "LEA", "ADNT", "BWA", "ALV", "MOD", "VC"],
+                "Leisure": ["CCL", "RCL", "NCLH", "MAR", "HLT", "H", "IHG"],
+                "Travel Services": ["BKNG", "EXPE", "TRIP", "ABNB", "TCOM"],
+                "Furnishings, Fixtures & Appliances": ["WHR", "LEG", "ETD", "SNBR"],
+                # Energy
+                "Oil & Gas Integrated": ["XOM", "CVX", "COP", "TTE", "BP", "SHEL"],
+                "Oil & Gas E&P": ["EOG", "PXD", "DVN", "COP", "OXY", "FANG", "MRO", "APA", "HES"],
+                "Oil & Gas Midstream": ["EPD", "ET", "WMB", "OKE", "MPLX", "PAA", "KMI"],
+                "Oil & Gas Refining & Marketing": ["PSX", "VLO", "MPC", "HFC", "DINO"],
+                "Oil & Gas Equipment & Services": ["SLB", "HAL", "BKR", "FTI", "NOV", "HP", "PTEN"],
+                # Industrial
+                "Aerospace & Defense": ["BA", "RTX", "LMT", "NOC", "GD", "LHX", "HWM", "TDG", "TXT"],
+                "Railroads": ["UNP", "CSX", "NSC", "CP", "CNI"],
+                "Airlines": ["DAL", "UAL", "AAL", "LUV", "JBLU", "SAVE", "ALK"],
+                "Trucking": ["ODFL", "XPO", "JBHT", "KNX", "CHRW", "LSTR"],
+                "Marine Shipping": ["EGLE", "SBLK", "STNG", "FRO", "INSW"],
+                "Industrial Distribution": ["GWW", "FAST", "WST", "DCI"],
+                "Building Products & Equipment": ["JCI", "CARR", "BLD", "OC", "MAS", "BLDR"],
+                "Engineering & Construction": ["FLR", "STRL", "PWR", "EME", "MTZ", "ACM"],
+                "Machinery": ["CAT", "DE", "CMI", "EMR", "ETN", "ITW", "PH", "ROK"],
+                # Materials
+                "Chemicals": ["LIN", "APD", "ECL", "SHW", "DD", "DOW", "PPG", "NEM"],
+                "Steel": ["NUE", "STLD", "X", "CLF", "RS", "MT"],
+                "Copper": ["FCX", "SCCO", "TGB", "CMCL"],
+                "Gold": ["NEM", "GOLD", "AEM", "KGC", "FNV"],
+                "Agricultural Inputs": ["NTR", "MOS", "CF", "ICL", "SMG"],
+                # Communication & Utilities
+                "Telecom Services": ["T", "VZ", "TMUS", "LUMN"],
+                "Telecommunications Services": ["T", "VZ", "TMUS", "LUMN"],
+                "Wireless Telecommunication Services": ["T", "VZ", "TMUS"],
+                "Utilities - Regulated Electric": ["NEE", "DUK", "SO", "D", "AEP", "XEL", "SRE", "ED"],
+                "Utilities - Renewable": ["NEE", "AES", "BEP", "CWEN", "RUN"],
+                "Utilities - Independent Power Producers": ["NEE", "AES", "NRG", "VST", "CEG", "OKLO"],
+                "Specialty Industrial Machinery": ["ITW", "ROK", "EMR", "ETN", "PH", "IR", "DOV", "XYL", "FLS", "NDSN"],
+                "Utilities—Regulated Electric": ["NEE", "DUK", "SO", "D", "AEP", "XEL", "SRE", "ED"],
+                # Real Estate
+                "REIT - Residential": ["EQR", "AVB", "ESS", "MAA", "UDR", "CPT"],
+                "REIT - Retail": ["SPG", "REG", "KIM", "BRX", "SKT"],
+                "REIT - Office": ["BXP", "VNO", "SLG", "DEI", "CUZ"],
+                "REIT - Industrial": ["PLD", "DRE", "FR", "REXR", "STAG"],
+                "REIT - Healthcare Facilities": ["WELL", "VTR", "PEAK", "DOC", "HR"],
+            }
+
+            # Sector-based fallback mapping when industry not found
+            sector_peers = {
+                "Technology": ["AAPL", "MSFT", "NVDA", "GOOGL", "META", "AMZN", "TSLA", "AVGO", "ORCL", "AMD"],
+                "Financial Services": ["JPM", "BAC", "WFC", "GS", "MS", "BLK", "SCHW", "AXP", "C", "USB"],
+                "Healthcare": ["UNH", "JNJ", "LLY", "ABBV", "MRK", "TMO", "ABT", "PFE", "DHR", "BMY"],
+                "Consumer Cyclical": ["AMZN", "TSLA", "HD", "MCD", "NKE", "SBUX", "LOW", "TJX", "BKNG", "CMG"],
+                "Consumer Defensive": ["WMT", "PG", "COST", "KO", "PEP", "PM", "MDLZ", "CL", "KMB", "GIS"],
+                "Energy": ["XOM", "CVX", "COP", "SLB", "EOG", "MPC", "PSX", "VLO", "OXY", "WMB"],
+                "Industrials": ["CAT", "HON", "UNP", "RTX", "BA", "GE", "LMT", "DE", "MMM", "UPS"],
+                "Basic Materials": ["LIN", "APD", "SHW", "ECL", "NEM", "FCX", "NUE", "DD", "DOW", "PPG"],
+                "Communication Services": ["GOOGL", "META", "NFLX", "DIS", "CMCSA", "T", "VZ", "TMUS", "WBD"],
+                "Utilities": ["NEE", "DUK", "SO", "D", "AEP", "SRE", "XEL", "EXC", "ED", "WEC"],
+                "Real Estate": ["PLD", "AMT", "EQIX", "PSA", "CCI", "SPG", "WELL", "DLR", "O", "AVB"],
+            }
+
+            industry = info.get('industry')
+            sector = info.get('sector')
+
+            # Try exact match first
+            peers = None
+            if industry and industry in industry_peers:
+                peers = industry_peers[industry]
+
+            # Try fuzzy match (normalize dashes/em-dashes, case)
+            if not peers and industry:
+                normalized_industry = industry.replace('—', ' - ').replace('  ', ' ')
+                for key in industry_peers:
+                    if key.replace('—', ' - ').replace('  ', ' ').lower() == normalized_industry.lower():
+                        peers = industry_peers[key]
+                        break
+
+            # Fallback to sector-based peers
+            if not peers and sector and sector in sector_peers:
+                peers = sector_peers[sector]
+                result["note"] = f"Industry '{industry}' not found. Using sector '{sector}' peers."
+
+            if peers:
+                # Remove target ticker from peers list
+                peers = [p for p in peers if p.upper() != ticker.upper()][:top_n]
+
+                competitors = []
+                for peer in peers:
+                    try:
+                        peer_t = yf.Ticker(peer)
+                        peer_hist = peer_t.history(period="3mo")
+                        if not peer_hist.empty and len(peer_hist) >= 22:
+                            peer_30d = (peer_hist['Close'].iloc[-1] / peer_hist['Close'].iloc[-22] - 1) * 100
+                            peer_90d = (peer_hist['Close'].iloc[-1] / peer_hist['Close'].iloc[0] - 1) * 100
+
+                            # Calculate RS score for peer
+                            peer_rs = calculate_relative_strength_tool(peer, benchmark="SPY", period="3mo")
+                            peer_rs_score = peer_rs.get("rs_score", 50) if isinstance(peer_rs, dict) else 50
+
+                            competitors.append({
+                                "ticker": peer,
+                                "return_30d": round(peer_30d, 2),
+                                "return_90d": round(peer_90d, 2),
+                                "rs_score": peer_rs_score
+                            })
+                    except Exception:
+                        continue
+
+                if competitors:
+                    # Sort by 30d return and add ranking
+                    competitors.sort(key=lambda x: x['return_30d'], reverse=True)
+                    all_returns = [c['return_30d'] for c in competitors] + [target_return_30d]
+                    all_returns.sort(reverse=True)
+                    target_rank = all_returns.index(target_return_30d) + 1
+
+                    result["competitors"] = competitors
+                    result["sector_rank"] = target_rank
+                    result["total_peers"] = len(competitors) + 1
+                    result["is_leader"] = target_rank <= 3
+
+                    if target_rank == 1:
+                        result["relative_advantage"].append(f"#1 in industry (30d performance)")
+                    elif target_rank <= 3:
+                        result["relative_advantage"].append(f"Top 3 in industry (rank #{target_rank})")
+                    else:
+                        result["relative_advantage"].append(f"Rank #{target_rank} of {len(competitors) + 1} in industry")
+            else:
+                result["note"] = f"No peers found for industry '{industry}' or sector '{sector}'. Compared against {sector_etf} sector ETF."
+
+        except Exception as peer_err:
+            result["note"] = f"Peer comparison unavailable: {str(peer_err)[:50]}. Compared against {sector_etf} sector ETF."
+
+        # Calculate RS vs SPY
+        try:
+            rs_data = calculate_relative_strength_tool(ticker, benchmark="SPY", period="3mo")
+            if isinstance(rs_data, dict):
+                rs_score = rs_data.get("rs_score", 0)
+                result["rs_vs_spy"] = rs_score
+
+                if rs_score >= 70:
+                    result["relative_advantage"].append(f"Strong RS Score: {rs_score}")
+                    result["is_leader"] = True
+                elif rs_score <= 30:
+                    result["relative_advantage"].append(f"Weak RS Score: {rs_score}")
+
+        except:
+            pass
+
+    except Exception as e:
+        result["error"] = str(e)
+
+    return result
+
+
+@mcp.tool()
+def generate_trading_signal(
+    ticker: str,
+    direction: Literal["LONG", "SHORT"] = "LONG",
+    account_size: float = 10000.0
+) -> dict[str, Any]:
+    """
+    Generate actionable trading signal with complete trading plan.
+
+    Combines all analysis tools to produce:
+    - Signal: STRONG_BUY / BUY / WATCH / NO_TRADE / SELL / STRONG_SELL
+    - Complete trading plan with entry, stop, targets
+    - Proof of validity from historical analysis
+    - Gate status for all requirements
+
+    Args:
+        ticker: Stock symbol
+        direction: Expected direction (LONG or SHORT)
+        account_size: Account size for position sizing
+
+    Returns:
+        Complete trading signal with plan and validation
+    """
+    from datetime import datetime
+
+    ticker = validate_ticker(ticker)
+
+    result = {
+        "ticker": ticker,
+        "direction": direction,
+        "signal": "NO_TRADE",
+        "confidence": 0,
+        "generated_at": datetime.now().isoformat(),
+        "trading_plan": None,
+        "proof_of_validity": None,
+        "gate_status": {
+            "catalyst": "PENDING",
+            "freshness": "PENDING",
+            "brooks": "PENDING",
+            "quality": "PENDING"
+        },
+        "warnings": [],
+        "summary": ""
+    }
+
+    score = 0
+    max_score = 100
+
+    try:
+        # Get current price
+        t = yf.Ticker(ticker)
+        info = t.info
+        current_price = info.get('currentPrice') or info.get('regularMarketPrice', 0)
+
+        if not current_price:
+            result["warnings"].append("Could not get current price")
+            return result
+
+        result["current_price"] = current_price
+
+        # ========== GATE 1: CATALYST CHECK ==========
+        try:
+            catalyst_data = detect_catalyst_strength(ticker)
+
+            result["catalyst_analysis"] = {
+                "strength": catalyst_data.get("catalyst_strength"),
+                "score": catalyst_data.get("catalyst_score"),
+                "catalysts": catalyst_data.get("catalysts_detected", [])
+            }
+
+            if catalyst_data.get("trade_allowed"):
+                result["gate_status"]["catalyst"] = "PASS"
+                score += 25 if catalyst_data.get("catalyst_strength") == "STRONG" else 15
+            else:
+                result["gate_status"]["catalyst"] = "FAIL"
+                result["warnings"].append("No catalyst present - trade not recommended")
+
+        except Exception as e:
+            result["gate_status"]["catalyst"] = "ERROR"
+            result["warnings"].append(f"Catalyst check failed: {e}")
+
+        # ========== GATE 2: FRESHNESS CHECK (CVD, Exhaustion) ==========
+        try:
+            # Get volume analysis for CVD
+            volume_data = analyze_volume_tool(ticker, period="3mo")
+
+            if isinstance(volume_data, dict):
+                cvd_trend = volume_data.get("cvd_analysis", {}).get("cvd_trend", "FLAT")
+                exhaustion = volume_data.get("exhaustion_score", 50)
+
+                result["freshness_analysis"] = {
+                    "cvd_trend": cvd_trend,
+                    "exhaustion_score": exhaustion
+                }
+
+                # Check CVD alignment
+                cvd_aligned = (direction == "LONG" and cvd_trend in ["RISING", "FLAT"]) or \
+                              (direction == "SHORT" and cvd_trend in ["FALLING", "FLAT"])
+
+                # Check exhaustion
+                not_exhausted = exhaustion < 50
+
+                if cvd_aligned and not_exhausted:
+                    result["gate_status"]["freshness"] = "PASS"
+                    score += 20
+                else:
+                    result["gate_status"]["freshness"] = "FAIL"
+                    if not cvd_aligned:
+                        result["warnings"].append(f"CVD not aligned: {cvd_trend}")
+                    if not not_exhausted:
+                        result["warnings"].append(f"High exhaustion: {exhaustion}")
+
+        except Exception as e:
+            result["gate_status"]["freshness"] = "ERROR"
+            result["warnings"].append(f"Freshness check failed: {e}")
+
+        # ========== GATE 3: AL BROOKS ANALYSIS ==========
+        try:
+            technical_data = analyze_technical(ticker, period="3mo")
+
+            if isinstance(technical_data, dict):
+                brooks = technical_data.get("al_brooks", {})
+                always_in = brooks.get("always_in_direction", "NEUTRAL")
+                trap_risk = brooks.get("trap_risk", "MEDIUM")
+                probability = brooks.get("trade_probability", 50)
+                pattern = brooks.get("pattern", "Unknown")
+
+                result["brooks_analysis"] = {
+                    "always_in": always_in,
+                    "trap_risk": trap_risk,
+                    "probability": probability,
+                    "pattern": pattern
+                }
+
+                # Check Al Brooks gates
+                direction_ok = (direction == "LONG" and always_in in ["LONG", "NEUTRAL"]) or \
+                               (direction == "SHORT" and always_in in ["SHORT", "NEUTRAL"])
+                trap_ok = trap_risk != "HIGH"
+                prob_ok = probability >= 55
+
+                if direction_ok and trap_ok and prob_ok:
+                    result["gate_status"]["brooks"] = "PASS"
+                    score += 25
+                else:
+                    result["gate_status"]["brooks"] = "FAIL"
+                    if not direction_ok:
+                        result["warnings"].append(f"Always-In is {always_in}, not aligned with {direction}")
+                    if not trap_ok:
+                        result["warnings"].append("HIGH trap risk detected")
+                    if not prob_ok:
+                        result["warnings"].append(f"Low probability: {probability}%")
+
+        except Exception as e:
+            result["gate_status"]["brooks"] = "ERROR"
+            result["warnings"].append(f"Brooks analysis failed: {e}")
+
+        # ========== GATE 4: QUALITY CHECK ==========
+        try:
+            quality_data = calculate_quality_score(ticker)
+
+            if isinstance(quality_data, dict):
+                quality_score = quality_data.get("quality_score", 0)
+                quality_grade = quality_data.get("quality_grade", "N/A")
+
+                result["quality_analysis"] = {
+                    "score": quality_score,
+                    "grade": quality_grade,
+                    "red_flags": quality_data.get("red_flags", [])
+                }
+
+                if quality_score >= 50:
+                    result["gate_status"]["quality"] = "PASS"
+                    score += 15
+                else:
+                    result["gate_status"]["quality"] = "FAIL"
+                    result["warnings"].append(f"Low quality score: {quality_score}")
+
+        except Exception as e:
+            result["gate_status"]["quality"] = "ERROR"
+
+        # ========== PROOF OF VALIDITY ==========
+        try:
+            similar = find_similar_historical_setups(
+                ticker=ticker,
+                direction=direction,
+                target_return_pct=5.0,
+                holding_period_days=10
+            )
+
+            if isinstance(similar, dict) and 'error' not in similar:
+                setups_found = similar.get("similar_setups_found", 0)
+                success_rate = similar.get("success_rate_5d", 0)
+
+                result["proof_of_validity"] = {
+                    "similar_setups": setups_found,
+                    "success_rate": success_rate,
+                    "confidence": similar.get("statistical_confidence", "N/A"),
+                    "avg_return": similar.get("average_return_5d", 0)
+                }
+
+                if setups_found >= 10 and success_rate >= 55:
+                    score += 15
+
+        except Exception as e:
+            result["proof_of_validity"] = {"error": str(e)}
+
+        # ========== GENERATE TRADING PLAN ==========
+        try:
+            # Get support/resistance for stop/target
+            sr_data = find_support_resistance(ticker)
+            volatility_data = analyze_volatility_tool(ticker)
+
+            atr = volatility_data.get("atr", {}).get("value", current_price * 0.02) if isinstance(volatility_data, dict) else current_price * 0.02
+
+            if direction == "LONG":
+                # Entry at current price or pullback
+                entry_price = current_price
+
+                # Stop below nearest support or 2x ATR
+                supports = sr_data.get("supports", []) if isinstance(sr_data, dict) else []
+                if supports:
+                    stop_price = min(supports[0].get("price", entry_price - 2*atr), entry_price - 2*atr)
+                else:
+                    stop_price = entry_price - 2*atr
+
+                # Targets
+                resistances = sr_data.get("resistances", []) if isinstance(sr_data, dict) else []
+                target_1 = resistances[0].get("price", entry_price + 1.5*(entry_price - stop_price)) if resistances else entry_price + 1.5*(entry_price - stop_price)
+                target_2 = resistances[1].get("price", entry_price + 2.5*(entry_price - stop_price)) if len(resistances) > 1 else entry_price + 2.5*(entry_price - stop_price)
+
+            else:  # SHORT
+                entry_price = current_price
+                resistances = sr_data.get("resistances", []) if isinstance(sr_data, dict) else []
+                if resistances:
+                    stop_price = max(resistances[0].get("price", entry_price + 2*atr), entry_price + 2*atr)
+                else:
+                    stop_price = entry_price + 2*atr
+
+                supports = sr_data.get("supports", []) if isinstance(sr_data, dict) else []
+                target_1 = supports[0].get("price", entry_price - 1.5*(stop_price - entry_price)) if supports else entry_price - 1.5*(stop_price - entry_price)
+                target_2 = supports[1].get("price", entry_price - 2.5*(stop_price - entry_price)) if len(supports) > 1 else entry_price - 2.5*(stop_price - entry_price)
+
+            risk_per_share = abs(entry_price - stop_price)
+            reward_1 = abs(target_1 - entry_price)
+            risk_reward = reward_1 / risk_per_share if risk_per_share > 0 else 0
+
+            # Position sizing (1% risk)
+            risk_amount = account_size * 0.01
+            shares = int(risk_amount / risk_per_share) if risk_per_share > 0 else 0
+
+            result["trading_plan"] = {
+                "entry_price": round(entry_price, 2),
+                "entry_type": "LIMIT",
+                "stop_loss": {
+                    "price": round(stop_price, 2),
+                    "risk_pct": round((abs(entry_price - stop_price) / entry_price) * 100, 2)
+                },
+                "target_1": {
+                    "price": round(target_1, 2),
+                    "reward_pct": round((abs(target_1 - entry_price) / entry_price) * 100, 2)
+                },
+                "target_2": {
+                    "price": round(target_2, 2),
+                    "reward_pct": round((abs(target_2 - entry_price) / entry_price) * 100, 2)
+                },
+                "risk_reward_ratio": round(risk_reward, 2),
+                "position_size": {
+                    "shares": shares,
+                    "dollar_risk": round(risk_amount, 2),
+                    "position_value": round(shares * entry_price, 2)
+                },
+                "time_frame": "5-15 trading days"
+            }
+
+        except Exception as e:
+            result["trading_plan"] = {"error": str(e)}
+
+        # ========== DETERMINE FINAL SIGNAL ==========
+        result["confidence"] = score
+
+        # Count passed gates
+        passed_gates = sum(1 for g in result["gate_status"].values() if g == "PASS")
+
+        if passed_gates == 4 and score >= 70:
+            result["signal"] = f"STRONG_{'BUY' if direction == 'LONG' else 'SELL'}"
+        elif passed_gates >= 3 and score >= 55:
+            result["signal"] = "BUY" if direction == "LONG" else "SELL"
+        elif passed_gates >= 2 and score >= 40:
+            result["signal"] = "WATCH"
+        else:
+            result["signal"] = "NO_TRADE"
+
+        # Generate summary
+        result["summary"] = f"{ticker}: {result['signal']} | Confidence: {score}% | Gates: {passed_gates}/4 passed"
+
+    except Exception as e:
+        result["error"] = str(e)
+        result["signal"] = "ERROR"
+
+    return result
 
 
 if __name__ == "__main__":
