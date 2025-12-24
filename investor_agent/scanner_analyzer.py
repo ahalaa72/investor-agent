@@ -862,40 +862,112 @@ class ScannerAnalyzer:
     def count_trend_days(
         self,
         ohlcv: pd.DataFrame,
-        direction: Literal['long', 'short']
+        direction: Literal['long', 'short'],
+        use_atr_weighting: bool = True
     ) -> int:
         """
-        Count consecutive up/down days to detect exhaustion.
+        Count trend days with ATR-weighted significance (PROPOSAL 4).
+
+        IMPROVED LOGIC:
+        - A "trend day" requires price move > 0.3*ATR in the trend direction
+        - Allows up to 2 small counter-trend days without resetting
+        - Small moves (< 0.3*ATR) don't count as trend OR counter-trend
 
         Tier 2 Pattern Quality Filter:
-        - LONG: Count consecutive up days (close > close[-1])
-        - SHORT: Count consecutive down days (close < close[-1])
+        - LONG: Count significant up days
+        - SHORT: Count significant down days
+
+        Args:
+            ohlcv: DataFrame with OHLC data
+            direction: 'long' or 'short'
+            use_atr_weighting: If True, use ATR-weighted logic; if False, use simple count
 
         Returns:
-            Number of consecutive trend days (reject if > MAX_TREND_DAYS)
+            Number of trend days (reject if > MAX_TREND_DAYS)
         """
         if ohlcv is None or len(ohlcv) < 2:
             return 0
 
         closes = ohlcv['Close'].values
 
-        count = 0
-        if direction == 'long':
-            # Count consecutive up days from most recent
-            for i in range(len(closes) - 1, 0, -1):
-                if closes[i] > closes[i - 1]:
-                    count += 1
-                else:
-                    break
-        else:  # short
-            # Count consecutive down days from most recent
-            for i in range(len(closes) - 1, 0, -1):
-                if closes[i] < closes[i - 1]:
-                    count += 1
-                else:
-                    break
+        # Fall back to simple counting if ATR weighting disabled or insufficient data
+        if not use_atr_weighting or len(ohlcv) < 15:
+            # Original simple logic
+            count = 0
+            if direction == 'long':
+                for i in range(len(closes) - 1, 0, -1):
+                    if closes[i] > closes[i - 1]:
+                        count += 1
+                    else:
+                        break
+            else:
+                for i in range(len(closes) - 1, 0, -1):
+                    if closes[i] < closes[i - 1]:
+                        count += 1
+                    else:
+                        break
+            return count
 
-        return count
+        # === PROPOSAL 4: ATR-Weighted Trend Day Counting ===
+        # Calculate ATR for significance threshold
+        highs = ohlcv['High'].values
+        lows = ohlcv['Low'].values
+
+        # True Range calculation
+        tr = []
+        for i in range(1, len(ohlcv)):
+            tr1 = highs[i] - lows[i]
+            tr2 = abs(highs[i] - closes[i - 1])
+            tr3 = abs(lows[i] - closes[i - 1])
+            tr.append(max(tr1, tr2, tr3))
+
+        if len(tr) < 14:
+            # Not enough data for ATR, fall back to simple count
+            return self.count_trend_days(ohlcv, direction, use_atr_weighting=False)
+
+        # Calculate 14-period ATR
+        atr_14 = sum(tr[-14:]) / 14
+
+        # Threshold: Move must be > 30% of ATR to count as significant
+        threshold = 0.3
+
+        trend_days = 0
+        counter_trend_days = 0
+        max_allowed_counter_trend = 2  # Allow 2 small pullbacks
+
+        for i in range(len(closes) - 1, 0, -1):
+            # Calculate daily move as % of price
+            move = closes[i] - closes[i - 1]
+            atr_pct = atr_14 / closes[i - 1] if closes[i - 1] > 0 else 0
+
+            # Significant move threshold
+            significant_threshold = threshold * atr_pct * closes[i - 1]
+
+            if direction == 'long':
+                if move > significant_threshold:
+                    # Significant up day - counts as trend day
+                    trend_days += 1
+                    counter_trend_days = 0  # Reset counter-trend
+                elif move < -significant_threshold:
+                    # Significant down day - counter-trend
+                    counter_trend_days += 1
+                    if counter_trend_days > max_allowed_counter_trend:
+                        break  # Too many counter-trend days, stop counting
+                # else: insignificant move, continue counting
+
+            else:  # short
+                if move < -significant_threshold:
+                    # Significant down day - counts as trend day
+                    trend_days += 1
+                    counter_trend_days = 0
+                elif move > significant_threshold:
+                    # Significant up day - counter-trend
+                    counter_trend_days += 1
+                    if counter_trend_days > max_allowed_counter_trend:
+                        break
+                # else: insignificant move, continue counting
+
+        return trend_days
 
     def is_trend_exhausted(
         self,

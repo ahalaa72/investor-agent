@@ -166,6 +166,115 @@
 
 ---
 
+#### 📚 AL BROOKS EDUCATIONAL BREAKDOWN
+
+**1. WHAT THE MARKET IS DOING (Always-In Direction)**
+
+**Always-In:** [LONG / SHORT / NEUTRAL]
+
+[If LONG]: **Bulls control.** This means every pullback to support (EMA20, VWAP, prior swing low) is a **buying opportunity**, not a time to panic. If you were forced to be in this market RIGHT NOW, you'd go long - that's what "Always-In LONG" means. The trend is your friend.
+
+[If SHORT]: **Bears control.** Every bounce to resistance is a **shorting opportunity** or exit point for longs. If you were forced to be in this market, you'd go short - that's Always-In SHORT. Fighting this is financial suicide.
+
+[If NEUTRAL]: **Market is in balance.** No edge for bulls or bears. Price is chopping in a range. Wait for breakout with volume before taking new positions.
+
+**Brooks' Teaching:** "When Always-In is LONG, every selloff is a bull flag until proven otherwise. Buy the dips, don't fight the bulls." (Reading Price Charts Bar By Bar, Chapter 5)
+
+**2. THE PATTERN (Continuation vs Reversal)**
+
+**Current Pattern:** [Bull Flag / Bear Flag / Wedge Top / Wedge Bottom / Tight Channel / Breakout / High 2 / Low 1 / etc.]
+
+**What this pattern means:**
+- [Bull Flag]: This is a **continuation pattern** - the market is taking a breath before going higher. Look to **buy the pullback to EMA20 or VWAP**. Target new highs.
+- [Bear Flag]: Market is pausing before next leg down. **Exit longs or add shorts** on bounce to EMA20/VWAP.
+- [Wedge Top]: Climactic buying, bears stepping in. **Warning of reversal** - tighten stops, consider trim.
+- [High 2 / Low 1]: Classic reversal signals. High 2 = second attempt to make new highs fails, bears take control. Low 1 = first attempt to make new lows, strong buy signal if holds.
+
+**Brooks' Framework:** "Trade WITH the pattern until you see a CLEAR reversal signal with follow-through. Failed signals become continuation trades." (Price Action Trends Bar by Bar, Chapter 12)
+
+**3. RECENT PRICE ACTION (Bar Reading)**
+
+**Last [5-10] bars show:**
+- [Consecutive bull bars with big bodies]: **STRONG BUYING** - don't fight this, join the trend
+- [Doji bars, overlapping candles]: **Weak momentum** - market losing conviction, reversal or continuation breakout coming
+- [Big reversal bar with follow-through]: **TREND CHANGE** - Always-In direction likely flipping soon
+- [Failed breakout, immediate rejection]: **BULL/BEAR TRAP** - smart money fading retail breakout traders
+
+**Key Bar to Watch:** [Describe most important recent bar - e.g., "Yesterday's bear bar closed on its low after testing resistance - strong rejection, bears in control"]
+
+**4. WHY THIS MATTERS FOR YOUR POSITION**
+
+[If Always-In aligned with position]:
+✅ **You are trading WITH the trend.** This is the RIGHT side. Your job now is to **hold until Always-In flips** or you hit target. Don't take profits too early - let winners run.
+
+[If Always-In opposed to position]:
+❌ **You are fighting the market.** Every day you hold this is a bet that Always-In will flip in your favor. That's HOPE, not strategy. Consider **trimming or exiting** if this persists >3 days.
+
+[If Always-In NEUTRAL]:
+⚠️ **Market in balance.** Your position has no trend support. Either wait for Always-In to align, or exit if it flips against you.
+
+**Brooks' Wisdom:** "When you're on the wrong side of Always-In, the best you can hope for is a small loss. Get out and wait for the next setup WITH the trend." (Trading Price Action Trends, Chapter 3)
+
+**5. TRAP WARNING (When NOT to Hold This Position)**
+
+**Current Trap Risk:** [LOW / MEDIUM / HIGH]
+
+[If HIGH]:
+🚨 **DANGER:** This setup has **HIGH trap risk**. Signs of trap:
+- Always-In direction just flipped (new trend not yet confirmed)
+- Pattern is late-stage (wedge, 3rd push, exhaustion gap)
+- Volume declining on recent bars (weak follow-through)
+- Failed breakout recently (bulls/bears got trapped, now revenge trading)
+
+**What to do:** **Tighten stops immediately** to break-even or small profit. Don't let winner turn into loser. If stop gets hit, accept it - better small win than big loss.
+
+[If MEDIUM]:
+⚠️ **CAUTION:** Not a trap yet, but watch for:
+- [Specific warning sign - e.g., "If price closes below EMA20 two days in a row"]
+- [Specific warning sign - e.g., "If Always-In flips to NEUTRAL or opposes position"]
+
+**What to do:** **Monitor daily.** Have stop loss ready. Don't add to position until trap risk drops to LOW.
+
+[If LOW]:
+✅ **SAFE:** This is a good setup with low trap risk. Market showing conviction, follow-through, and alignment. Hold with confidence.
+
+**Brooks' Warning:** "Most traders lose money not from being wrong, but from holding losing positions too long and cutting winners too soon. When trap risk is HIGH, your edge is GONE - exit now." (Price Action Trading Ranges, Chapter 8)
+
+**6. TRADING IMPLICATION (What To Do NOW)**
+
+**Based on Gate 3 Analysis:**
+
+[If SUPPORTS ✅]:
+📈 **HOLD with conviction.** Brooks price action confirms your thesis.
+- **Action:** Continue holding, trail stop below recent swing low
+- **Add Opportunity:** If pullback to EMA20 or VWAP AND Always-In stays aligned, consider adding small (25-50% of current position)
+- **Exit Signal:** Wait for Always-In flip or target hit - don't exit on noise
+
+[If NEUTRAL ⚠️]:
+⚠️ **HOLD but DON'T add.** Market is in balance, no edge.
+- **Action:** Maintain position but tighten stop to protect capital
+- **Watch for:** Always-In direction to establish - if flips in your favor, continue hold; if opposes, exit
+- **No Adding:** Wait for trend clarity before sizing up
+
+[If OPPOSES ❌]:
+🚨 **TRIM or CLOSE.** Brooks says you're on wrong side.
+- **Action:** Trim 50% now, close remaining 50% if Always-In stays opposed >3 days
+- **Why:** Fighting Always-In direction is -EV (negative expected value). The longer you hold, the more you'll likely lose
+- **Exception:** ONLY hold if strong catalyst coming in <7 days that could flip market
+
+**Position Sizing Guidance:**
+- **4/4 Gates + Brooks SUPPORTS:** Full position (100%), can add on pullback
+- **3/4 Gates + Brooks NEUTRAL:** 75% position, tighten stops
+- **2/4 Gates OR Brooks OPPOSES:** 50% position max, consider further trim
+- **≤1/4 Gates:** Close position regardless of Brooks
+
+**Time Horizon:**
+- **Days in Current Always-In:** [X days]
+- **Average Duration:** Most Always-In directions last 5-15 days before flip
+- **Implication:** [If X < 5]: Fresh trend, safe to hold. [If X > 10]: Aging trend, prepare for reversal
+
+---
+
 #### Gate 4: Quality Score [calculate_quality_score]
 
 | Metric | Value | Status |
@@ -196,6 +305,181 @@
 **Smart Money Override:**
 - If STRONG insider buying cluster → Override TRIM to HOLD
 - If STRONG options bearish flow → Consider TRIM regardless of gates
+
+---
+
+#### 📚 McMILLAN OPTIONS EDUCATIONAL BREAKDOWN
+
+**1. WHAT THE OPTIONS MARKET IS SAYING**
+
+**Options Flow:** [BULLISH / BEARISH / MIXED / NONE]
+
+[If BULLISH]:
+Smart money is **buying calls or selling puts** - they expect upside. This is **confirmation** for long positions. Options traders with big money are positioning for a move higher.
+
+[If BEARISH]:
+Smart money is **buying puts or selling calls** - they expect downside. This is a **WARNING** for long positions. Big money is hedging or betting on decline.
+
+[If MIXED]:
+Options market is **confused or balanced**. No clear directional bet from smart money. Use other gates for decision.
+
+**McMillan's Insight:** "Options volume often leads stock price. When smart money positions through options before a move, they know something. Pay attention." (Options as a Strategic Investment, Chapter 1)
+
+**2. IV ENVIRONMENT EXPLAINED (High/Low/Normal)**
+
+**IV Rank:** [XX%] - [HIGH >70% / NORMAL 30-70% / LOW <30%]
+
+**What this means for YOUR position:**
+
+[If HIGH IV]:
+📈 **EXPENSIVE OPTIONS** - Premium is inflated due to uncertainty/event risk.
+- **For existing position:** Good time to SELL covered calls (collect premium while holding stock)
+- **For new options:** BAD time to buy - you're overpaying for time value
+- **What's causing it:** [Earnings in X days / FDA decision / Macro event]
+
+[If NORMAL IV]:
+⚡ **FAIR VALUE** - Options normally priced.
+- **For existing position:** Standard options activity, no special opportunity
+- **For new options:** Fair pricing for strategies
+
+[If LOW IV]:
+📉 **CHEAP OPTIONS** - Good time to BUY options if you expect movement.
+- **For existing position:** Consider buying protective puts (cheap insurance)
+- **For new options:** GOOD time to buy - low cost, high potential reward if volatility expands
+- **Warning:** Low IV can stay low - don't buy options just because they're cheap without a catalyst
+
+**McMillan's Rule:** "Never buy options when IV Rank is >80%. You're paying for volatility that will crush you when it reverts. Never sell naked options when IV <20% - not enough premium to justify risk." (Chapter 28: Volatility)
+
+**3. PUT/CALL RATIO INTERPRETATION**
+
+**P/C Ratio:** [X.XX] - [BULLISH >1.2 / NEUTRAL 0.5-1.2 / BEARISH <0.5]
+
+**Contrarian Signal:**
+
+[If P/C > 1.2]:
+🟢 **BULLISH CONTRARIAN** - Excessive put buying = fear/hedging.
+- **What it means:** Retail scared, buying puts for protection. Often a bottom signal.
+- **McMillan's take:** "When everyone is hedged for downside, the downside often doesn't come. Excessive fear = opportunity." (Chapter 30)
+
+[If P/C < 0.5]:
+🔴 **BEARISH CONTRARIAN** - Excessive call buying = greed/speculation.
+- **What it means:** Retail greedy, chasing upside with calls. Often a top signal.
+- **McMillan's take:** "When calls overwhelm puts, it's retail FOMO. Smart money fades this." (Chapter 30)
+
+[If P/C 0.5-1.2]:
+⚪ **NEUTRAL** - Balanced options activity, no extreme sentiment.
+
+**For YOUR position:**
+- [If LONG + P/C >1.2]: **BULLISH confirmation** - fear is high, good for longs
+- [If LONG + P/C <0.5]: **WARNING** - greed is high, consider trim
+- [If SHORT + P/C <0.5]: **BEARISH confirmation** - greed is high, good for shorts
+
+**4. MAX PAIN & PRICE MAGNETISM**
+
+**Max Pain Price:** $[XX.XX] ([+/-X.X% from current])
+
+**What is Max Pain?**
+Max Pain is the strike price where **most options expire worthless**, causing maximum loss for options buyers (and maximum profit for options sellers - usually market makers).
+
+**McMillan's Theory:** "Stock price tends to gravitate toward Max Pain as expiration approaches. Market makers hedge their positions by buying/selling stock, creating price pressure toward this level." (Chapter 36)
+
+**For YOUR position:**
+
+[If current price > Max Pain]:
+⚠️ **DOWNWARD PULL** - Price may drift down toward $[XX.XX] by expiration ([X days away])
+- **Action:** Consider trimming if up significantly, or wait until after expiration for upside continuation
+
+[If current price < Max Pain]:
+📈 **UPWARD PULL** - Price may drift up toward $[XX.XX] by expiration
+- **Action:** HOLD through expiration for potential upside drift
+
+[If current price ≈ Max Pain]:
+🎯 **AT TARGET** - Price likely to stay range-bound until expiration
+- **Action:** Don't expect big moves until after expiration
+
+**Reliability:** Max Pain is most reliable within 5 days of expiration and for high-volume stocks. Less reliable for low-liquidity names.
+
+**5. GREEKS BREAKDOWN FOR YOUR TRADE**
+
+**If you own stock (no options):**
+- Your position has **Delta = 1.0** (moves $1 for every $1 stock move)
+- No Theta decay, no Vega exposure
+- Consider: Selling covered calls to collect Theta premium if IV is high
+
+**If considering adding options to position:**
+
+**DELTA:** [Call: +0.XX | Put: -0.XX]
+- **What it means:** How much option price moves per $1 stock move
+- **Rule:** Delta 0.50 (ATM) = 50% chance of expiring in-the-money
+- **For your position:**
+  - [If bullish + high IV]: Sell ATM/OTM covered calls (Delta 0.30-0.50) for income
+  - [If bullish + low IV]: Buy ATM calls (Delta 0.50) for leverage
+  - [If want protection]: Buy OTM puts (Delta 0.20-0.30) for insurance
+
+**GAMMA:** [+X.XX]
+- **What it means:** How fast Delta changes as stock moves
+- **High Gamma (>0.05):** Explosive near ATM - price swings create big P&L swings
+- **Low Gamma (<0.02):** Stable - deep ITM/OTM options don't change much
+- **For your position:** High Gamma = high risk/reward. Only use if you're RIGHT on direction.
+
+**THETA:** [-$X.XX per day]
+- **What it means:** How much option value you LOSE every day
+- **Rule:** Theta accelerates in final 30 days before expiration
+- **For your position:**
+  - [If buying options]: Minimize Theta by buying >60 days out
+  - [If selling options]: Maximize Theta by selling 30-45 days out (sweet spot)
+
+**VEGA:** [+$X.XX per 1% IV change]
+- **What it means:** How much option value changes per 1% move in IV
+- **High Vega:** Your option is IV-sensitive (good if you expect vol expansion, bad if vol crushes)
+- **For your position:**
+  - [If IV Rank >70%]: Don't buy options (Vega will crush you when IV drops)
+  - [If IV Rank <30%]: Safe to buy options (Vega works in your favor if IV expands)
+
+**McMillan's Greeks Summary:** "Delta tells you direction, Gamma tells you risk, Theta tells you cost, Vega tells you timing. Master these four and you master options." (Chapter 28)
+
+**6. RECOMMENDED STRATEGY & WHY**
+
+**Based on IV Environment + Position:**
+
+[If LONG stock + HIGH IV (>70%)]:
+💰 **SELL COVERED CALLS** (Income Strategy)
+- **Why:** Collect fat premium while IV is high, reduce cost basis
+- **Strike:** [OTM +5-10%] - $[XX.XX] (Delta 0.30)
+- **Expiration:** [30-45 days out]
+- **Premium:** ~$[X.XX] per contract ([X.X% yield on stock])
+- **Risk:** Stock called away if it rallies >10% (acceptable if at profit target)
+
+[If LONG stock + LOW IV (<30%) + BULLISH]:
+🚀 **BUY ATM CALLS** (Leverage Strategy)
+- **Why:** Cheap leverage to amplify gains with small capital
+- **Strike:** [ATM] - $[XX.XX] (Delta 0.50)
+- **Expiration:** [60-90 days out] (minimize Theta)
+- **Cost:** ~$[X.XX] per contract
+- **Risk:** Theta decay if stock doesn't move - only do this if catalyst in <60 days
+
+[If LONG stock + UNCERTAIN + WANT PROTECTION]:
+🛡️ **BUY PROTECTIVE PUTS** (Insurance Strategy)
+- **Why:** Lock in gains, limit downside, keep upside
+- **Strike:** [OTM -5-10%] - $[XX.XX] (Delta 0.20-0.30)
+- **Expiration:** [30-60 days out]
+- **Cost:** ~$[X.XX] per contract ([X.X% of stock value])
+- **Best when:** IV is low (<30%) so insurance is cheap
+
+[If LONG stock + BEARISH OPTIONS FLOW + HIGH IV]:
+⚠️ **CONSIDER PROTECTIVE COLLAR**
+- **Sell covered call** (collect premium)
+- **Buy protective put** (limit downside)
+- **Net Cost:** Often free or small credit
+- **Why:** Smart money is bearish (options flow), protect yourself while collecting premium
+
+**McMillan's Strategy Selection Matrix:**
+- **HIGH IV:** SELL options (covered calls, cash-secured puts)
+- **LOW IV:** BUY options (long calls/puts, debit spreads)
+- **NORMAL IV:** Stock-only or neutral strategies (iron condors if range-bound)
+
+**For YOUR specific position:**
+[Insert specific recommendation based on IV Rank + current gates + position status]
 
 ---
 
@@ -257,6 +541,175 @@
 **ACTION: [STRONG_HOLD / HOLD / TRIM XX% / CLOSE XX% / CLOSE]**
 
 **Rationale:** [2-3 sentences explaining gate status and action]
+
+---
+
+#### UPDATED TRADING PLAN 🎯
+
+**POSITION STATUS**
+- **Entry Price:** $XX.XX
+- **Entry Date:** YYYY-MM-DD ([X days ago])
+- **Current Price:** $XX.XX
+- **Current P&L:** +/-XX.X% (+/-$X,XXX)
+- **Position Size:** XXX shares ($XX,XXX value)
+- **% of Portfolio:** XX.X%
+- **Account:** [Account Type - TFSA/RRSP/Margin]
+
+---
+
+**UPDATED PRICE TARGETS**
+
+```
+TARGET 3:    $XX.XX ┈┈┈┈┈┈┈┈ (+XX%) Extension target (Fib 1.618 / Major resistance)
+TARGET 2:    $XX.XX ━━━━━━━━ (+XX%) Measured move (Pattern target / Resistance)
+TARGET 1:    $XX.XX ━━━━━━━━ (+X.X%) Near-term resistance (Previous high / Round number)
+─────────────────────────────────────────────────
+CURRENT:     $XX.XX ═════════ (0%)
+─────────────────────────────────────────────────
+RAISED STOP: $XX.XX ┅┅┅┅┅┅┅┅ (-X.X%) Lock gains ⭐ [If position up >10%]
+ORIG STOP:   $XX.XX ━━━━━━━━ (-XX%) Original risk (Swing low / 2.5x ATR)
+```
+
+**Target Calculation Method:**
+- T1: [Previous swing high / EMA resistance / Round number]
+- T2: [Measured move from pattern / Major resistance level]
+- T3: [Fibonacci extension 1.618 / Long-term resistance]
+
+---
+
+**STOP LOSS STRATEGY**
+
+[If Position up >10%]:
+✅ **RAISE STOP** to lock gains
+- **New Stop:** $XX.XX (break-even +X% or small profit)
+- **Why:** Position has delivered - protect capital, let remainder run with house money
+- **Trigger:** Use trailing stop or ATR-based stop (2x ATR from recent high)
+
+[If Position up 5-10%]:
+📈 **TRAIL STOP** to break-even
+- **Raised Stop:** $XX.XX (break-even or -X% max risk)
+- **Why:** Reduce risk to zero while giving room for continuation
+
+[If Position flat or down]:
+⚠️ **HONOR ORIGINAL STOP**
+- **Original Stop:** $XX.XX (-XX% max loss)
+- **Why:** Thesis not playing out yet - respect risk management
+- **If Gate 3 or Gate 1 fails:** Consider tightening stop to -X% (half risk)
+
+**Stop Adjustment Rules:**
+- **Never** move stop further from entry (increasing risk)
+- **Always** trail stop as position moves in your favor
+- **Respect** the stop - no hoping, no waiting "one more day"
+
+---
+
+**TARGET MANAGEMENT**
+
+**Scaling Out Plan:**
+
+[If 4/4 Gates]:
+💎 **LET IT RUN** - All systems go, hold full position
+- **T1 Hit:** Sell 25-33% (lock some gains)
+- **T2 Hit:** Sell another 25-33% (significant profit secured)
+- **T3 or Beyond:** Trail final 33-50% with raised stop, let winners run
+
+[If 3/4 Gates]:
+⚡ **NORMAL SCALING** - One gate failing, reduce risk gradually
+- **T1 Hit:** Sell 33% (take some profits)
+- **T2 Hit:** Sell another 33% (majority of position out)
+- **Remaining:** Small runner (33%) with tight trail stop
+
+[If 2/4 Gates]:
+⚠️ **AGGRESSIVE SCALING** - Multiple failures, prioritize capital preservation
+- **T1 Hit:** Sell 50% immediately
+- **T2 Hit:** Sell another 25% (75% total out)
+- **Remaining:** Tiny runner (25%) with very tight stop
+
+[If ≤1/4 Gates]:
+🚨 **CLOSE ON ANY BOUNCE** - Setup broken, exit on strength
+- Don't wait for targets - any bounce to resistance is a gift to exit
+
+**Why Scale Out?**
+- **Lock gains progressively** - you can't go broke taking profits
+- **Reduce risk as position ages** - longer you hold, more likely thesis changes
+- **Let final piece run** - capture unexpected extensions while protecting bulk of gains
+
+---
+
+**POSITION SIZING ADJUSTMENT**
+
+**Current Gates: [X/4]**
+
+[If 4/4 gates]:
+💡 **CONSIDER ADDING** on pullback to support
+- **Add Zone:** $XX.XX - $XX.XX (EMA20/VWAP area, recent support)
+- **Add Size:** XX shares (25-50% of current position)
+- **Condition:** Must test support AND bounce with volume AND Always-In stays aligned
+- **Stop for new piece:** $XX.XX (below support)
+- **Why:** All gates pass + pullback to value = high-probability add
+
+[If 3/4 gates]:
+📊 **HOLD CURRENT SIZE** - Don't add, don't reduce yet
+- **Why:** One gate failing = uncertainty, maintain current exposure
+- **Watch:** If gate recovers → consider add. If second gate fails → trim.
+
+[If 2/4 gates]:
+⚠️ **TRIM 25-50%**
+- **Trim Size:** XX shares (sell 25-50% of position)
+- **Execute:** On bounce to resistance or EMA20
+- **Why:** Two gates failing = thesis weakening, reduce exposure
+- **Keep:** Enough for runner if setup recovers
+
+[If ≤1/4 gates]:
+🚨 **CLOSE 75-100%**
+- **Why:** Setup is broken, preserve capital for next opportunity
+- **Exception:** Keep 25% runner ONLY if Gate 3 (Brooks) still passes and strong catalyst <7 days
+
+**Position Size Rules:**
+- **Never** add to losing position (averaging down = recipe for disaster)
+- **Only** add to winning position that pulls back to support with all gates passing
+- **Always** size adds smaller than original position (pyramid up, not build base)
+
+---
+
+**TIME HORIZON TRACKING**
+
+- **Original Thesis Timeframe:** [Days/Weeks/Months]
+- **Days in Position:** [X days] (Entry: YYYY-MM-DD)
+- **Expected Hold Duration:** [X-Y days based on catalyst/pattern]
+- **Days Until Next Catalyst:** [X days] ([Earnings/FDA/Product Launch])
+
+**Time-Based Exit Rules:**
+- If held >30 days with no progress toward T1 → Re-evaluate thesis
+- If catalyst passes and position doesn't move → Exit (catalyst failed)
+- If Always-In opposed >5 days → Exit (trend against you)
+
+**Psychological Check:**
+- [If position green]: Am I getting greedy? Should I take some off?
+- [If position red]: Am I hoping? Or do I have conviction based on gates?
+- [If position flat]: Is my capital better deployed elsewhere?
+
+---
+
+**EXECUTION CHECKLIST**
+
+**Before ANY Action (Buy/Sell/Add/Trim):**
+- [ ] Check all 4 gates - what's current status?
+- [ ] Check Smart Money - insiders/options aligned or opposed?
+- [ ] Check sector leadership - still a leader or falling to laggard?
+- [ ] Check Al Brooks - Always-In direction support or oppose?
+- [ ] Check market context - Fear/Greed, VIX, sector rotation
+- [ ] Have clear trigger price - not "around here", exact level
+- [ ] Know stop loss for ANY new position/add
+- [ ] Size position based on gates (4/4 = full, 3/4 = 75%, 2/4 = 50%, ≤1/4 = close)
+
+**Execution Discipline:**
+- Use **limit orders** for entries/exits (don't chase with market orders)
+- Scale out at **target levels**, not emotional levels
+- **Honor stops** - if stop hit, exit immediately (no hoping)
+- **Trade size** matches conviction (gates passing = size up, gates failing = size down)
+
+---
 
 **If TRIM/CLOSE:**
 - Trigger: [Price level or condition]

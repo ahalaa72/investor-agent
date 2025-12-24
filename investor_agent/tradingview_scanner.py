@@ -698,3 +698,437 @@ class TradingViewScanner:
 def get_scanner() -> TradingViewScanner:
     """Get a TradingViewScanner instance."""
     return TradingViewScanner()
+
+
+# =============================================================================
+# FINVIZ FALLBACK SCANNER (Proposal 1 - TradingView Alternative)
+# =============================================================================
+
+# Try to import finvizfinance
+try:
+    from finvizfinance.screener.overview import Overview
+    from finvizfinance.quote import finvizfinance
+    FINVIZ_AVAILABLE = True
+except ImportError:
+    FINVIZ_AVAILABLE = False
+    logger.warning("finvizfinance not installed. Install with: pip install finvizfinance")
+
+
+class FinvizFallbackScanner:
+    """
+    Fallback scanner using Finviz when TradingView is unavailable.
+
+    Provides similar filtering capabilities:
+    - Price/volume/market cap filters
+    - Technical indicator filters (RSI, MACD, SMA)
+    - Setup-based scanning
+
+    Note: Finviz has rate limits (~5 req/min for free tier).
+    Use only as fallback when TradingView fails.
+    """
+
+    def __init__(self):
+        if not FINVIZ_AVAILABLE:
+            raise ImportError("finvizfinance package required. Install with: pip install finvizfinance")
+        self.overview = Overview()
+
+    def scan_long_setups(
+        self,
+        setup_type: str = "all",
+        market: Literal["america", "canada", "both"] = "america",
+        min_price: float = 2.0,
+        min_market_cap: int = 1_000_000_000,
+        limit: int = 20
+    ) -> List[Dict[str, Any]]:
+        """
+        Scan for LONG setup candidates using Finviz.
+
+        Note: Finviz only supports US stocks ("america").
+        For Canada, returns empty list with warning.
+        """
+        if market == "canada":
+            logger.warning("Finviz does not support Canadian markets. Returning empty list.")
+            return []
+
+        # Build Finviz filters
+        filters = self._build_long_filters(setup_type, min_price, min_market_cap)
+
+        try:
+            self.overview.set_filter(filters_dict=filters)
+            df = self.overview.screener_view()
+
+            if df is None or df.empty:
+                logger.warning("Finviz returned no results for LONG scan")
+                return []
+
+            # Convert to standard format
+            results = self._format_results(df, "LONG", setup_type, limit)
+            return results
+
+        except Exception as e:
+            logger.error(f"Finviz LONG scan failed: {e}")
+            return []
+
+    def scan_short_setups(
+        self,
+        setup_type: str = "all",
+        market: Literal["america", "canada", "both"] = "america",
+        min_price: float = 2.0,
+        min_market_cap: int = 1_000_000_000,
+        limit: int = 20
+    ) -> List[Dict[str, Any]]:
+        """
+        Scan for SHORT setup candidates using Finviz.
+        """
+        if market == "canada":
+            logger.warning("Finviz does not support Canadian markets. Returning empty list.")
+            return []
+
+        filters = self._build_short_filters(setup_type, min_price, min_market_cap)
+
+        try:
+            self.overview.set_filter(filters_dict=filters)
+            df = self.overview.screener_view()
+
+            if df is None or df.empty:
+                logger.warning("Finviz returned no results for SHORT scan")
+                return []
+
+            results = self._format_results(df, "SHORT", setup_type, limit)
+            return results
+
+        except Exception as e:
+            logger.error(f"Finviz SHORT scan failed: {e}")
+            return []
+
+    def _build_long_filters(self, setup_type: str, min_price: float, min_market_cap: int) -> dict:
+        """Build Finviz filter dict for LONG setups."""
+        # Market cap filter mapping
+        if min_market_cap >= 10_000_000_000:
+            cap_filter = "Large ($10bln to $200bln)"
+        elif min_market_cap >= 2_000_000_000:
+            cap_filter = "Mid ($2bln to $10bln)"
+        elif min_market_cap >= 300_000_000:
+            cap_filter = "Small ($300mln to $2bln)"
+        else:
+            cap_filter = "Micro ($50mln to $300mln)"
+
+        # Price filter mapping
+        if min_price >= 50:
+            price_filter = "Over $50"
+        elif min_price >= 20:
+            price_filter = "Over $20"
+        elif min_price >= 10:
+            price_filter = "Over $10"
+        elif min_price >= 5:
+            price_filter = "Over $5"
+        else:
+            price_filter = "Over $1"
+
+        # Base filters
+        filters = {
+            'Market Cap.': cap_filter,
+            'Price': price_filter,
+            'Average Volume': 'Over 100K',
+            'Country': 'USA',
+        }
+
+        # Tier 1: Momentum filters for LONG
+        # Note: Finviz only accepts predefined RSI options, not custom ranges
+        if setup_type in ["all", "momentum_long"]:
+            filters['RSI (14)'] = 'Not Overbought (<60)'  # Room to run up
+            filters['20-Day Simple Moving Average'] = 'Price above SMA20'
+            filters['50-Day Simple Moving Average'] = 'Price above SMA50'
+
+        # Setup-specific filters
+        if setup_type == "consolidation_breakout":
+            filters['20-Day High/Low'] = 'New High'
+            filters['Relative Volume'] = 'Over 1.5'
+        elif setup_type == "golden_cross":
+            filters['20-Day Simple Moving Average'] = 'Price above SMA20'
+            filters['50-Day Simple Moving Average'] = 'SMA20 above SMA50'
+        elif setup_type == "macd_bullish":
+            # Finviz doesn't have direct MACD filter, use RSI trend
+            filters['RSI (14)'] = 'Not Oversold (>50)'  # Momentum up
+            filters['Change'] = 'Up'
+        elif setup_type == "volume_breakout":
+            filters['Relative Volume'] = 'Over 2'
+            filters['Change'] = 'Up'
+        elif setup_type == "support_bounce":
+            filters['RSI (14)'] = 'Oversold (40)'  # Bouncing from oversold
+            filters['Change'] = 'Up'
+
+        # Tier 4: Extended move exclusion
+        filters['Performance'] = 'Month Up'  # Not down >25% monthly
+        filters['Performance 2'] = 'Quarter Up'  # Not down >40% quarterly
+
+        return filters
+
+    def _build_short_filters(self, setup_type: str, min_price: float, min_market_cap: int) -> dict:
+        """Build Finviz filter dict for SHORT setups."""
+        # Market cap filter mapping
+        if min_market_cap >= 10_000_000_000:
+            cap_filter = "Large ($10bln to $200bln)"
+        elif min_market_cap >= 2_000_000_000:
+            cap_filter = "Mid ($2bln to $10bln)"
+        elif min_market_cap >= 300_000_000:
+            cap_filter = "Small ($300mln to $2bln)"
+        else:
+            cap_filter = "Micro ($50mln to $300mln)"
+
+        # Price filter mapping
+        if min_price >= 50:
+            price_filter = "Over $50"
+        elif min_price >= 20:
+            price_filter = "Over $20"
+        elif min_price >= 10:
+            price_filter = "Over $10"
+        elif min_price >= 5:
+            price_filter = "Over $5"
+        else:
+            price_filter = "Over $1"
+
+        filters = {
+            'Market Cap.': cap_filter,
+            'Price': price_filter,
+            'Average Volume': 'Over 100K',
+            'Country': 'USA',
+        }
+
+        # Tier 1: Momentum filters for SHORT
+        # Note: Finviz only accepts predefined RSI options, not custom ranges
+        if setup_type in ["all", "momentum_short"]:
+            filters['RSI (14)'] = 'Not Oversold (>40)'  # Room to fall (RSI above 40)
+            filters['20-Day Simple Moving Average'] = 'Price below SMA20'
+            filters['50-Day Simple Moving Average'] = 'Price below SMA50'
+
+        # Setup-specific filters
+        if setup_type == "consolidation_breakdown":
+            filters['20-Day High/Low'] = 'New Low'
+            filters['Relative Volume'] = 'Over 1.5'
+        elif setup_type == "death_cross":
+            filters['20-Day Simple Moving Average'] = 'Price below SMA20'
+            filters['50-Day Simple Moving Average'] = 'SMA20 below SMA50'
+        elif setup_type == "macd_bearish":
+            filters['RSI (14)'] = 'Not Oversold (>40)'  # Momentum weakening
+            filters['Change'] = 'Down'
+        elif setup_type == "breakdown":
+            filters['Relative Volume'] = 'Over 2'
+            filters['Change'] = 'Down'
+        elif setup_type == "resistance_rejection":
+            filters['RSI (14)'] = 'Overbought (60)'  # Rejecting from overbought zone
+            filters['Change'] = 'Down'
+
+        return filters
+
+    def _format_results(
+        self,
+        df: pd.DataFrame,
+        direction: str,
+        setup_type: str,
+        limit: int
+    ) -> List[Dict[str, Any]]:
+        """Convert Finviz DataFrame to standard result format."""
+        results = []
+
+        for idx, row in df.head(limit).iterrows():
+            try:
+                ticker = row.get('Ticker', 'UNKNOWN')
+                price = self._parse_number(row.get('Price', 0))
+                change = self._parse_percent(row.get('Change', '0%'))
+                volume = self._parse_volume(row.get('Volume', 0))
+                market_cap = self._parse_market_cap(row.get('Market Cap', '0'))
+
+                # Calculate signal strength (simplified for Finviz)
+                signal_strength = self._calculate_finviz_signal_strength(row, direction)
+
+                result = {
+                    'symbol': ticker,
+                    'price': price,
+                    'change_pct': change,
+                    'volume': volume,
+                    'market_cap': market_cap,
+                    'market': 'america',
+                    'direction': direction,
+                    'signal_strength': signal_strength,
+                    'setup_type': LONG_SETUPS.get(setup_type, setup_type) if direction == "LONG" else SHORT_SETUPS.get(setup_type, setup_type),
+                    'recommendation': self._get_recommendation_label(signal_strength),
+                    'metrics': {
+                        'rsi': None,  # Need to fetch separately
+                        'macd': None,
+                        'macd_signal': None,
+                        'sma20': None,
+                        'sma50': None,
+                        'ema20': None,
+                        'rel_volume': self._parse_number(row.get('Rel Volume', 1)),
+                        'vs_sma20': None,
+                        'vs_52w_high': row.get('52W High', 'N/A'),
+                        'recommend_all': signal_strength / 100,  # Normalize to -1 to 1
+                        'adx': None,
+                        'atr': None,
+                        'atr_pct': None,
+                        'perf_3m': self._parse_percent(row.get('Perf Quart', '0%')),
+                        'perf_1m': self._parse_percent(row.get('Perf Month', '0%')),
+                    },
+                    'data_source': 'finviz'  # Mark as Finviz data
+                }
+                results.append(result)
+
+            except Exception as e:
+                logger.warning(f"Error formatting Finviz row: {e}")
+                continue
+
+        # Sort by signal strength
+        results.sort(key=lambda x: x.get('signal_strength', 0), reverse=True)
+        return results
+
+    def _calculate_finviz_signal_strength(self, row, direction: str) -> int:
+        """Calculate signal strength from Finviz data (0-100)."""
+        score = 50  # Base score
+
+        # Change direction alignment
+        change = self._parse_percent(row.get('Change', '0%'))
+        if direction == "LONG" and change > 0:
+            score += 10
+        elif direction == "SHORT" and change < 0:
+            score += 10
+
+        # Volume confirmation
+        rel_vol = self._parse_number(row.get('Rel Volume', 1))
+        if rel_vol >= 2:
+            score += 15
+        elif rel_vol >= 1.5:
+            score += 10
+        elif rel_vol >= 1.2:
+            score += 5
+
+        # Performance momentum
+        perf_month = self._parse_percent(row.get('Perf Month', '0%'))
+        if direction == "LONG":
+            if 0 < perf_month < 15:  # Positive but not extended
+                score += 10
+        else:  # SHORT
+            if -15 < perf_month < 0:  # Negative but not crashed
+                score += 10
+
+        return min(100, max(0, score))
+
+    def _parse_number(self, val) -> float:
+        """Parse numeric value from Finviz format."""
+        if isinstance(val, (int, float)):
+            return float(val)
+        if isinstance(val, str):
+            val = val.replace(',', '').replace('$', '').strip()
+            try:
+                return float(val)
+            except ValueError:
+                return 0.0
+        return 0.0
+
+    def _parse_percent(self, val) -> float:
+        """Parse percentage value from Finviz format."""
+        if isinstance(val, (int, float)):
+            return float(val)
+        if isinstance(val, str):
+            val = val.replace('%', '').strip()
+            try:
+                return float(val)
+            except ValueError:
+                return 0.0
+        return 0.0
+
+    def _parse_volume(self, val) -> int:
+        """Parse volume from Finviz format (e.g., '1.5M', '500K')."""
+        if isinstance(val, (int, float)):
+            return int(val)
+        if isinstance(val, str):
+            val = val.upper().replace(',', '').strip()
+            multiplier = 1
+            if 'M' in val:
+                multiplier = 1_000_000
+                val = val.replace('M', '')
+            elif 'K' in val:
+                multiplier = 1_000
+                val = val.replace('K', '')
+            try:
+                return int(float(val) * multiplier)
+            except ValueError:
+                return 0
+        return 0
+
+    def _parse_market_cap(self, val) -> int:
+        """Parse market cap from Finviz format (e.g., '10.5B', '500M')."""
+        if isinstance(val, (int, float)):
+            return int(val)
+        if isinstance(val, str):
+            val = val.upper().replace(',', '').replace('$', '').strip()
+            multiplier = 1
+            if 'T' in val:
+                multiplier = 1_000_000_000_000
+                val = val.replace('T', '')
+            elif 'B' in val:
+                multiplier = 1_000_000_000
+                val = val.replace('B', '')
+            elif 'M' in val:
+                multiplier = 1_000_000
+                val = val.replace('M', '')
+            elif 'K' in val:
+                multiplier = 1_000
+                val = val.replace('K', '')
+            try:
+                return int(float(val) * multiplier)
+            except ValueError:
+                return 0
+        return 0
+
+    def _get_recommendation_label(self, signal_strength: int) -> str:
+        """Convert signal strength to recommendation label."""
+        if signal_strength >= 80:
+            return "STRONG_BUY"
+        elif signal_strength >= 60:
+            return "BUY/SHORT"
+        elif signal_strength >= 40:
+            return "WATCH"
+        else:
+            return "WEAK"
+
+
+def get_fallback_scanner() -> Optional[FinvizFallbackScanner]:
+    """Get a FinvizFallbackScanner instance if available."""
+    if FINVIZ_AVAILABLE:
+        try:
+            return FinvizFallbackScanner()
+        except Exception as e:
+            logger.error(f"Failed to create Finviz scanner: {e}")
+    return None
+
+
+def get_scanner_with_fallback() -> tuple:
+    """
+    Get scanner with fallback chain.
+
+    Returns:
+        tuple: (primary_scanner, fallback_scanner)
+        - primary_scanner: TradingViewScanner (may be None if unavailable)
+        - fallback_scanner: FinvizFallbackScanner (may be None if unavailable)
+    """
+    primary = None
+    fallback = None
+
+    # Try TradingView first
+    if SCREENER_AVAILABLE:
+        try:
+            primary = TradingViewScanner()
+            logger.info("TradingView scanner initialized (primary)")
+        except Exception as e:
+            logger.warning(f"TradingView scanner failed: {e}")
+
+    # Try Finviz as fallback
+    if FINVIZ_AVAILABLE:
+        try:
+            fallback = FinvizFallbackScanner()
+            logger.info("Finviz scanner initialized (fallback)")
+        except Exception as e:
+            logger.warning(f"Finviz scanner failed: {e}")
+
+    return primary, fallback

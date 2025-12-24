@@ -4,10 +4,12 @@ import os
 #print("KEY:", os.getenv("ALPACA_API_KEY"))
 #print("SECRET:", os.getenv("ALPACA_API_SECRET"))
 import datetime
+import json
 import logging
 import sys
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from io import StringIO
+from pathlib import Path
 from typing import Literal, Any
 
 import hishel
@@ -71,11 +73,16 @@ from .backtesting import (
     generate_similarity_report
 )
 
-# Import TradingView scanner (optional dependency)
+# Import TradingView scanner with Finviz fallback (optional dependencies)
 try:
-    from .tradingview_scanner import TradingViewScanner, get_scanner, SCREENER_AVAILABLE
+    from .tradingview_scanner import (
+        TradingViewScanner, get_scanner, SCREENER_AVAILABLE,
+        FinvizFallbackScanner, get_fallback_scanner, get_scanner_with_fallback,
+        FINVIZ_AVAILABLE
+    )
 except ImportError:
     SCREENER_AVAILABLE = False
+    FINVIZ_AVAILABLE = False
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -2282,9 +2289,8 @@ def _calculate_iv_analysis(ticker: str, calls_df: pd.DataFrame, puts_df: pd.Data
 
     # Get historical IV data (use price history to estimate)
     try:
-        t = yf.Ticker(ticker)
-        hist = t.history(period="1y")
-        if not hist.empty:
+        hist = _get_ohlcv_cached(ticker, period="1y")
+        if hist is not None and not hist.empty:
             # Calculate historical volatility as proxy for IV range
             returns = np.log(hist['Close'] / hist['Close'].shift(1)).dropna()
             hv_20 = returns.rolling(20).std() * np.sqrt(252)
@@ -4243,8 +4249,8 @@ if _advanced_ta_available:
         """
         ticker = validate_ticker(ticker)
 
-        # Use Questrade-first approach for price history
-        history = get_price_history_questrade_first(ticker, period=period)
+        # Use Questrade-first approach with caching
+        history = _get_ohlcv_cached(ticker, period=period)
         if history is None or history.empty:
             raise ValueError(f"No historical data found for {ticker}")
 
@@ -4454,8 +4460,8 @@ if _advanced_ta_available:
         """
         ticker = validate_ticker(ticker)
 
-        # Use Questrade-first approach for price history
-        history = get_price_history_questrade_first(ticker, period=lookback_period)
+        # Use Questrade-first approach with caching
+        history = _get_ohlcv_cached(ticker, period=lookback_period)
         if history is None or history.empty:
             raise ValueError(f"No historical data found for {ticker}")
 
@@ -4488,8 +4494,8 @@ if _advanced_ta_available:
         comparisons = []
         for ticker in tickers:
             try:
-                # Use Questrade-first approach for price history
-                history = get_price_history_questrade_first(ticker, period=period)
+                # Use Questrade-first approach with caching
+                history = _get_ohlcv_cached(ticker, period=period)
                 if history is None or history.empty:
                     comparisons.append({"symbol": ticker, "error": "No data available"})
                     continue
@@ -4588,16 +4594,16 @@ if _bootstrap_available:
         # Add volume quality score if requested
         if include_quality_score:
             try:
-                # Get historical data using Questrade-first approach
-                history = get_price_history_questrade_first(ticker, period=period)
+                # Get historical data using Questrade-first approach with caching
+                history = _get_ohlcv_cached(ticker, period=period)
 
                 if history is not None and not history.empty:
                     # Calculate volume metrics
                     volume = history['Volume']
                     close = history['Close']
 
-                    # Average volume
-                    avg_volume_20 = volume.rolling(window=20).mean()
+                    # Average volume (exclude current day - use previous 20 days)
+                    avg_volume_20 = volume.shift(1).rolling(window=20).mean()
                     relative_volume = volume / avg_volume_20
 
                     # Volume trend
@@ -4801,8 +4807,8 @@ async def find_similar_historical_setups(
     period_map = {"6mo": 126, "1y": 252, "2y": 504}
     lookback_days = period_map[lookback_period]
 
-    # Get historical data
-    hist = yf.Ticker(ticker).history(period=lookback_period, interval="1d")
+    # Get historical data (Questrade primary, Yahoo fallback, cached)
+    hist = _get_ohlcv_cached(ticker, period=lookback_period)
 
     if hist.empty or len(hist) < 50:
         return f"Error: Insufficient historical data for {ticker}"
@@ -4968,10 +4974,10 @@ async def analyze_ml_enhanced(
     """
     ticker = validate_ticker(ticker)
 
-    # Get historical data
-    hist = yf.Ticker(ticker).history(period=period, interval="1d")
+    # Get historical data (Questrade primary, Yahoo fallback, cached)
+    hist = _get_ohlcv_cached(ticker, period=period)
 
-    if hist.empty or len(hist) < 50:
+    if hist is None or hist.empty or len(hist) < 50:
         return f"Error: Insufficient data for {ticker}"
 
     prices = hist['Close']
@@ -5478,9 +5484,9 @@ async def validate_strategy_robustness(
     """
     ticker = validate_ticker(ticker)
 
-    # Get returns
-    hist = yf.Ticker(ticker).history(period="1y", interval="1d")
-    if hist.empty:
+    # Get returns (Questrade primary, Yahoo fallback, cached)
+    hist = _get_ohlcv_cached(ticker, period="1y")
+    if hist is None or hist.empty:
         return f"Error: No data for {ticker}"
 
     returns = hist['Close'].pct_change().dropna()
@@ -5577,11 +5583,10 @@ async def calculate_feature_importance_analysis(
     from .ml_core import calculate_feature_importance
 
     try:
-        # Get historical data
-        ticker_obj = yf.Ticker(ticker)
-        hist = ticker_obj.history(period=period)
+        # Get historical data (Questrade primary, Yahoo fallback, cached)
+        hist = _get_ohlcv_cached(ticker, period=period)
 
-        if hist.empty or len(hist) < forward_window + 20:
+        if hist is None or hist.empty or len(hist) < forward_window + 20:
             return f"Error: Insufficient data for {ticker} with period {period}"
 
         # Calculate future returns (target variable)
@@ -5622,8 +5627,8 @@ async def calculate_feature_importance_analysis(
         hist['BB_Lower'] = hist['BB_Middle'] - (bb_std_val * bb_std)
         hist['BB_Position'] = (close - hist['BB_Lower']) / (hist['BB_Upper'] - hist['BB_Lower'])
 
-        # Volume indicators
-        hist['Volume_SMA'] = volume.rolling(window=20).mean()
+        # Volume indicators (exclude current day from average)
+        hist['Volume_SMA'] = volume.shift(1).rolling(window=20).mean()
         hist['Relative_Volume'] = volume / hist['Volume_SMA']
 
         # Volatility
@@ -5819,7 +5824,10 @@ except ImportError:
 
 
 def _get_ohlcv_for_ticker(ticker: str, period: str = "3mo") -> pd.DataFrame | None:
-    """Helper to get OHLCV data for Brooks analysis."""
+    """
+    DEPRECATED: Use _get_ohlcv_cached() instead.
+    Legacy helper kept for backward compatibility.
+    """
     try:
         hist = yf.Ticker(ticker).history(period=period, interval="1d")
         if hist is not None and not hist.empty:
@@ -5829,52 +5837,528 @@ def _get_ohlcv_for_ticker(ticker: str, period: str = "3mo") -> pd.DataFrame | No
     return None
 
 
+# OHLCV Cache - Module level
+_ohlcv_cache: dict[str, tuple[pd.DataFrame, datetime]] = {}
+_cache_ttl_seconds = 300  # 5 minutes
+
+# === PROPOSAL 5: Scan Result Caching ===
+_scan_cache: dict[str, tuple[dict, datetime]] = {}
+_scan_cache_ttl_seconds = 300  # 5 minutes
+
+
+def _get_scan_cache(market: str, filters_hash: str) -> dict | None:
+    """Get cached scan results if fresh."""
+    from datetime import datetime
+    key = f"{market}_{filters_hash}"
+    if key in _scan_cache:
+        result, timestamp = _scan_cache[key]
+        age_seconds = (datetime.now() - timestamp).total_seconds()
+        if age_seconds < _scan_cache_ttl_seconds:
+            logger.info(f"💾 Scan Cache HIT for {market} (age: {age_seconds:.1f}s)")
+            return result
+    return None
+
+
+def _set_scan_cache(market: str, filters_hash: str, results: dict) -> None:
+    """Cache scan results."""
+    from datetime import datetime
+    key = f"{market}_{filters_hash}"
+    _scan_cache[key] = (results, datetime.now())
+    logger.debug(f"💾 Scan Cache SET for {market}")
+
+
+# === PROPOSAL 3: Feature Availability Tracking ===
+class FeatureAvailability:
+    """Track which enhanced features are available for graceful degradation."""
+
+    _instance = None
+    _checked = False
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __init__(self):
+        if not FeatureAvailability._checked:
+            self.features = {}
+            self._check_features()
+            FeatureAvailability._checked = True
+
+    def _check_features(self):
+        """Check which features are available at startup."""
+        # CVD Analysis
+        try:
+            from investor_agent.realtime_order_flow import analyze_realtime_trade_flow
+            self.features['cvd_analysis'] = True
+            logger.info("✅ Feature available: CVD Analysis (realtime_order_flow)")
+        except ImportError:
+            self.features['cvd_analysis'] = False
+            logger.warning("⚠️ Feature unavailable: CVD Analysis - scoring will be degraded by ~3 points")
+
+        # Exhaustion Score
+        try:
+            from investor_agent.technical_analysis_bootstrap import calculate_exhaustion_score
+            self.features['exhaustion_score'] = True
+            logger.info("✅ Feature available: Exhaustion Score")
+        except ImportError:
+            self.features['exhaustion_score'] = False
+            logger.warning("⚠️ Feature unavailable: Exhaustion Score - Tier 4 filtering degraded")
+
+        # Al Brooks Analysis (always available in analyze_technical)
+        self.features['al_brooks'] = True
+
+        # Questrade API
+        try:
+            # Check if Questrade is configured
+            import os
+            if os.path.exists(os.path.expanduser("~/.questrade.json")):
+                self.features['questrade'] = True
+                logger.info("✅ Feature available: Questrade API (real-time data)")
+            else:
+                self.features['questrade'] = False
+                logger.warning("⚠️ Feature unavailable: Questrade API - using Yahoo Finance (15-60 min lag)")
+        except Exception:
+            self.features['questrade'] = False
+
+    def get_score_degradation(self) -> int:
+        """Return expected score degradation if features missing."""
+        degradation = 0
+        if not self.features.get('cvd_analysis', False):
+            degradation += 3  # CVD bonus unavailable
+        if not self.features.get('exhaustion_score', False):
+            degradation += 5  # Exhaustion filtering less accurate
+        return degradation
+
+    def get_status_report(self) -> dict:
+        """Return feature availability status."""
+        return {
+            'features': self.features,
+            'score_degradation': self.get_score_degradation(),
+            'warnings': [f for f, v in self.features.items() if not v]
+        }
+
+
+# Initialize feature availability at module load
+_feature_availability = None
+
+
+def get_feature_availability() -> FeatureAvailability:
+    """Get singleton feature availability tracker."""
+    global _feature_availability
+    if _feature_availability is None:
+        _feature_availability = FeatureAvailability()
+    return _feature_availability
+
+
+# === PROPOSAL 6: Market Regime Detection ===
+def detect_market_regime() -> dict:
+    """
+    Detect current market regime for adaptive weight adjustment.
+
+    Returns:
+        dict with regime classification and adaptive weights
+
+    Regimes:
+        - BULL_TREND: Price > SMA20 > SMA50, low volatility
+        - BEAR_TREND: Price < SMA20 < SMA50, low volatility
+        - HIGH_VOL: Volatility > 30%
+        - RANGE_BOUND: No clear trend
+    """
+    import numpy as np
+
+    try:
+        # Get SPY data for regime detection
+        spy_df = _get_ohlcv_for_ticker_v2("SPY", period="3mo")
+
+        if spy_df is None or len(spy_df) < 50:
+            logger.warning("Could not get SPY data for regime detection, using default weights")
+            return {
+                'regime': 'UNKNOWN',
+                'weights': _get_default_weights(),
+                'spy_trend': 'UNKNOWN',
+                'volatility': 0
+            }
+
+        closes = spy_df['Close']
+        current_price = closes.iloc[-1]
+
+        # Calculate SMAs
+        sma20 = closes.rolling(20).mean().iloc[-1]
+        sma50 = closes.rolling(50).mean().iloc[-1]
+
+        # Calculate volatility (annualized)
+        returns = closes.pct_change().dropna()
+        vol_20d = returns.rolling(20).std().iloc[-1] * np.sqrt(252) * 100
+
+        # Classify regime
+        if current_price > sma20 > sma50 and vol_20d < 20:
+            regime = "BULL_TREND"
+        elif current_price < sma20 < sma50 and vol_20d < 20:
+            regime = "BEAR_TREND"
+        elif vol_20d > 30:
+            regime = "HIGH_VOL"
+        else:
+            regime = "RANGE_BOUND"
+
+        # Get adaptive weights
+        weights = _get_adaptive_weights(regime)
+
+        return {
+            'regime': regime,
+            'weights': weights,
+            'spy_trend': 'BULLISH' if current_price > sma50 else 'BEARISH',
+            'volatility': round(vol_20d, 2),
+            'sma20': round(sma20, 2),
+            'sma50': round(sma50, 2),
+            'current_price': round(current_price, 2)
+        }
+
+    except Exception as e:
+        logger.error(f"Market regime detection failed: {e}")
+        return {
+            'regime': 'UNKNOWN',
+            'weights': _get_default_weights(),
+            'spy_trend': 'UNKNOWN',
+            'volatility': 0
+        }
+
+
+def _get_default_weights() -> dict:
+    """Return default scoring weights."""
+    return {
+        'momentum': 30,
+        'pattern': 28,
+        'rs': 15,
+        'catalyst': 20,
+        'brooks': 10
+    }
+
+
+def _get_adaptive_weights(regime: str) -> dict:
+    """Return scoring weights adapted to market regime."""
+    if regime == "BULL_TREND":
+        # In bull markets, momentum matters more
+        return {
+            'momentum': 35,  # +5
+            'pattern': 23,   # -5
+            'rs': 15,
+            'catalyst': 20,
+            'brooks': 10
+        }
+    elif regime == "BEAR_TREND":
+        # In bear markets, catalyst/quality matters more
+        return {
+            'momentum': 25,  # -5
+            'pattern': 28,
+            'rs': 15,
+            'catalyst': 25,  # +5
+            'brooks': 10
+        }
+    elif regime == "HIGH_VOL":
+        # In high volatility, Al Brooks patterns critical
+        return {
+            'momentum': 25,  # -5
+            'pattern': 25,   # -3
+            'rs': 12,        # -3
+            'catalyst': 23,  # +3
+            'brooks': 18     # +8
+        }
+    else:  # RANGE_BOUND or UNKNOWN
+        return _get_default_weights()
+
+
+def _get_ohlcv_for_ticker_v2(ticker: str, period: str = "3mo") -> pd.DataFrame | None:
+    """
+    Fetch OHLCV data with 3-source fallback chain.
+    Returns pd.DataFrame for compatibility with existing code.
+
+    Data Sources (priority order) - PROPOSAL 1:
+    1. Questrade API (real-time, 0 min lag)
+    2. Alpaca API (fallback 1, ~15 min lag) - requires ALPACA_API_KEY/ALPACA_API_SECRET
+    3. Yahoo Finance (fallback 2, 15-60 min lag)
+
+    Args:
+        ticker: Stock symbol (e.g., "AAPL")
+        period: Time period ("3mo", "6mo", "1y", "2y")
+
+    Returns:
+        pd.DataFrame with OHLCV data (Date index, OHLC columns)
+        or None if all sources fail
+    """
+    from datetime import datetime, timedelta
+    import pytz
+
+    # Calculate time range from period
+    period_map = {
+        "1mo": 30,
+        "3mo": 90,
+        "6mo": 180,
+        "1y": 365,
+        "2y": 730,
+        "3y": 1095,
+        "5y": 1825
+    }
+    days = period_map.get(period, 90)
+
+    # Try Questrade first (real-time data)
+    try:
+        et = pytz.timezone("America/New_York")
+        end_dt = datetime.now(et)
+        start_dt = end_dt - timedelta(days=days)
+
+        start_time = start_dt.isoformat()
+        end_time = end_dt.isoformat()
+
+        candles_dict = get_questrade_candles(
+            symbol=ticker,
+            interval="OneDay",
+            start_time=start_time,
+            end_time=end_time
+        )
+
+        # Convert dict format to DataFrame
+        candles = candles_dict['candles']
+        data_source = candles_dict.get('data_source', 'questrade')  # Get actual source used
+
+        if not candles:
+            raise ValueError(f"No candle data returned for {ticker}")
+
+        df = pd.DataFrame(candles)
+
+        # Rename columns to match yfinance format
+        df = df.rename(columns={
+            'start': 'Date',
+            'open': 'Open',
+            'high': 'High',
+            'low': 'Low',
+            'close': 'Close',
+            'volume': 'Volume'
+        })
+
+        # Set Date as index
+        df['Date'] = pd.to_datetime(df['Date'])
+        df = df.set_index('Date')
+
+        # Ensure columns are in correct order and type
+        df = df[['Open', 'High', 'Low', 'Close', 'Volume']]
+        df = df.astype({
+            'Open': 'float64',
+            'High': 'float64',
+            'Low': 'float64',
+            'Close': 'float64',
+            'Volume': 'int64'
+        })
+
+        # === PROPOSAL 2: Timestamp Validation ===
+        # Check if data is stale (missing today's bar when market is closed)
+        last_bar_date = df.index[-1].date() if hasattr(df.index[-1], 'date') else df.index[-1]
+        today = datetime.now(et).date()
+
+        # During market hours (9:30-16:00 ET), expect yesterday's bar
+        # After market close, expect today's bar
+        market_open = datetime.now(et).replace(hour=9, minute=30, second=0, microsecond=0)
+        market_close = datetime.now(et).replace(hour=16, minute=0, second=0, microsecond=0)
+        now = datetime.now(et)
+
+        # Check for weekends
+        is_weekend = today.weekday() >= 5
+
+        if is_weekend:
+            # On weekends, expect Friday's bar
+            days_since_friday = (today.weekday() - 4) % 7
+            expected_date = today - timedelta(days=days_since_friday)
+        elif now < market_open:
+            # Before market open, expect yesterday (or Friday if Monday)
+            expected_date = today - timedelta(days=1)
+            if expected_date.weekday() >= 5:  # Weekend
+                expected_date = expected_date - timedelta(days=expected_date.weekday() - 4)
+        elif now >= market_close:
+            # After market close, expect today's bar
+            expected_date = today
+        else:
+            # During market hours, yesterday's bar is acceptable
+            expected_date = today - timedelta(days=1)
+            if expected_date.weekday() >= 5:
+                expected_date = expected_date - timedelta(days=expected_date.weekday() - 4)
+
+        # Convert last_bar_date if it's a Timestamp
+        if hasattr(last_bar_date, 'date'):
+            last_bar_date = last_bar_date.date()
+
+        days_stale = (expected_date - last_bar_date).days if isinstance(last_bar_date, type(expected_date)) else 0
+
+        if days_stale > 2:
+            logger.warning(f"⚠️ STALE DATA for {ticker}: Last bar {last_bar_date}, expected {expected_date} ({days_stale} days stale)")
+
+        # Log with actual data source
+        if data_source.lower() == 'questrade':
+            logger.info(f"✅ Retrieved {len(df)} bars for {ticker} from Questrade (real-time, 0 min lag)")
+        else:
+            logger.info(f"✅ Retrieved {len(df)} bars for {ticker} from Yahoo Finance via get_questrade_candles() (fallback, 15-60 min lag)")
+
+        return df
+
+    except Exception as questrade_error:
+        logger.warning(f"⚠️ Questrade failed for {ticker}: {questrade_error} - trying Alpaca fallback")
+
+        # === PROPOSAL 1: Alpaca Fallback (15-min delay, better than Yahoo) ===
+        try:
+            import os
+            from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+            from alpaca.data.historical import StockHistoricalDataClient
+            from alpaca.data.requests import StockBarsRequest
+
+            api_key = os.getenv('ALPACA_API_KEY')
+            api_secret = os.getenv('ALPACA_API_SECRET')
+
+            if api_key and api_secret:
+                client = StockHistoricalDataClient(api_key, api_secret)
+
+                # For daily bars, use TimeFrame.Day
+                request = StockBarsRequest(
+                    symbol_or_symbols=ticker,
+                    timeframe=TimeFrame.Day,
+                    limit=days  # Use same period as Questrade
+                )
+
+                df_raw = client.get_stock_bars(request).df
+
+                if not df_raw.empty:
+                    # Convert multi-index to simple Date index
+                    if isinstance(df_raw.index, pd.MultiIndex):
+                        df_raw = df_raw.reset_index(level='symbol', drop=True)
+
+                    # Rename columns to match yfinance format
+                    df = df_raw.rename(columns={
+                        'open': 'Open',
+                        'high': 'High',
+                        'low': 'Low',
+                        'close': 'Close',
+                        'volume': 'Volume'
+                    })
+
+                    # Ensure columns are in correct order
+                    df = df[['Open', 'High', 'Low', 'Close', 'Volume']]
+                    df = df.astype({
+                        'Open': 'float64',
+                        'High': 'float64',
+                        'Low': 'float64',
+                        'Close': 'float64',
+                        'Volume': 'int64'
+                    })
+
+                    logger.info(f"✅ Retrieved {len(df)} bars for {ticker} from Alpaca (fallback 1, ~15 min lag)")
+                    return df
+                else:
+                    logger.warning(f"⚠️ Alpaca returned empty data for {ticker}")
+            else:
+                logger.debug(f"Alpaca credentials not set, skipping to Yahoo Finance")
+
+        except Exception as alpaca_error:
+            logger.warning(f"⚠️ Alpaca failed for {ticker}: {alpaca_error} - falling back to Yahoo Finance")
+
+        # Fallback to Yahoo Finance (existing behavior)
+        try:
+            hist = yf.Ticker(ticker).history(period=period, interval="1d")
+            if hist is not None and not hist.empty:
+                # Ensure consistent format
+                hist = hist[['Open', 'High', 'Low', 'Close', 'Volume']]
+                logger.info(f"✅ Retrieved {len(hist)} bars for {ticker} from Yahoo Finance (fallback 2, 15-60 min lag)")
+                return hist
+        except Exception as yf_error:
+            logger.error(f"❌ All sources failed for {ticker}. Questrade: {questrade_error}, Yahoo: {yf_error}")
+
+    return None
+
+
+def _get_ohlcv_cached(ticker: str, period: str = "3mo") -> pd.DataFrame | None:
+    """
+    Cached version of _get_ohlcv_for_ticker_v2().
+    Prevents redundant fetches for same ticker in same scan.
+
+    Cache TTL: 5 minutes
+
+    Args:
+        ticker: Stock symbol (e.g., "AAPL")
+        period: Time period ("3mo", "6mo", "1y", "2y")
+
+    Returns:
+        pd.DataFrame with OHLCV data or None if failed
+    """
+    from datetime import datetime
+
+    # Check cache
+    cache_key = f"{ticker}_{period}"
+    if cache_key in _ohlcv_cache:
+        df, timestamp = _ohlcv_cache[cache_key]
+        age_seconds = (datetime.now() - timestamp).total_seconds()
+
+        if age_seconds < _cache_ttl_seconds:
+            logger.debug(f"💾 Cache HIT for {ticker} (age: {age_seconds:.1f}s, TTL: {_cache_ttl_seconds}s)")
+            return df.copy()  # Return copy to prevent cache corruption
+        else:
+            logger.debug(f"⏰ Cache EXPIRED for {ticker} (age: {age_seconds:.1f}s > TTL: {_cache_ttl_seconds}s)")
+
+    # Fetch fresh data
+    logger.debug(f"🔄 Cache MISS for {ticker} - fetching from Questrade/Yahoo")
+    df = _get_ohlcv_for_ticker_v2(ticker, period)
+
+    # Cache result (only if successful)
+    if df is not None and not df.empty:
+        _ohlcv_cache[cache_key] = (df.copy(), datetime.now())
+        logger.debug(f"💾 Cached OHLCV for {ticker} ({len(df)} bars)")
+
+    return df
+
+
 @mcp.tool()
 def scan_market_opportunities(
     market: Literal["america", "canada", "both"] = "both",
     min_price: float = 2.0,
     min_market_cap: int = 1_000_000_000,
-    top_n: int = 3,
-    include_deep_analysis: bool = True
+    top_n: int = 5,
+    include_deep_analysis: bool = True,
+    require_4_gates: bool = True,
+    batch_size: int = 50,
+    max_scan: int = 500
 ) -> dict[str, Any]:
     """
-    Scan US and Canadian markets for INFLECTION POINT trading opportunities.
+    Scan US and Canadian markets for HIGH-QUALITY trading opportunities.
 
-    Enhanced with 4-Tier Filter Architecture to find stocks ENTERING trends
-    at early stages, not stocks already exhausted in late-stage moves.
+    NEW: Scans in batches of 200 stocks and runs FULL 4-gate validation
+    on each candidate. Only returns stocks that pass ALL 4 gates.
 
-    4-Tier Filter System:
-        TIER 1 (MOMENTUM - Required): ADX 20-40, RSI 40-65, EMA20 <5%
-        TIER 2 (PATTERN - Min 2/4): Consolidation Breakout, Volume 1.5-4x, RS 55-85
-        TIER 3 (CATALYST - Adds Score): Earnings proximity, IV Rank, ML alignment
-        TIER 4 (EXCLUSIONS - Hard Reject): >50% 3mo move, ATR <2%, Near 52w extremes
+    4-Gate Validation System:
+        GATE 1 (CATALYST): Earnings proximity, insider buying, analyst upgrades
+        GATE 2 (FRESHNESS): CVD alignment, exhaustion < 50
+        GATE 3 (BROOKS): Probability >= 55%, no HIGH trap risk, direction aligned
+        GATE 4 (QUALITY): Quality score >= 50
 
-    Returns top LONG and SHORT candidates with:
-    - Composite scores (0-100) using tier-based inflection detection
-    - Al Brooks price action analysis (pattern, probability, levels)
-    - Trend Day Counter to detect exhaustion
+    Scan Process:
+        1. Fetch 200 stocks per batch from TradingView
+        2. Run generate_trading_signal() on each for FULL 4-gate validation
+        3. Keep only stocks passing 4/4 gates
+        4. Continue until we have 5 LONG + 5 SHORT or hit 1000 scanned
+        5. Rank by confidence score
 
     Args:
         market: Market to scan - "america", "canada", or "both"
         min_price: Minimum stock price (default: $2)
         min_market_cap: Minimum market cap (default: $1B)
-        top_n: Number of candidates per direction (default: 3)
+        top_n: Number of candidates per direction (default: 5)
         include_deep_analysis: Run full analysis pipeline (default: True)
+        require_4_gates: Only return 4/4 gate passers (default: True)
+        batch_size: Stocks to scan per batch (default: 200)
+        max_scan: Maximum stocks to scan before giving up (default: 1000)
 
     Returns:
         Dictionary with:
         - scan_time: Timestamp of scan
-        - filters: Applied filters including tier exclusions
-        - long_candidates: Top N LONG at inflection points
-        - short_candidates: Top N SHORT at inflection points
-        - report: Formatted text report for easy reading
-
-    Composite Score Components (100 pts total):
-        - Momentum Quality (30 pts): ADX, RSI, EMA20, MACD
-        - Pattern Quality (25 pts): Breakout, Volume, Trend Days
-        - Relative Strength (15 pts): RS vs benchmark
-        - Catalyst Quality (20 pts): Earnings, IV, ML prediction
-        - Al Brooks (10 pts): Pattern quality + probability
+        - long_candidates: Top N LONG with 4/4 gates passed
+        - short_candidates: Top N SHORT with 4/4 gates passed
+        - stats: Scanning statistics (total scanned, pass rates)
+        - report: Formatted text report
     """
     if not SCREENER_AVAILABLE:
         raise ValueError(
@@ -5883,174 +6367,259 @@ def scan_market_opportunities(
 
     from datetime import datetime
     import pytz
+    import hashlib
+
+    # === Check Scan Cache ===
+    filters_hash = hashlib.md5(
+        f"{min_price}_{min_market_cap}_{top_n}_{require_4_gates}_{batch_size}".encode()
+    ).hexdigest()[:8]
+
+    cached_result = _get_scan_cache(market, filters_hash)
+    if cached_result is not None:
+        logger.info(f"Returning cached scan results for {market}")
+        return cached_result
+
+    # === Detect Market Regime ===
+    market_regime = detect_market_regime()
+    logger.info(f"📊 Market Regime: {market_regime['regime']} | SPY Vol: {market_regime['volatility']}%")
 
     try:
-        scanner = get_scanner()
+        # === Get Scanner (TradingView → Finviz fallback) ===
+        scanner = None
+        scanner_source = "unknown"
+
+        try:
+            scanner = get_scanner()
+            scanner_source = "tradingview"
+            logger.info("📡 Using TradingView scanner (primary)")
+        except Exception as tv_error:
+            logger.warning(f"⚠️ TradingView scanner failed: {tv_error}")
+            try:
+                scanner = get_fallback_scanner()
+                if scanner:
+                    scanner_source = "finviz"
+                    logger.info("📡 Using Finviz scanner (fallback)")
+                else:
+                    raise ValueError("Finviz scanner not available")
+            except Exception as finviz_error:
+                logger.error(f"❌ Both scanners failed. TV: {tv_error}, Finviz: {finviz_error}")
+                raise ValueError("No stock scanner available - all sources failed")
+
         et = pytz.timezone("America/New_York")
+        import time
+        scan_start_time = time.time()
+        MAX_SCAN_SECONDS = 600  # 10 minute timeout for entire scan
 
-        # Scan for initial candidates (get more to filter after analysis)
-        long_candidates = scanner.scan_long_setups(
-            setup_type="all",
-            market=market,
-            min_price=min_price,
-            min_market_cap=min_market_cap,
-            limit=top_n * 5
-        )
+        # === NEW: BATCH SCANNING WITH 4-GATE VALIDATION ===
+        logger.info(f"🔍 Starting batch scan: {batch_size} stocks/batch, max {max_scan}, require 4/4 gates: {require_4_gates}")
 
-        short_candidates = scanner.scan_short_setups(
-            setup_type="all",
-            market=market,
-            min_price=min_price,
-            min_market_cap=min_market_cap,
-            limit=top_n * 5
-        )
+        # Collect 4/4 gate passers
+        validated_long = []
+        validated_short = []
+        total_scanned_long = 0
+        total_scanned_short = 0
+        stocks_seen = set()  # Avoid duplicates
 
-        analyzed_long = []
-        analyzed_short = []
+        # Track rejections for debugging
+        rejection_reasons = {"LONG": {}, "SHORT": {}}  # gate_name -> count
+        scan_errors = []
+        timeout_occurred = False
 
-        if include_deep_analysis and ANALYZER_AVAILABLE:
-            analyzer = ScannerAnalyzer()
+        # Fetch ALL candidates upfront (TradingView doesn't support pagination)
+        logger.info(f"📡 Fetching all candidates from scanner (limit={max_scan})...")
 
-            # Helper functions to pass to analyzer
-            def get_technical(ticker, period="3mo", include_ml_analysis=False):
-                return TechnicalAnalysis.analyze_comprehensive(
-                    yf_call(ticker, "history", period=period, interval="1d")
-                )
+        try:
+            all_long_candidates = scanner.scan_long_setups(
+                setup_type="all",
+                market=market,
+                min_price=min_price,
+                min_market_cap=min_market_cap,
+                limit=max_scan
+            )
+            logger.info(f"   Got {len(all_long_candidates)} LONG candidates from TradingView")
+        except Exception as e:
+            scan_errors.append(f"LONG scan error: {str(e)}")
+            logger.error(f"❌ LONG scanner failed: {e}")
+            all_long_candidates = []
 
-            # Analyze top LONG candidates
-            for c in long_candidates[:top_n * 2]:
-                try:
-                    ohlcv = _get_ohlcv_for_ticker(c['symbol'])
+        try:
+            all_short_candidates = scanner.scan_short_setups(
+                setup_type="all",
+                market=market,
+                min_price=min_price,
+                min_market_cap=min_market_cap,
+                limit=max_scan
+            )
+            logger.info(f"   Got {len(all_short_candidates)} SHORT candidates from TradingView")
+        except Exception as e:
+            scan_errors.append(f"SHORT scan error: {str(e)}")
+            logger.error(f"❌ SHORT scanner failed: {e}")
+            all_short_candidates = []
 
-                    # Get technical data for Brooks analysis
-                    tech_data = None
-                    try:
-                        hist = yf_call(c['symbol'], "history", period="3mo", interval="1d")
-                        if hist is not None and not hist.empty:
-                            tech_data = {
-                                'analysis': TechnicalAnalysis.calculate_comprehensive_indicators(hist)
-                            }
-                    except Exception:
-                        pass
+        # Validate LONG candidates
+        logger.info(f"📊 Validating LONG candidates (have {len(all_long_candidates)} to check)...")
+        for candidate in all_long_candidates:
+            # Check timeout
+            elapsed = time.time() - scan_start_time
+            if elapsed > MAX_SCAN_SECONDS:
+                logger.warning(f"⏱️ LONG scan timeout after {elapsed:.0f}s. Returning partial results.")
+                timeout_occurred = True
+                break
 
-                    # Run full analysis
-                    analysis = analyzer.analyze_candidate(
-                        ticker=c['symbol'],
-                        direction='long',
-                        tv_data=c,
-                        get_ohlcv_fn=lambda t=c['symbol']: _get_ohlcv_for_ticker(t)
-                    )
+            symbol = candidate['symbol']
+            if symbol in stocks_seen:
+                continue
+            stocks_seen.add(symbol)
+            total_scanned_long += 1
 
-                    # If we have better technical data, update Brooks
-                    if tech_data and ohlcv is not None:
-                        analysis['brooks_analysis'] = analyzer.brooks_analyzer.analyze(
-                            ticker=c['symbol'],
-                            direction='long',
-                            ohlcv_data=ohlcv,
-                            technical_data=tech_data
-                        )
-                        # Recalculate Brooks score
-                        analysis['scores']['brooks_score'] = analyzer._score_brooks(analysis['brooks_analysis'])
-                        analysis['composite_score'] = analyzer._calculate_composite(analysis['scores'])
-                        analysis['recommendation'] = analyzer._generate_recommendation(
-                            analysis['composite_score'], 'long', analysis['brooks_analysis']
-                        )
+            # Progress every 10 stocks
+            if total_scanned_long % 10 == 0:
+                logger.info(f"   Progress: {total_scanned_long}/{len(all_long_candidates)} scanned, {len(validated_long)} validated ({time.time() - scan_start_time:.0f}s)")
 
-                    analyzed_long.append(analysis)
-                except Exception as e:
-                    logger.warning(f"Analysis failed for {c['symbol']}: {e}")
-                    # Fall back to basic format
-                    analyzed_long.append({
-                        'symbol': c['symbol'],
+            try:
+                # Run FULL 4-gate validation
+                signal = generate_trading_signal(ticker=symbol, direction="LONG")
+
+                gate_status = signal.get('gate_status', {})
+                gates_passed = sum(1 for g in gate_status.values() if g == "PASS")
+
+                if require_4_gates and gates_passed == 4:
+                    validated_long.append({
+                        'symbol': symbol,
                         'direction': 'LONG',
-                        'price': c['price'],
-                        'composite_score': c['signal_strength'],
-                        'tv_data': c,
-                        'recommendation': {'label': c['recommendation']},
-                        'brooks_analysis': {'pattern': 'N/A - analysis failed'}
+                        'price': candidate.get('price', signal.get('current_price')),
+                        'signal': signal.get('signal'),
+                        'confidence': signal.get('confidence', 0),
+                        'gates_passed': gates_passed,
+                        'gate_status': gate_status,
+                        'trading_plan': signal.get('trading_plan'),
+                        'catalyst_analysis': signal.get('catalyst_analysis'),
+                        'freshness_analysis': signal.get('freshness_analysis'),
+                        'brooks_analysis': signal.get('brooks_analysis'),
+                        'quality_analysis': signal.get('quality_analysis'),
+                        'tv_data': candidate
                     })
+                    logger.info(f"✅ {symbol}: 4/4 gates PASSED | Confidence: {signal.get('confidence')}% [{len(validated_long)}/{top_n} found]")
+                    if len(validated_long) >= top_n:
+                        logger.info(f"🎯 Found {top_n} LONG candidates - moving to SHORT scan")
+                        break
 
-            # Analyze top SHORT candidates
-            for c in short_candidates[:top_n * 2]:
-                try:
-                    ohlcv = _get_ohlcv_for_ticker(c['symbol'])
+                elif not require_4_gates and gates_passed >= 3:
+                    validated_long.append({
+                        'symbol': symbol,
+                        'direction': 'LONG',
+                        'price': candidate.get('price', signal.get('current_price')),
+                        'signal': signal.get('signal'),
+                        'confidence': signal.get('confidence', 0),
+                        'gates_passed': gates_passed,
+                        'gate_status': gate_status,
+                        'trading_plan': signal.get('trading_plan'),
+                        'tv_data': candidate
+                    })
+                    if len(validated_long) >= top_n:
+                        logger.info(f"🎯 Found {top_n} LONG candidates - moving to SHORT scan")
+                        break
 
-                    tech_data = None
-                    try:
-                        hist = yf_call(c['symbol'], "history", period="3mo", interval="1d")
-                        if hist is not None and not hist.empty:
-                            tech_data = {
-                                'analysis': TechnicalAnalysis.calculate_comprehensive_indicators(hist)
-                            }
-                    except Exception:
-                        pass
+                else:
+                    # Track rejection reasons
+                    for gate_name, gate_val in gate_status.items():
+                        if gate_val != "PASS":
+                            rejection_reasons["LONG"][gate_name] = rejection_reasons["LONG"].get(gate_name, 0) + 1
+                    logger.debug(f"❌ {symbol}: {gates_passed}/4 gates - {gate_status}")
 
-                    analysis = analyzer.analyze_candidate(
-                        ticker=c['symbol'],
-                        direction='short',
-                        tv_data=c,
-                        get_ohlcv_fn=lambda t=c['symbol']: _get_ohlcv_for_ticker(t)
-                    )
+            except Exception as e:
+                scan_errors.append(f"{symbol}: {str(e)[:50]}")
+                logger.warning(f"Validation failed for {symbol}: {e}")
 
-                    if tech_data and ohlcv is not None:
-                        analysis['brooks_analysis'] = analyzer.brooks_analyzer.analyze(
-                            ticker=c['symbol'],
-                            direction='short',
-                            ohlcv_data=ohlcv,
-                            technical_data=tech_data
-                        )
-                        analysis['scores']['brooks_score'] = analyzer._score_brooks(analysis['brooks_analysis'])
-                        analysis['composite_score'] = analyzer._calculate_composite(analysis['scores'])
-                        analysis['recommendation'] = analyzer._generate_recommendation(
-                            analysis['composite_score'], 'short', analysis['brooks_analysis']
-                        )
+        # Validate SHORT candidates (only if LONG didn't timeout)
+        stocks_seen_short = set()
+        if not timeout_occurred:
+            logger.info(f"📊 Validating SHORT candidates (have {len(all_short_candidates)} to check)...")
 
-                    analyzed_short.append(analysis)
-                except Exception as e:
-                    logger.warning(f"Analysis failed for {c['symbol']}: {e}")
-                    analyzed_short.append({
-                        'symbol': c['symbol'],
+        for candidate in all_short_candidates:
+            # Check timeout
+            elapsed = time.time() - scan_start_time
+            if elapsed > MAX_SCAN_SECONDS:
+                logger.warning(f"⏱️ SHORT scan timeout after {elapsed:.0f}s. Returning partial results.")
+                timeout_occurred = True
+                break
+
+            if len(validated_short) >= top_n:
+                break
+            if total_scanned_short >= max_scan:
+                break
+
+            symbol = candidate['symbol']
+            if symbol in stocks_seen_short:
+                continue
+            stocks_seen_short.add(symbol)
+            total_scanned_short += 1
+
+            # Progress every 10 stocks
+            if total_scanned_short % 10 == 0:
+                logger.info(f"   Progress: {total_scanned_short}/{len(all_short_candidates)} scanned, {len(validated_short)} validated ({time.time() - scan_start_time:.0f}s)")
+
+            try:
+                signal = generate_trading_signal(ticker=symbol, direction="SHORT")
+
+                gate_status = signal.get('gate_status', {})
+                gates_passed = sum(1 for g in gate_status.values() if g == "PASS")
+
+                if require_4_gates and gates_passed == 4:
+                    validated_short.append({
+                        'symbol': symbol,
                         'direction': 'SHORT',
-                        'price': c['price'],
-                        'composite_score': c['signal_strength'],
-                        'tv_data': c,
-                        'recommendation': {'label': c['recommendation']},
-                        'brooks_analysis': {'pattern': 'N/A - analysis failed'}
+                        'price': candidate.get('price', signal.get('current_price')),
+                        'signal': signal.get('signal'),
+                        'confidence': signal.get('confidence', 0),
+                        'gates_passed': gates_passed,
+                        'gate_status': gate_status,
+                        'trading_plan': signal.get('trading_plan'),
+                        'catalyst_analysis': signal.get('catalyst_analysis'),
+                        'freshness_analysis': signal.get('freshness_analysis'),
+                        'brooks_analysis': signal.get('brooks_analysis'),
+                        'quality_analysis': signal.get('quality_analysis'),
+                        'tv_data': candidate
                     })
+                    logger.info(f"✅ {symbol}: 4/4 gates PASSED | Confidence: {signal.get('confidence')}% [{len(validated_short)}/{top_n} found]")
+                    if len(validated_short) >= top_n:
+                        logger.info(f"🎯 Found {top_n} SHORT candidates - scan complete!")
+                        break
 
-            # Sort by composite score
-            analyzed_long.sort(key=lambda x: x.get('composite_score', 0), reverse=True)
-            analyzed_short.sort(key=lambda x: x.get('composite_score', 0), reverse=True)
+                elif not require_4_gates and gates_passed >= 3:
+                    validated_short.append({
+                        'symbol': symbol,
+                        'direction': 'SHORT',
+                        'price': candidate.get('price', signal.get('current_price')),
+                        'signal': signal.get('signal'),
+                        'confidence': signal.get('confidence', 0),
+                        'gates_passed': gates_passed,
+                        'gate_status': gate_status,
+                        'trading_plan': signal.get('trading_plan'),
+                        'tv_data': candidate
+                    })
+                    if len(validated_short) >= top_n:
+                        logger.info(f"🎯 Found {top_n} SHORT candidates - scan complete!")
+                        break
 
-        else:
-            # Basic format without deep analysis
-            for i, c in enumerate(long_candidates[:top_n]):
-                analyzed_long.append({
-                    'rank': i + 1,
-                    'symbol': c['symbol'],
-                    'direction': 'LONG',
-                    'price': c['price'],
-                    'composite_score': c['signal_strength'],
-                    'tv_data': c,
-                    'recommendation': {'label': c['recommendation']},
-                    'brooks_analysis': {'note': 'Deep analysis disabled'}
-                })
+                else:
+                    # Track rejection reasons
+                    for gate_name, gate_val in gate_status.items():
+                        if gate_val != "PASS":
+                            rejection_reasons["SHORT"][gate_name] = rejection_reasons["SHORT"].get(gate_name, 0) + 1
+                    logger.debug(f"❌ {symbol}: {gates_passed}/4 gates - {gate_status}")
 
-            for i, c in enumerate(short_candidates[:top_n]):
-                analyzed_short.append({
-                    'rank': i + 1,
-                    'symbol': c['symbol'],
-                    'direction': 'SHORT',
-                    'price': c['price'],
-                    'composite_score': c['signal_strength'],
-                    'tv_data': c,
-                    'recommendation': {'label': c['recommendation']},
-                    'brooks_analysis': {'note': 'Deep analysis disabled'}
-                })
+            except Exception as e:
+                scan_errors.append(f"{symbol}: {str(e)[:50]}")
+                logger.warning(f"Validation failed for {symbol}: {e}")
 
-        # Take top N after sorting
-        final_long = analyzed_long[:top_n]
-        final_short = analyzed_short[:top_n]
+        # Sort by confidence score (descending)
+        validated_long.sort(key=lambda x: x.get('confidence', 0), reverse=True)
+        validated_short.sort(key=lambda x: x.get('confidence', 0), reverse=True)
+
+        # Take top N
+        final_long = validated_long[:top_n]
+        final_short = validated_short[:top_n]
 
         # Add ranks
         for i, a in enumerate(final_long):
@@ -6058,56 +6627,141 @@ def scan_market_opportunities(
         for i, a in enumerate(final_short):
             a['rank'] = i + 1
 
-        # Generate text report
+        logger.info(f"📊 Scan complete: {len(final_long)} LONG, {len(final_short)} SHORT with 4/4 gates")
+
+        # Generate text report for 4/4 gate validated results
         report_lines = [
             "=" * 65,
-            f"    MARKET OPPORTUNITIES SCAN - {datetime.now(et).strftime('%Y-%m-%d %H:%M %Z')}",
+            f"    HIGH-QUALITY SCAN - {datetime.now(et).strftime('%Y-%m-%d %H:%M %Z')}",
             "=" * 65,
             f"Markets: {market.upper()} | Filters: Price>${min_price}, MCap>${min_market_cap:,}",
+            f"Batch Size: {batch_size} | Max Scan: {max_scan} | Require 4/4 Gates: {require_4_gates}",
+            "",
+            f"📊 SCAN STATISTICS:",
+            f"   LONG:  Scanned {total_scanned_long} → Found {len(final_long)} with 4/4 gates ({len(final_long)/max(total_scanned_long,1)*100:.1f}% pass rate)",
+            f"   SHORT: Scanned {total_scanned_short} → Found {len(final_short)} with 4/4 gates ({len(final_short)/max(total_scanned_short,1)*100:.1f}% pass rate)",
+            "",
+            "✅ ALL candidates below have passed FULL 4-gate validation:",
+            "   Gate 1: CATALYST (earnings/insider/upgrades)",
+            "   Gate 2: FRESHNESS (CVD aligned, exhaustion < 50)",
+            "   Gate 3: BROOKS (probability >= 55%, no HIGH trap)",
+            "   Gate 4: QUALITY (score >= 50)",
             "",
             "=" * 65,
-            "                TOP LONG CANDIDATES",
+            "                TOP LONG CANDIDATES (4/4 GATES)",
             "=" * 65,
         ]
 
-        if ANALYZER_AVAILABLE:
-            for a in final_long:
-                report_lines.append(format_analysis_report(a))
-
+        for a in final_long:
+            brooks = a.get('brooks_analysis', {})
+            trading_plan = a.get('trading_plan', {})
             report_lines.extend([
-                "=" * 65,
-                "                TOP SHORT CANDIDATES",
-                "=" * 65,
+                "",
+                f"#{a.get('rank')} {a['symbol']} - ${a.get('price', 0):.2f}",
+                f"   Signal: {a.get('signal')} | Confidence: {a.get('confidence')}%",
+                f"   Gates: {a.get('gates_passed')}/4 ✅",
+                f"   Brooks: {brooks.get('pattern', 'N/A')} | Prob: {brooks.get('probability', 0)}% | Trap: {brooks.get('trap_risk', 'N/A')}",
+                f"   Entry: ${trading_plan.get('entry_price', 0):.2f} | Stop: ${trading_plan.get('stop_loss', {}).get('price', 0):.2f} | Target: ${trading_plan.get('target_1', {}).get('price', 0):.2f}",
             ])
 
-            for a in final_short:
-                report_lines.append(format_analysis_report(a))
-        else:
-            for a in final_long:
-                report_lines.append(f"#{a.get('rank')} {a['symbol']} - ${a['price']:.2f} | Score: {a['composite_score']}")
-            report_lines.extend(["", "=" * 65, "                TOP SHORT CANDIDATES", "=" * 65])
-            for a in final_short:
-                report_lines.append(f"#{a.get('rank')} {a['symbol']} - ${a['price']:.2f} | Score: {a['composite_score']}")
+        if not final_long:
+            report_lines.append("\n   ❌ No LONG candidates passed 4/4 gates in this scan.")
+
+        report_lines.extend([
+            "",
+            "=" * 65,
+            "                TOP SHORT CANDIDATES (4/4 GATES)",
+            "=" * 65,
+        ])
+
+        for a in final_short:
+            brooks = a.get('brooks_analysis', {})
+            trading_plan = a.get('trading_plan', {})
+            report_lines.extend([
+                "",
+                f"#{a.get('rank')} {a['symbol']} - ${a.get('price', 0):.2f}",
+                f"   Signal: {a.get('signal')} | Confidence: {a.get('confidence')}%",
+                f"   Gates: {a.get('gates_passed')}/4 ✅",
+                f"   Brooks: {brooks.get('pattern', 'N/A')} | Prob: {brooks.get('probability', 0)}% | Trap: {brooks.get('trap_risk', 'N/A')}",
+                f"   Entry: ${trading_plan.get('entry_price', 0):.2f} | Stop: ${trading_plan.get('stop_loss', {}).get('price', 0):.2f} | Target: ${trading_plan.get('target_1', {}).get('price', 0):.2f}",
+            ])
+
+        if not final_short:
+            report_lines.append("\n   ❌ No SHORT candidates passed 4/4 gates in this scan.")
+
+        # Add rejection stats to report
+        total_elapsed = time.time() - scan_start_time
+        report_lines.extend([
+            "",
+            "=" * 65,
+            "                     SCAN DIAGNOSTICS",
+            "=" * 65,
+            f"⏱️  Total Time: {total_elapsed:.0f}s | Timeout: {'YES' if timeout_occurred else 'NO'}",
+            f"📡 Scanner: {scanner_source.upper()}",
+            "",
+        ])
+
+        # Show why stocks are failing gates
+        if rejection_reasons["LONG"]:
+            report_lines.append("❌ LONG Rejection Reasons:")
+            for gate, count in sorted(rejection_reasons["LONG"].items(), key=lambda x: x[1], reverse=True):
+                report_lines.append(f"   {gate}: {count} stocks failed")
+
+        if rejection_reasons["SHORT"]:
+            report_lines.append("❌ SHORT Rejection Reasons:")
+            for gate, count in sorted(rejection_reasons["SHORT"].items(), key=lambda x: x[1], reverse=True):
+                report_lines.append(f"   {gate}: {count} stocks failed")
+
+        if scan_errors:
+            report_lines.append(f"\n⚠️  Errors ({len(scan_errors)}):")
+            for err in scan_errors[:5]:  # Show first 5 errors
+                report_lines.append(f"   {err}")
+            if len(scan_errors) > 5:
+                report_lines.append(f"   ... and {len(scan_errors) - 5} more")
+
+        report_lines.append("")
 
         # Convert numpy types to native Python types for JSON serialization
-        return convert_numpy_types({
+        result = convert_numpy_types({
             "scan_time": datetime.now(et).strftime("%Y-%m-%d %H:%M:%S %Z"),
+            "market_regime": market_regime,
+            "scanner_source": scanner_source,
             "filters": {
                 "market": market,
                 "min_price": min_price,
                 "min_market_cap": f"${min_market_cap:,}",
-                "tier_filters": {
-                    "tier1_momentum": "ADX 20-40, RSI 40-65 (long) / 35-60 (short), EMA20 <5%",
-                    "tier2_pattern": "Consolidation Breakout, Volume 1.5-4x, Trend Days <6",
-                    "tier4_exclusions": "3mo >50%/-40%, ATR <2%, 52w proximity <5%"
-                }
+                "batch_size": batch_size,
+                "max_scan": max_scan,
+                "require_4_gates": require_4_gates
+            },
+            "stats": {
+                "long_scanned": total_scanned_long,
+                "long_passed": len(final_long),
+                "long_pass_rate": f"{len(final_long)/max(total_scanned_long,1)*100:.1f}%",
+                "short_scanned": total_scanned_short,
+                "short_passed": len(final_short),
+                "short_pass_rate": f"{len(final_short)/max(total_scanned_short,1)*100:.1f}%",
+                "elapsed_seconds": round(total_elapsed, 1),
+                "timeout_occurred": timeout_occurred,
+                "rejection_reasons": rejection_reasons,
+                "errors_count": len(scan_errors)
             },
             "long_candidates": final_long,
             "short_candidates": final_short,
-            "total_long_found": len(long_candidates),
-            "total_short_found": len(short_candidates),
+            "errors": scan_errors[:10] if scan_errors else [],  # Include first 10 errors
             "report": "\n".join(report_lines)
         })
+
+        # === PROPOSAL 5: Cache the result ===
+        _set_scan_cache(market, filters_hash, result)
+
+        # === AUTO-TRACK PICKS FOR VALIDATION ===
+        try:
+            _auto_track_picks(result, scanner_source)
+        except Exception as track_error:
+            logger.warning(f"Auto-tracking failed: {track_error}")
+
+        return result
 
     except Exception as e:
         logger.error(f"Error in scan_market_opportunities: {e}")
@@ -6175,7 +6829,21 @@ def scan_stocks_by_setup(
     direction = "LONG" if setup_type in long_setups else "SHORT"
 
     try:
-        scanner = get_scanner()
+        # === PROPOSAL 1: TradingView → Finviz Fallback Chain ===
+        scanner = None
+        scanner_source = "unknown"
+
+        try:
+            scanner = get_scanner()
+            scanner_source = "tradingview"
+        except Exception as tv_error:
+            logger.warning(f"TradingView failed: {tv_error}, trying Finviz fallback")
+            scanner = get_fallback_scanner()
+            if scanner:
+                scanner_source = "finviz"
+            else:
+                raise ValueError("No scanner available")
+
         et = pytz.timezone("America/New_York")
 
         if direction == "LONG":
@@ -6194,6 +6862,8 @@ def scan_stocks_by_setup(
                 min_market_cap=min_market_cap,
                 limit=limit
             )
+
+        logger.info(f"Found {len(candidates)} candidates for {setup_type} from {scanner_source}")
 
         # Setup type display names
         setup_names = {
@@ -6260,9 +6930,9 @@ def _calculate_fund_returns(ticker: str, periods: list[str] = None) -> dict:
     returns = {}
 
     try:
-        # Get max history for all calculations
-        hist = t.history(period="5y")
-        if hist.empty:
+        # Get max history for all calculations (Questrade primary, Yahoo fallback, cached)
+        hist = _get_ohlcv_cached(ticker, period="5y")
+        if hist is None or hist.empty:
             return {"error": "No price history available"}
 
         current_price = hist['Close'].iloc[-1]
@@ -6301,14 +6971,11 @@ def _calculate_risk_metrics(ticker: str, benchmark: str = "SPY") -> dict:
     import numpy as np
 
     try:
-        t = yf.Ticker(ticker)
-        b = yf.Ticker(benchmark)
+        # Get 3 years of data (Questrade primary, Yahoo fallback, cached)
+        fund_hist = _get_ohlcv_cached(ticker, period="3y")
+        bench_hist = _get_ohlcv_cached(benchmark, period="3y")
 
-        # Get 3 years of data
-        fund_hist = t.history(period="3y")
-        bench_hist = b.history(period="3y")
-
-        if fund_hist.empty:
+        if fund_hist is None or fund_hist.empty:
             return {"error": "No price history available"}
 
         # Align dates
@@ -7249,9 +7916,11 @@ def detect_catalyst_strength(ticker: str) -> dict[str, Any]:
                 recent_trades['date'] = pd.to_datetime(recent_trades['Start Date'], errors='coerce')
                 recent_trades = recent_trades[recent_trades['date'] >= thirty_days_ago]
 
-            if 'Transaction' in recent_trades.columns:
-                buys = recent_trades[recent_trades['Transaction'].str.contains('Purchase|Buy', case=False, na=False)]
-                sells = recent_trades[recent_trades['Transaction'].str.contains('Sale|Sell', case=False, na=False)]
+            # Column is named 'Text' in yfinance, not 'Transaction'
+            trans_col = 'Text' if 'Text' in recent_trades.columns else 'Transaction'
+            if trans_col in recent_trades.columns:
+                buys = recent_trades[recent_trades[trans_col].str.contains('Purchase|Buy', case=False, na=False)]
+                sells = recent_trades[recent_trades[trans_col].str.contains('Sale|Sell', case=False, na=False)]
 
                 buy_count = len(buys)
                 sell_count = len(sells)
@@ -7450,11 +8119,13 @@ def detect_insider_cluster(ticker: str, days: int = 60) -> dict[str, Any]:
             return result
 
         # Categorize transactions
+        # Column is named 'Text' in yfinance, not 'Transaction'
         buys = []
         sells = []
 
         for _, row in df.iterrows():
-            transaction = row.get('Transaction', '')
+            # Try 'Text' first (yfinance column name), then 'Transaction'
+            transaction = row.get('Text', row.get('Transaction', ''))
             insider = row.get('Insider', '')
             shares = row.get('Shares', 0)
             value = row.get('Value', 0)
@@ -7467,15 +8138,15 @@ def detect_insider_cluster(ticker: str, days: int = 60) -> dict[str, Any]:
                 "date": str(row.get('date', ''))[:10]
             }
 
-            if 'Purchase' in transaction or 'Buy' in transaction:
+            if 'Purchase' in str(transaction) or 'Buy' in str(transaction):
                 buys.append(trade_info)
 
                 # Flag C-suite
-                if any(title in insider.upper() for title in ['CEO', 'CFO', 'COO', 'PRESIDENT', 'CHAIRMAN']):
+                if any(title in str(insider).upper() for title in ['CEO', 'CFO', 'COO', 'PRESIDENT', 'CHAIRMAN']):
                     trade_info["notable"] = True
                     result["notable_trades"].append(trade_info)
 
-            elif 'Sale' in transaction or 'Sell' in transaction:
+            elif 'Sale' in str(transaction) or 'Sell' in str(transaction):
                 sells.append(trade_info)
 
         # Calculate totals
@@ -7908,9 +8579,9 @@ def analyze_competitors(ticker: str, top_n: int = 5) -> dict[str, Any]:
             "Communication Services": ["XLC", "VOX"]
         }
 
-        # Get target ticker performance
-        target_hist = t.history(period="3mo")
-        if target_hist.empty:
+        # Get target ticker performance (Questrade primary, Yahoo fallback, cached)
+        target_hist = _get_ohlcv_cached(ticker, period="3mo")
+        if target_hist is None or target_hist.empty:
             result["error"] = "Could not get price history"
             return result
 
@@ -7925,10 +8596,10 @@ def analyze_competitors(ticker: str, top_n: int = 5) -> dict[str, Any]:
         # Compare to sector ETF
         sector_etf = sector_etfs.get(sector, ["SPY"])[0]
         try:
-            etf = yf.Ticker(sector_etf)
-            etf_hist = etf.history(period="3mo")
+            # Get ETF history (Questrade primary, Yahoo fallback, cached)
+            etf_hist = _get_ohlcv_cached(sector_etf, period="3mo")
 
-            if not etf_hist.empty:
+            if etf_hist is not None and not etf_hist.empty:
                 etf_return_30d = (etf_hist['Close'].iloc[-1] / etf_hist['Close'].iloc[-22] - 1) * 100 if len(etf_hist) >= 22 else 0
                 etf_return_90d = (etf_hist['Close'].iloc[-1] / etf_hist['Close'].iloc[0] - 1) * 100
 
@@ -8094,9 +8765,9 @@ def analyze_competitors(ticker: str, top_n: int = 5) -> dict[str, Any]:
                 competitors = []
                 for peer in peers:
                     try:
-                        peer_t = yf.Ticker(peer)
-                        peer_hist = peer_t.history(period="3mo")
-                        if not peer_hist.empty and len(peer_hist) >= 22:
+                        # Get peer history (Questrade primary, Yahoo fallback, cached)
+                        peer_hist = _get_ohlcv_cached(peer, period="3mo")
+                        if peer_hist is not None and not peer_hist.empty and len(peer_hist) >= 22:
                             peer_30d = (peer_hist['Close'].iloc[-1] / peer_hist['Close'].iloc[-22] - 1) * 100
                             peer_90d = (peer_hist['Close'].iloc[-1] / peer_hist['Close'].iloc[0] - 1) * 100
 
@@ -8245,13 +8916,18 @@ def generate_trading_signal(
             # Get volume analysis for CVD
             volume_data = analyze_volume_tool(ticker, period="3mo")
 
+            # Get exhaustion score directly (FIXED: was using missing field from volume_data)
+            from investor_agent.technical_analysis_bootstrap import calculate_exhaustion_score
+            exhaustion_data = calculate_exhaustion_score(ticker, direction, period="3mo")
+            exhaustion = exhaustion_data.get("score", 50) if isinstance(exhaustion_data, dict) else 50
+
             if isinstance(volume_data, dict):
                 cvd_trend = volume_data.get("cvd_analysis", {}).get("cvd_trend", "FLAT")
-                exhaustion = volume_data.get("exhaustion_score", 50)
 
                 result["freshness_analysis"] = {
                     "cvd_trend": cvd_trend,
-                    "exhaustion_score": exhaustion
+                    "exhaustion_score": exhaustion,
+                    "exhaustion_level": exhaustion_data.get("level", "UNKNOWN") if isinstance(exhaustion_data, dict) else "UNKNOWN"
                 }
 
                 # Check CVD alignment
@@ -8276,14 +8952,30 @@ def generate_trading_signal(
             result["warnings"].append(f"Freshness check failed: {e}")
 
         # ========== GATE 3: AL BROOKS ANALYSIS ==========
+        # FIXED: Call AlBrooksAnalyzer directly with user-specified direction
+        # (same as scanner does) instead of using analyze_technical() which
+        # determines its own direction based on MA/MACD trends
         try:
-            technical_data = analyze_technical(ticker, period="3mo")
+            # Get OHLCV data for Brooks analysis
+            ohlcv = _get_ohlcv_cached(ticker, period="3mo")
 
-            if isinstance(technical_data, dict):
-                brooks = technical_data.get("al_brooks", {})
-                always_in = brooks.get("always_in_direction", "NEUTRAL")
+            # Get technical data for context (but NOT for Brooks direction)
+            technical_data = analyze_technical(ticker, period="3mo", include_ml_analysis=False, include_trend_score=False)
+
+            # Call AlBrooksAnalyzer directly with the USER-SPECIFIED direction
+            brooks_analyzer = AlBrooksAnalyzer()
+            brooks = brooks_analyzer.analyze(
+                ticker=ticker,
+                direction=direction.lower(),  # AlBrooks expects lowercase
+                ohlcv_data=ohlcv,
+                technical_data=technical_data or {}
+            )
+
+            if isinstance(brooks, dict):
+                always_in = brooks.get("always_in", "NEUTRAL")
                 trap_risk = brooks.get("trap_risk", "MEDIUM")
-                probability = brooks.get("trade_probability", 50)
+                # Use adjusted_probability (same as scanner)
+                probability = brooks.get("adjusted_probability", brooks.get("base_probability", 50))
                 pattern = brooks.get("pattern", "Unknown")
 
                 result["brooks_analysis"] = {
@@ -8459,6 +9151,404 @@ def generate_trading_signal(
         result["signal"] = "ERROR"
 
     return result
+
+
+# =============================================================================
+# RANKING VALIDATION SYSTEM
+# =============================================================================
+
+# Performance tracking storage (in-memory, persisted to JSON)
+_pick_history: list[dict] = []
+_pick_history_file = Path(__file__).parent / "pick_history.json"
+
+
+def _load_pick_history():
+    """Load pick history from JSON file."""
+    global _pick_history
+    if _pick_history_file.exists():
+        try:
+            with open(_pick_history_file, 'r') as f:
+                _pick_history = json.load(f)
+            logger.info(f"Loaded {len(_pick_history)} picks from history")
+        except Exception as e:
+            logger.warning(f"Failed to load pick history: {e}")
+            _pick_history = []
+
+
+def _save_pick_history():
+    """Save pick history to JSON file."""
+    try:
+        with open(_pick_history_file, 'w') as f:
+            json.dump(_pick_history, f, indent=2, default=str)
+        logger.debug(f"Saved {len(_pick_history)} picks to history")
+    except Exception as e:
+        logger.warning(f"Failed to save pick history: {e}")
+
+
+def track_scanner_pick(
+    ticker: str,
+    direction: str,
+    composite_score: float,
+    entry_price: float,
+    stop_price: float,
+    target_price: float,
+    signal: str,
+    scanner_source: str = "tradingview"
+) -> dict:
+    """
+    Track a scanner pick for future performance validation.
+
+    Args:
+        ticker: Stock symbol
+        direction: LONG or SHORT
+        composite_score: Composite score from scanner (0-100)
+        entry_price: Recommended entry price
+        stop_price: Stop loss price
+        target_price: Target price
+        signal: Signal type (BUY, WATCH, SKIP, etc.)
+        scanner_source: Data source (tradingview, finviz)
+
+    Returns:
+        dict: Pick record
+    """
+    from datetime import datetime
+    import pytz
+
+    et = pytz.timezone("America/New_York")
+    now = datetime.now(et)
+
+    pick = {
+        "id": f"{ticker}_{now.strftime('%Y%m%d_%H%M%S')}",
+        "ticker": ticker,
+        "direction": direction,
+        "composite_score": composite_score,
+        "entry_price": entry_price,
+        "stop_price": stop_price,
+        "target_price": target_price,
+        "signal": signal,
+        "scanner_source": scanner_source,
+        "picked_at": now.isoformat(),
+        "picked_date": now.strftime("%Y-%m-%d"),
+        # Forward returns (updated later)
+        "return_5d": None,
+        "return_10d": None,
+        "return_20d": None,
+        "hit_target": None,
+        "hit_stop": None,
+        "days_to_target": None,
+        "days_to_stop": None,
+        "outcome": None,  # WIN / LOSS / OPEN
+        "validated": False
+    }
+
+    _pick_history.append(pick)
+    _save_pick_history()
+
+    return pick
+
+
+def validate_pick_outcomes():
+    """
+    Validate outcomes for all tracked picks by fetching current prices.
+
+    Updates forward returns and outcome status for each pick.
+    """
+    from datetime import datetime, timedelta
+    import pytz
+
+    et = pytz.timezone("America/New_York")
+    now = datetime.now(et)
+    today = now.date()
+
+    validated_count = 0
+
+    for pick in _pick_history:
+        if pick.get("validated"):
+            continue
+
+        pick_date = datetime.fromisoformat(pick["picked_at"]).date()
+        days_since_pick = (today - pick_date).days
+
+        if days_since_pick < 1:
+            continue  # Need at least 1 day of data
+
+        ticker = pick["ticker"]
+        direction = pick["direction"]
+        entry_price = pick["entry_price"]
+        stop_price = pick["stop_price"]
+        target_price = pick["target_price"]
+
+        try:
+            # Fetch price history since pick
+            ohlcv = _get_ohlcv_for_ticker_v2(ticker, period="1mo")
+
+            if ohlcv is None or ohlcv.empty:
+                continue
+
+            # Filter to dates after pick
+            pick_datetime = datetime.fromisoformat(pick["picked_at"])
+            ohlcv_after = ohlcv[ohlcv.index > pick_datetime]
+
+            if ohlcv_after.empty:
+                continue
+
+            # Calculate forward returns
+            closes = ohlcv_after['Close'].values
+            current_price = closes[-1] if len(closes) > 0 else entry_price
+
+            # 5d, 10d, 20d returns
+            if len(closes) >= 5:
+                pick["return_5d"] = round((closes[4] - entry_price) / entry_price * 100, 2)
+            if len(closes) >= 10:
+                pick["return_10d"] = round((closes[9] - entry_price) / entry_price * 100, 2)
+            if len(closes) >= 20:
+                pick["return_20d"] = round((closes[19] - entry_price) / entry_price * 100, 2)
+                pick["validated"] = True
+
+            # Check if hit target or stop
+            if direction == "LONG":
+                highs = ohlcv_after['High'].values
+                lows = ohlcv_after['Low'].values
+
+                for i, (high, low) in enumerate(zip(highs, lows)):
+                    if high >= target_price and pick["hit_target"] is None:
+                        pick["hit_target"] = True
+                        pick["days_to_target"] = i + 1
+                    if low <= stop_price and pick["hit_stop"] is None:
+                        pick["hit_stop"] = True
+                        pick["days_to_stop"] = i + 1
+
+            else:  # SHORT
+                highs = ohlcv_after['High'].values
+                lows = ohlcv_after['Low'].values
+
+                for i, (high, low) in enumerate(zip(highs, lows)):
+                    if low <= target_price and pick["hit_target"] is None:
+                        pick["hit_target"] = True
+                        pick["days_to_target"] = i + 1
+                    if high >= stop_price and pick["hit_stop"] is None:
+                        pick["hit_stop"] = True
+                        pick["days_to_stop"] = i + 1
+
+            # Determine outcome
+            if pick["hit_target"] and not pick.get("hit_stop"):
+                pick["outcome"] = "WIN"
+            elif pick["hit_stop"] and not pick.get("hit_target"):
+                pick["outcome"] = "LOSS"
+            elif pick["hit_target"] and pick["hit_stop"]:
+                # Both hit - check which came first
+                if (pick.get("days_to_target") or 999) <= (pick.get("days_to_stop") or 999):
+                    pick["outcome"] = "WIN"
+                else:
+                    pick["outcome"] = "LOSS"
+            elif days_since_pick >= 20:
+                # 20 days passed without hitting target or stop
+                if direction == "LONG":
+                    pick["outcome"] = "WIN" if current_price > entry_price else "LOSS"
+                else:
+                    pick["outcome"] = "WIN" if current_price < entry_price else "LOSS"
+            else:
+                pick["outcome"] = "OPEN"
+
+            validated_count += 1
+
+        except Exception as e:
+            logger.warning(f"Failed to validate {ticker}: {e}")
+            continue
+
+    _save_pick_history()
+    return validated_count
+
+
+@mcp.tool()
+def get_ranking_validation_report() -> dict:
+    """
+    Generate a comprehensive ranking validation report.
+
+    Analyzes all tracked picks to show:
+    - Overall win rate
+    - Win rate by score bucket (60-70, 70-80, 80+)
+    - Win rate by signal type (BUY, WATCH, SKIP)
+    - Average returns by score bucket
+    - Score-return correlation
+
+    Returns:
+        dict: Comprehensive validation report proving (or disproving) ranking quality
+    """
+    _load_pick_history()
+
+    # Validate any unvalidated picks
+    validated_count = validate_pick_outcomes()
+
+    if not _pick_history:
+        return {
+            "status": "NO_DATA",
+            "message": "No picks tracked yet. Scanner picks will be tracked automatically.",
+            "how_to_track": "Run scan_market_opportunities() - picks are tracked automatically."
+        }
+
+    # Filter to picks with outcomes
+    picks_with_outcome = [p for p in _pick_history if p.get("outcome") in ["WIN", "LOSS"]]
+
+    if not picks_with_outcome:
+        open_picks = [p for p in _pick_history if p.get("outcome") == "OPEN"]
+        return {
+            "status": "PENDING",
+            "message": f"{len(open_picks)} picks tracked, waiting for 20-day validation period",
+            "tracked_picks": len(_pick_history),
+            "open_picks": len(open_picks)
+        }
+
+    # Calculate metrics
+    total_picks = len(picks_with_outcome)
+    wins = sum(1 for p in picks_with_outcome if p["outcome"] == "WIN")
+    losses = total_picks - wins
+    overall_win_rate = round(wins / total_picks * 100, 1) if total_picks > 0 else 0
+
+    # Win rate by score bucket
+    score_buckets = {
+        "40-50": {"wins": 0, "total": 0, "returns": []},
+        "50-60": {"wins": 0, "total": 0, "returns": []},
+        "60-70": {"wins": 0, "total": 0, "returns": []},
+        "70-80": {"wins": 0, "total": 0, "returns": []},
+        "80+": {"wins": 0, "total": 0, "returns": []},
+    }
+
+    for p in picks_with_outcome:
+        score = p.get("composite_score", 0)
+        ret_20d = p.get("return_20d")
+
+        if score >= 80:
+            bucket = "80+"
+        elif score >= 70:
+            bucket = "70-80"
+        elif score >= 60:
+            bucket = "60-70"
+        elif score >= 50:
+            bucket = "50-60"
+        else:
+            bucket = "40-50"
+
+        score_buckets[bucket]["total"] += 1
+        if p["outcome"] == "WIN":
+            score_buckets[bucket]["wins"] += 1
+        if ret_20d is not None:
+            score_buckets[bucket]["returns"].append(ret_20d)
+
+    # Calculate bucket stats
+    bucket_stats = {}
+    for bucket, data in score_buckets.items():
+        if data["total"] > 0:
+            bucket_stats[bucket] = {
+                "total_picks": data["total"],
+                "wins": data["wins"],
+                "losses": data["total"] - data["wins"],
+                "win_rate": round(data["wins"] / data["total"] * 100, 1),
+                "avg_return": round(sum(data["returns"]) / len(data["returns"]), 2) if data["returns"] else None
+            }
+
+    # Win rate by signal type
+    signal_stats = {}
+    for signal_type in ["BUY", "WATCH", "SKIP", "NO_TRADE"]:
+        signal_picks = [p for p in picks_with_outcome if p.get("signal") == signal_type]
+        if signal_picks:
+            signal_wins = sum(1 for p in signal_picks if p["outcome"] == "WIN")
+            signal_stats[signal_type] = {
+                "total_picks": len(signal_picks),
+                "wins": signal_wins,
+                "win_rate": round(signal_wins / len(signal_picks) * 100, 1)
+            }
+
+    # Calculate correlation (simple linear)
+    scores = [p.get("composite_score", 0) for p in picks_with_outcome if p.get("return_20d") is not None]
+    returns = [p.get("return_20d") for p in picks_with_outcome if p.get("return_20d") is not None]
+
+    correlation = None
+    if len(scores) >= 5:
+        try:
+            import numpy as np
+            correlation = round(np.corrcoef(scores, returns)[0, 1], 3)
+        except:
+            pass
+
+    # Build report
+    report = {
+        "status": "OK",
+        "summary": {
+            "total_picks_tracked": len(_pick_history),
+            "picks_with_outcome": total_picks,
+            "open_picks": len([p for p in _pick_history if p.get("outcome") == "OPEN"]),
+            "overall_win_rate": overall_win_rate,
+            "total_wins": wins,
+            "total_losses": losses
+        },
+        "score_bucket_analysis": bucket_stats,
+        "signal_type_analysis": signal_stats,
+        "score_return_correlation": correlation,
+        "interpretation": {
+            "ranking_quality": "GOOD" if overall_win_rate >= 55 else "NEEDS_IMPROVEMENT" if overall_win_rate >= 45 else "POOR",
+            "correlation_strength": "STRONG" if correlation and correlation > 0.3 else "MODERATE" if correlation and correlation > 0.1 else "WEAK" if correlation else "UNKNOWN",
+            "recommendation": "Higher scores DO correlate with better returns" if correlation and correlation > 0.1 else "Score correlation unclear - more data needed"
+        },
+        "validation_date": datetime.now().isoformat()
+    }
+
+    # Add markdown report
+    md = f"""
+## 📊 Scanner Ranking Validation Report
+
+### Overall Performance
+- **Total Picks**: {total_picks}
+- **Win Rate**: {overall_win_rate}%
+- **Wins**: {wins} | **Losses**: {losses}
+
+### Win Rate by Score Bucket
+"""
+    for bucket, stats in bucket_stats.items():
+        md += f"- **{bucket}**: {stats['win_rate']}% ({stats['wins']}/{stats['total_picks']} wins)"
+        if stats['avg_return'] is not None:
+            md += f" | Avg Return: {stats['avg_return']:+.1f}%"
+        md += "\n"
+
+    md += f"""
+### Score-Return Correlation
+- **Correlation**: {correlation if correlation else 'N/A'}
+- **Interpretation**: {report['interpretation']['correlation_strength']}
+
+### Conclusion
+**Ranking Quality**: {report['interpretation']['ranking_quality']}
+{report['interpretation']['recommendation']}
+"""
+
+    report["markdown_report"] = md
+
+    return report
+
+
+# Auto-track picks when scanner runs (hook into scan_market_opportunities result)
+def _auto_track_picks(result: dict, scanner_source: str = "tradingview"):
+    """Automatically track picks from scan results."""
+    for direction in ["long_candidates", "short_candidates"]:
+        candidates = result.get(direction, [])
+        for c in candidates[:3]:  # Only track top 3
+            try:
+                brooks = c.get("brooks_analysis", {})
+                track_scanner_pick(
+                    ticker=c.get("symbol", "UNKNOWN"),
+                    direction="LONG" if "long" in direction else "SHORT",
+                    composite_score=c.get("composite_score", 0),
+                    entry_price=brooks.get("entry", c.get("price", 0)),
+                    stop_price=brooks.get("stop", 0),
+                    target_price=brooks.get("target", 0),
+                    signal=c.get("recommendation", {}).get("label", "UNKNOWN"),
+                    scanner_source=scanner_source
+                )
+            except Exception as e:
+                logger.warning(f"Failed to track pick: {e}")
+
+
+# Load history on module import
+_load_pick_history()
 
 
 if __name__ == "__main__":

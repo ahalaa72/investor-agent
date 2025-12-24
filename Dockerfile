@@ -18,6 +18,7 @@ ENV PATH="/root/.local/bin:$PATH"
 # Install all dependencies in one go for faster builds
 RUN /root/.local/bin/uv pip install --system \
     alpaca-py \
+    "finvizfinance>=0.14.0" \
     "hishel>=0.1.3" \
     "html5lib>=1.1" \
     "httpx>=0.28.1" \

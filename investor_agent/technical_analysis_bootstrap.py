@@ -17,11 +17,25 @@ import logging
 warnings.filterwarnings('ignore')
 logger = logging.getLogger(__name__)
 
+# Module-level cache for price history (5 minute TTL)
+_price_history_cache: Dict[str, tuple] = {}
+_cache_ttl_seconds = 300  # 5 minutes
+
 
 def _get_price_history(ticker: str, period: str = "3mo") -> pd.DataFrame:
     """
     Get price history with Questrade as primary, yfinance as fallback.
+    CACHED: Same ticker/period will return cached data for 5 minutes.
     """
+    # Check cache first
+    cache_key = f"{ticker}_{period}"
+    if cache_key in _price_history_cache:
+        df, timestamp = _price_history_cache[cache_key]
+        age_seconds = (datetime.now() - timestamp).total_seconds()
+        if age_seconds < _cache_ttl_seconds:
+            logger.debug(f"💾 Price history cache HIT for {ticker} (age: {age_seconds:.1f}s)")
+            return df.copy()
+
     # Map period to days
     period_days = {
         '1d': 1, '5d': 5, '1mo': 30, '3mo': 90, '6mo': 180,
@@ -60,6 +74,8 @@ def _get_price_history(ticker: str, period: str = "3mo") -> pd.DataFrame:
 
                 if len(df) >= 10:
                     logger.info(f"Using Questrade data for {ticker}")
+                    # Cache before returning
+                    _price_history_cache[cache_key] = (df.copy(), datetime.now())
                     return df
 
     except Exception as e:
@@ -73,6 +89,10 @@ def _get_price_history(ticker: str, period: str = "3mo") -> pd.DataFrame:
     # Normalize timezone-aware index to avoid pandas conversion issues
     if isinstance(df.index, pd.DatetimeIndex) and df.index.tz is not None:
         df.index = df.index.tz_localize(None)
+
+    # Cache before returning
+    if not df.empty:
+        _price_history_cache[cache_key] = (df.copy(), datetime.now())
 
     return df
 
