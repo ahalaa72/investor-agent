@@ -98,7 +98,18 @@ Every trade MUST have an identifiable catalyst. Without a catalyst, there's no r
 
 **Date:** YYYY-MM-DD HH:MM ET
 **Market:** US Stocks (Price > $2, MCap > $1B)
-**Scanned:** X,XXX stocks
+
+---
+
+## 📊 SCAN STATISTICS
+
+| Direction | Raw Candidates | Validated | 4/4 Gates | 3/4 Gates | Returned |
+|-----------|----------------|-----------|-----------|-----------|----------|
+| LONG      | XXX            | XX        | X         | X         | 3        |
+| SHORT     | XXX            | XX        | X         | X         | 3        |
+
+**Pass Rate:** X.X% (4/4) | X.X% (3+/4)
+**Elapsed:** XXs | **Relaxed:** [YES/NO - filled with 3/4 if needed]
 
 ---
 
@@ -185,13 +196,30 @@ Is Leader:        [YES / NO]
 
 **🚨 GATE 1: CATALYST CHECK** - NO CATALYST = NO TRADE
 
-#### Catalyst Strength Assessment [detect_catalyst_strength] ⭐ NEW
+#### Catalyst Strength Assessment [detect_catalyst_strength] ⭐ ENHANCED (Dec 2025)
 ```
+Catalyst Direction: [BULLISH / BEARISH / NEUTRAL]
 Catalyst Strength:  [STRONG / MODERATE / WEAK / NONE]
+Catalyst Score:     XX/100 (Bullish: XX, Bearish: XX)
 Trade Allowed:      [YES / NO]
 Primary Catalyst:   [Description]
-Catalyst Score:     XX/100
 ```
+
+**NEW ENHANCED FIELDS:**
+```
+News Sentiment:     [BULLISH / BEARISH / NEUTRAL] (X headlines analyzed)
+Major Catalysts:
+  - "[Headline]" - [Source] - [X days ago] [BULLISH/BEARISH]
+  - "[Headline]" - [Source] - [X days ago] [BULLISH/BEARISH]
+
+Insider Context:    10b5-1 Detected: [YES/NO] | Confidence: [HIGH/MEDIUM/LOW]
+Warnings:           [List any items requiring manual verification]
+```
+
+**Key Enhancements:**
+- **Web Search**: Fetches news from Google News RSS with publication dates
+- **Recency Scoring**: Only news ≤3 days old counts; today's news = 2x weight
+- **10b5-1 Detection**: Discounts insider selling 75% if pre-planned sale detected
 
 **If NONE → REJECT CANDIDATE. Do not continue analysis.**
 
@@ -991,7 +1019,28 @@ Win/Loss Record:          XXW / XXL
 
 ## WORKFLOW
 
-### Step 1: Run the Scanner (2 min)
+### Step 1: Run the Scanner (2-5 min)
+
+**Option A: Separate Calls (Recommended - More Reliable)**
+```python
+# Step 1a: Get raw LONG candidates (verify scanner works)
+get_raw_scan_candidates(direction="LONG", market="america", limit=500)
+# Returns: 200-500 raw LONG candidates from TradingView (no validation)
+
+# Step 1b: Validate LONG candidates
+scan_long_candidates(market="america", max_scan=50, top_n=3)
+# Returns: Top 3 LONG with 4-gate validation + progress log
+
+# Step 1c: Get raw SHORT candidates
+get_raw_scan_candidates(direction="SHORT", market="america", limit=500)
+# Returns: 200-500 raw SHORT candidates from TradingView (no validation)
+
+# Step 1d: Validate SHORT candidates
+scan_short_candidates(market="america", max_scan=50, top_n=3)
+# Returns: Top 3 SHORT with 4-gate validation + progress log
+```
+
+**Option B: One-Shot Full Scan**
 ```python
 # Call the scan tool with US market (default)
 scan_market_opportunities(
@@ -1035,8 +1084,8 @@ get_institutional_holders(ticker)              # 13F accumulation/distribution
 # ═══════════════════════════════════════════════════════════
 # Section C: McMillan Options Strategy
 # ═══════════════════════════════════════════════════════════
-analyze_options_mcmillan(ticker, direction="LONG")  # Full McMillan analysis
-# Returns: IV Rank, P/C Ratio, Max Pain, UOA, Strategy Recommendation
+analyze_options_mcmillan(ticker)  # Full McMillan analysis (direction-independent)
+# Returns: TRUE IV Rank, P/C Ratio, Max Pain, UOA, IV-based strategies, Quality Score
 
 # ═══════════════════════════════════════════════════════════
 # Section D: Al Brooks Analysis + Freshness (Gates 2 & 3)
@@ -1113,10 +1162,20 @@ Create the final ranking table with:
 
 ---
 
-### Scanner Tool
-| Tool | Purpose |
-|------|---------|
-| `scan_market_opportunities()` | Find top LONG/SHORT candidates |
+### Scanner Tools (Use in Order)
+
+| Tool | Purpose | When to Use |
+|------|---------|-------------|
+| `get_raw_scan_candidates(direction, limit)` | Raw TradingView list (NO validation) | Verify scanner returns candidates |
+| `scan_long_candidates(max_scan, top_n)` | LONG only with 4-gate validation | After raw list verified |
+| `scan_short_candidates(max_scan, top_n)` | SHORT only with 4-gate validation | After LONG scan |
+| `scan_market_opportunities(top_n)` | Full scan (LONG + SHORT) | One-shot full scan |
+
+**Recommended Workflow:**
+1. `get_raw_scan_candidates(direction="LONG")` → See raw LONG list
+2. `scan_long_candidates()` → Validate LONG candidates
+3. `get_raw_scan_candidates(direction="SHORT")` → See raw SHORT list
+4. `scan_short_candidates()` → Validate SHORT candidates
 
 ### Section A: Company Overview + Quality (Gate 4)
 | Tool | Data |

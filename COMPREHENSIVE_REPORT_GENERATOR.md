@@ -94,6 +94,24 @@ else:
 - `fetch_intraday_1h()` (sync but needs market open)
 - `fetch_intraday_15m()` (sync but needs market open)
 
+### 🚨 CATALYST VERIFICATION (Dec 2025) - REAL MONEY PROTECTION
+
+**MANDATORY for Phase 2:**
+1. **ALWAYS run `detect_catalyst_strength()`** before analyzing catalysts
+2. **Check verification_rate ≥ 50%** before recommending trade
+3. **If trade_allowed = False** → DO NOT RECOMMEND TRADE
+4. **If requires_manual_verification = True** → Warn user to verify manually
+5. **Old news (>3 days) = STALE** - Already priced in, DO NOT TRADE on it
+6. **Report verified_catalysts and unverified_catalysts** in Section 7
+
+**Verification Confidence Levels:**
+| Level | Meaning | Trade Action |
+|-------|---------|--------------|
+| **HIGH** | SEC filing, credible source (Reuters, Bloomberg, CNBC), API data | ✅ Trade allowed |
+| **MEDIUM** | Recent but unverified source | ⚠️ Trade with caution |
+| **LOW** | Old news (>3 days) or unknown source | ❌ Stale - DO NOT TRADE |
+| **UNVERIFIED** | Could not verify | 🚫 BLOCKED until verified |
+
 ### DATA SOURCE TAGGING
 
 Every data point in the report MUST be tagged with its source:
@@ -1229,7 +1247,7 @@ Al Brooks teaches us to **read price action like a language** - every bar tells 
 **Bottom Line:**
 [2-3 sentence summary of McMillan options analysis and recommended strategy with specific strikes]
 
-**Tools:** `analyze_options_mcmillan(ticker, direction, holding_period_days)`
+**Tools:** `analyze_options_mcmillan(ticker, holding_period_days)` (direction-independent)
 
 ---
 
@@ -1696,24 +1714,52 @@ McMillan's framework teaches us: **"Match your strategy to market conditions, no
 
 ---
 
-### 7. CATALYST VERIFICATION (Phase 2 - 13.4%)
+### 7. CATALYST VERIFICATION (Phase 2 - 13.4%) 🚨 WITH VERIFICATION SYSTEM
 
 **Note:** Catalyst weight reduced from 15.2% to 13.4% to accommodate McMillan Options Strategy (17.9%)
+
+**🚨 VERIFICATION SYSTEM (Dec 2025) - REAL MONEY PROTECTION:**
+
+| Metric | Value | Status |
+|--------|-------|--------|
+| **Verification Rate** | XX% | [≥50% OK / <50% BLOCKED] |
+| **High Confidence** | X/X catalysts | [Credible sources] |
+| **Requires Manual** | X catalysts | [⚠️ VERIFY BEFORE TRADING] |
+| **Trade Allowed** | [TRUE/FALSE] | [detect_catalyst_strength] |
+
+**✅ VERIFIED CATALYSTS:** [detect_catalyst_strength.verified_catalysts]
+| Type | Description | Confidence | Method |
+|------|-------------|------------|--------|
+| EARNINGS | Earnings on YYYY-MM-DD | HIGH | Company IR via API |
+| NEWS | "[Headline]" | HIGH | Credible source (Reuters) |
+| INSIDER | Insider buying detected | HIGH | SEC Filing via API |
+
+**⚠️ UNVERIFIED CATALYSTS:** [detect_catalyst_strength.unverified_catalysts]
+| Type | Warning | Action Required |
+|------|---------|-----------------|
+| NEWS | OLD NEWS (X days ago) | DO NOT TRADE - Already priced in |
+| INSIDER | Selling context unknown | Search SEC EDGAR for Form 4 |
 
 **Primary Catalyst:**
 - Event: [Earnings / Product Launch / Partnership]
 - Date: YYYY-MM-DD (X days away)
 - Expected impact: [High/Medium/Low]
+- **Verification Status:** [VERIFIED HIGH / VERIFIED MEDIUM / UNVERIFIED]
 
 **Catalyst Details:**
 - Earnings estimate: $X.XX vs $X.XX prior
 - Revenue estimate: $XXB (+XX% YoY)
 - Historical beat rate: XX% (last 4 quarters)
+- **10b5-1 Check:** [Not applicable / Pre-planned sale detected / Discretionary selling]
 
 **Secondary Catalysts:**
 - [List other upcoming events < 30 days]
 
-**Tools:** `get_nasdaq_earnings_calendar()`, `get_ticker_data()`
+**News Sentiment:** [detect_catalyst_strength.news_sentiment]
+- Sentiment: [BULLISH/BEARISH/NEUTRAL/MIXED]
+- Recent headlines: X bullish, X bearish (last 3 days only)
+
+**Tools:** `detect_catalyst_strength()` ⭐ MANDATORY, `get_nasdaq_earnings_calendar()`, `get_ticker_data()`
 
 ---
 

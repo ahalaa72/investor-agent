@@ -319,7 +319,7 @@ else:
 
 **Template:**
 ```python
-mcmillan = analyze_options_mcmillan(ticker, direction="LONG")
+mcmillan = analyze_options_mcmillan(ticker)  # direction-independent
 
 iv_rank = mcmillan["iv_analysis"]["iv_rank"]
 pc_ratio = mcmillan["pc_ratio_analysis"]["volume_pc_ratio"]

@@ -134,13 +134,14 @@ To use Questrade features, you need to:
 - **`fetch_intraday_1h(stock, window=200)`** - Fetch 1-Hour historical stock bars using Alpaca API. Returns CSV string with timestamp and close price data in EST timezone.
 
 ### McMillan Options Strategy ⭐
-- **`analyze_options_mcmillan(ticker, direction="LONG", holding_period_days=30, use_questrade_greeks=True)`** - Comprehensive McMillan options analysis (Phase 3 - 13.4% weight). Returns:
-  - **IV Analysis**: IV Rank, IV Percentile, Divergence Check (ALIGNED/DIVERGENT)
+- **`analyze_options_mcmillan(ticker, holding_period_days=30, use_questrade_greeks=True)`** - Comprehensive McMillan options analysis (Direction-Independent). Returns:
+  - **IV Analysis**: TRUE IV Rank/Percentile using actual options IV, IV Premium vs HV
   - **P/C Ratio**: Contrarian Signal (BULLISH if >1.2 / BEARISH if <0.5 / NO SIGNAL 0.5-1.2)
-  - **Max Pain**: Strike, distance, reliability (HIGH/MEDIUM/LOW based on expiry + OI)
+  - **Max Pain**: Strike, distance, OI positioning
   - **UOA**: Unusual Options Activity detection (Volume > 2x OI)
-  - **Strategy**: McMillan matrix recommendation based on IV environment + direction
-  - **Greeks**: Delta, Gamma, Theta, Vega (from Questrade if available)
+  - **Strategy Suggestions**: IV-based (HIGH IV → sell premium, LOW IV → buy premium)
+  - **Greeks**: Delta, Gamma, Theta, Vega (from Questrade real-time if available)
+  - **Options Quality Score**: 0-100 measuring trade environment quality
 
 ### Questrade Integration (Optional)
 

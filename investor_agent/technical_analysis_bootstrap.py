@@ -1732,11 +1732,14 @@ def count_trend_days(df: pd.DataFrame, direction: str = "LONG") -> int:
 
 def calculate_exhaustion_score(
     ticker: str,
-    direction: str = "LONG",
+    direction: str | None = None,
     period: str = "3mo"
 ) -> dict:
     """
     Composite exhaustion score (0-100) combining multiple signals.
+
+    NOW DIRECTION-INDEPENDENT: Calculates exhaustion for BOTH directions
+    and returns which direction is fresher (less exhausted).
 
     PURPOSE: Detect when a move is running out of steam.
 
@@ -1745,28 +1748,21 @@ def calculate_exhaustion_score(
     - LOW exhaustion score (<30) = Move has room to run, HOLD
 
     For SHORT candidates:
-    - HIGH bullish exhaustion = Good SHORT entry (buyers exhausted)
-    - HIGH bearish exhaustion = Avoid SHORT (sellers exhausted)
+    - HIGH long_exhaustion = Good SHORT entry (buyers exhausted)
+    - HIGH short_exhaustion = Avoid SHORT (sellers exhausted)
 
-    Scoring Components (100 points total, revised weighting):
-    - CVD Divergence: 20 pts (reduced - OHLCV approximation)
-    - RSI Divergence: 20 pts (momentum confirmation)
-    - Trend Day Count: 25 pts (increased - high reliability)
-    - VWAP Extension: 15 pts (reduced - less relevant for swing)
-    - Volume Decline: 20 pts (increased - very reliable)
-
-    Tiered Response:
-    - 0-59: PROCEED - No exhaustion concern
-    - 60-69: FLAG as "Exhaustion Warning"
-    - 70-79: REDUCE position size by 50%
-    - 80+: EXCLUDE from scanner
+    Scoring Components (100 points total per direction):
+    - CVD Divergence: 20 pts
+    - RSI Divergence: 20 pts
+    - Trend Day Count: 25 pts
+    - VWAP Extension: 15 pts
+    - Volume Decline: 20 pts
 
     Returns:
         {
-            "score": int (0-100),
-            "level": "NO_EXHAUSTION" | "LOW_EXHAUSTION" | "MODERATE_EXHAUSTION" | "HIGH_EXHAUSTION",
-            "suggested_action": "PROCEED" | "FLAG" | "REDUCE_SIZE" | "EXCLUDE",
-            "components": {...},
+            "fresh_direction": "LONG" | "SHORT" | "NEUTRAL",
+            "long_exhaustion": {"score": int, "level": str, "action": str, "components": {}},
+            "short_exhaustion": {"score": int, "level": str, "action": str, "components": {}},
             "interpretation": "..."
         }
     """
@@ -1776,154 +1772,189 @@ def calculate_exhaustion_score(
         if df.empty or len(df) < 30:
             return {"error": f"Insufficient data for {ticker}", "score": 0, "level": "UNKNOWN"}
 
-        score = 0
-        components = {}
-        direction = direction.upper()
-
-        # Component 1: CVD Divergence (20 pts max)
+        # Get divergence signals (direction-independent)
         cvd_result = detect_cvd_divergence(df)
-        cvd_pts = 0
-
-        if direction == "LONG":
-            # For LONG, bearish divergence = exhausted buyers = bad for position
-            if cvd_result["signal"] == "BEARISH_DIVERGENCE":
-                if cvd_result["strength"] == "STRONG":
-                    cvd_pts = 20
-                elif cvd_result["strength"] == "MODERATE":
-                    cvd_pts = 13
-                else:
-                    cvd_pts = 7
-                components["cvd_divergence"] = {"points": cvd_pts, "signal": "BEARISH", "note": "Buyers exhausted"}
-        else:  # SHORT
-            # For SHORT, bullish divergence = exhausted sellers = bad for short
-            if cvd_result["signal"] == "BULLISH_DIVERGENCE":
-                if cvd_result["strength"] == "STRONG":
-                    cvd_pts = 20
-                elif cvd_result["strength"] == "MODERATE":
-                    cvd_pts = 13
-                else:
-                    cvd_pts = 7
-                components["cvd_divergence"] = {"points": cvd_pts, "signal": "BULLISH", "note": "Sellers exhausted"}
-
-        if "cvd_divergence" not in components:
-            components["cvd_divergence"] = {"points": 0, "signal": "NONE", "note": "No opposing divergence"}
-        score += cvd_pts
-
-        # Component 2: RSI Divergence (20 pts max)
         rsi_result = detect_rsi_divergence(df)
-        rsi_pts = 0
-
-        if direction == "LONG" and rsi_result["signal"] == "BEARISH_DIVERGENCE":
-            if rsi_result["strength"] == "STRONG":
-                rsi_pts = 20
-            elif rsi_result["strength"] == "MODERATE":
-                rsi_pts = 13
-            else:
-                rsi_pts = 7
-            components["rsi_divergence"] = {"points": rsi_pts, "signal": "BEARISH", "rsi": rsi_result["rsi_current"]}
-        elif direction == "SHORT" and rsi_result["signal"] == "BULLISH_DIVERGENCE":
-            if rsi_result["strength"] == "STRONG":
-                rsi_pts = 20
-            elif rsi_result["strength"] == "MODERATE":
-                rsi_pts = 13
-            else:
-                rsi_pts = 7
-            components["rsi_divergence"] = {"points": rsi_pts, "signal": "BULLISH", "rsi": rsi_result["rsi_current"]}
-        else:
-            components["rsi_divergence"] = {"points": 0, "signal": "NONE", "rsi": rsi_result["rsi_current"]}
-        score += rsi_pts
-
-        # Component 3: Trend Day Count (25 pts max - highest weight)
-        trend_days = count_trend_days(df, direction)
-        trend_pts = 0
-
-        if trend_days >= 8:
-            trend_pts = 25
-        elif trend_days >= 6:
-            trend_pts = 18
-        elif trend_days >= 4:
-            trend_pts = 10
-        elif trend_days >= 2:
-            trend_pts = 4
-
-        components["trend_days"] = {"points": trend_pts, "count": trend_days, "note": f"{trend_days} consecutive days"}
-        score += trend_pts
-
-        # Component 4: VWAP Extension (15 pts max)
-        multi_vwap = calculate_multi_vwap(ticker, period, "swing")
-        vwap_pts = 0
-
-        if not multi_vwap.get("error"):
-            sigma_distance = abs(multi_vwap.get("distances", {}).get("sigma_from_rolling", 0))
-            extreme_ext = multi_vwap.get("extreme_extension", False)
-
-            if extreme_ext or sigma_distance >= 2.0:
-                vwap_pts = 15
-            elif sigma_distance >= 1.5:
-                vwap_pts = 10
-            elif sigma_distance >= 1.0:
-                vwap_pts = 5
-
-            components["vwap_extension"] = {
-                "points": vwap_pts,
-                "sigma_distance": round(sigma_distance, 2),
-                "extreme": extreme_ext
-            }
-        else:
-            components["vwap_extension"] = {"points": 0, "error": "VWAP calculation failed"}
-        score += vwap_pts
-
-        # Component 5: Volume Decline (20 pts max)
         vol_result = detect_volume_decline(df)
-        vol_pts = 0
 
-        if vol_result["declining"]:
-            if vol_result["days_declining"] >= 5:
-                vol_pts = 20
-            elif vol_result["days_declining"] >= 3:
-                vol_pts = 12
-            else:
-                vol_pts = 6
+        # Get VWAP extension (direction-specific)
+        multi_vwap = calculate_multi_vwap(ticker, period, "swing")
+        sigma_distance = 0
+        if not multi_vwap.get("error"):
+            sigma_distance = multi_vwap.get("distances", {}).get("sigma_from_rolling", 0)
 
-        components["volume_decline"] = {
-            "points": vol_pts,
-            "declining": vol_result["declining"],
-            "days": vol_result["days_declining"],
-            "trend_pct": vol_result["volume_trend_pct"]
-        }
-        score += vol_pts
+        # Helper function to convert strength to points
+        def strength_to_pts(strength, max_pts=20):
+            if strength == "STRONG":
+                return max_pts
+            elif strength == "MODERATE":
+                return int(max_pts * 0.65)
+            elif strength == "WEAK":
+                return int(max_pts * 0.35)
+            return 0
 
-        # Classify exhaustion level and determine action (tiered response)
-        if score >= 80:
-            level = "HIGH_EXHAUSTION"
-            action = "EXCLUDE"
-            action_detail = "Exclude from scanner - high exhaustion risk"
-        elif score >= 70:
-            level = "HIGH_EXHAUSTION"
-            action = "REDUCE_SIZE"
-            action_detail = "Reduce position size by 50%"
-        elif score >= 60:
-            level = "MODERATE_EXHAUSTION"
-            action = "FLAG"
-            action_detail = "Proceed with caution - exhaustion warning"
-        elif score >= 30:
-            level = "LOW_EXHAUSTION"
-            action = "PROCEED"
-            action_detail = "Minor exhaustion signals - acceptable"
+        def score_to_level(score):
+            if score >= 70:
+                return "HIGH_EXHAUSTION"
+            elif score >= 50:
+                return "MODERATE_EXHAUSTION"
+            elif score >= 30:
+                return "LOW_EXHAUSTION"
+            return "NO_EXHAUSTION"
+
+        def score_to_action(score):
+            if score >= 80:
+                return "EXCLUDE"
+            elif score >= 70:
+                return "REDUCE_SIZE"
+            elif score >= 60:
+                return "FLAG"
+            return "PROCEED"
+
+        # ========== CALCULATE LONG EXHAUSTION ==========
+        long_score = 0
+        long_components = {}
+
+        # CVD: Bearish divergence = LONG exhausted
+        if cvd_result["signal"] == "BEARISH_DIVERGENCE":
+            pts = strength_to_pts(cvd_result["strength"], 20)
+            long_score += pts
+            long_components["cvd_divergence"] = {"points": pts, "signal": "BEARISH", "note": "Buyers exhausted"}
         else:
-            level = "NO_EXHAUSTION"
-            action = "PROCEED"
-            action_detail = "No significant exhaustion detected"
+            long_components["cvd_divergence"] = {"points": 0, "signal": "NONE"}
 
-        return {
+        # RSI: Bearish divergence = LONG exhausted
+        if rsi_result["signal"] == "BEARISH_DIVERGENCE":
+            pts = strength_to_pts(rsi_result["strength"], 20)
+            long_score += pts
+            long_components["rsi_divergence"] = {"points": pts, "signal": "BEARISH", "rsi": rsi_result.get("rsi_current")}
+        else:
+            long_components["rsi_divergence"] = {"points": 0, "signal": "NONE", "rsi": rsi_result.get("rsi_current")}
+
+        # Trend days: Count consecutive UP days for LONG exhaustion
+        up_trend_days = count_trend_days(df, "LONG")
+        up_trend_pts = 0
+        if up_trend_days >= 8:
+            up_trend_pts = 25
+        elif up_trend_days >= 6:
+            up_trend_pts = 18
+        elif up_trend_days >= 4:
+            up_trend_pts = 10
+        elif up_trend_days >= 2:
+            up_trend_pts = 4
+        long_score += up_trend_pts
+        long_components["trend_days"] = {"points": up_trend_pts, "count": up_trend_days, "note": f"{up_trend_days} up days"}
+
+        # VWAP Extension: Positive sigma = LONG extended
+        long_vwap_pts = 0
+        if sigma_distance >= 2.0:
+            long_vwap_pts = 15
+        elif sigma_distance >= 1.5:
+            long_vwap_pts = 10
+        elif sigma_distance >= 1.0:
+            long_vwap_pts = 5
+        long_score += long_vwap_pts
+        long_components["vwap_extension"] = {"points": long_vwap_pts, "sigma": round(sigma_distance, 2)}
+
+        # Volume decline on up move = LONG exhausted
+        long_vol_pts = 0
+        current_trend = "UP" if df['Close'].iloc[-1] > df['Close'].iloc[-5] else "DOWN"
+        if vol_result["declining"] and current_trend == "UP":
+            if vol_result["days_declining"] >= 5:
+                long_vol_pts = 20
+            elif vol_result["days_declining"] >= 3:
+                long_vol_pts = 12
+            else:
+                long_vol_pts = 6
+        long_score += long_vol_pts
+        long_components["volume_decline"] = {"points": long_vol_pts, "days": vol_result["days_declining"]}
+
+        # ========== CALCULATE SHORT EXHAUSTION ==========
+        short_score = 0
+        short_components = {}
+
+        # CVD: Bullish divergence = SHORT exhausted (sellers gave up)
+        if cvd_result["signal"] == "BULLISH_DIVERGENCE":
+            pts = strength_to_pts(cvd_result["strength"], 20)
+            short_score += pts
+            short_components["cvd_divergence"] = {"points": pts, "signal": "BULLISH", "note": "Sellers exhausted"}
+        else:
+            short_components["cvd_divergence"] = {"points": 0, "signal": "NONE"}
+
+        # RSI: Bullish divergence = SHORT exhausted
+        if rsi_result["signal"] == "BULLISH_DIVERGENCE":
+            pts = strength_to_pts(rsi_result["strength"], 20)
+            short_score += pts
+            short_components["rsi_divergence"] = {"points": pts, "signal": "BULLISH", "rsi": rsi_result.get("rsi_current")}
+        else:
+            short_components["rsi_divergence"] = {"points": 0, "signal": "NONE", "rsi": rsi_result.get("rsi_current")}
+
+        # Trend days: Count consecutive DOWN days for SHORT exhaustion
+        down_trend_days = count_trend_days(df, "SHORT")
+        down_trend_pts = 0
+        if down_trend_days >= 8:
+            down_trend_pts = 25
+        elif down_trend_days >= 6:
+            down_trend_pts = 18
+        elif down_trend_days >= 4:
+            down_trend_pts = 10
+        elif down_trend_days >= 2:
+            down_trend_pts = 4
+        short_score += down_trend_pts
+        short_components["trend_days"] = {"points": down_trend_pts, "count": down_trend_days, "note": f"{down_trend_days} down days"}
+
+        # VWAP Extension: Negative sigma = SHORT extended
+        short_vwap_pts = 0
+        if sigma_distance <= -2.0:
+            short_vwap_pts = 15
+        elif sigma_distance <= -1.5:
+            short_vwap_pts = 10
+        elif sigma_distance <= -1.0:
+            short_vwap_pts = 5
+        short_score += short_vwap_pts
+        short_components["vwap_extension"] = {"points": short_vwap_pts, "sigma": round(sigma_distance, 2)}
+
+        # Volume decline on down move = SHORT exhausted
+        short_vol_pts = 0
+        if vol_result["declining"] and current_trend == "DOWN":
+            if vol_result["days_declining"] >= 5:
+                short_vol_pts = 20
+            elif vol_result["days_declining"] >= 3:
+                short_vol_pts = 12
+            else:
+                short_vol_pts = 6
+        short_score += short_vol_pts
+        short_components["volume_decline"] = {"points": short_vol_pts, "days": vol_result["days_declining"]}
+
+        # ========== DETERMINE FRESH DIRECTION ==========
+        if long_score < short_score - 20:
+            fresh_direction = "LONG"
+        elif short_score < long_score - 20:
+            fresh_direction = "SHORT"
+        else:
+            fresh_direction = "NEUTRAL"
+
+        # Build result
+        result = {
             "ticker": ticker,
-            "direction": direction,
-            "score": score,
-            "level": level,
-            "suggested_action": action,
-            "action_detail": action_detail,
-            "components": components,
-            "interpretation": f"{level} detected (score: {score}/100). {action_detail}.",
+            "fresh_direction": fresh_direction,
+            "long_exhaustion": {
+                "score": long_score,
+                "level": score_to_level(long_score),
+                "action": score_to_action(long_score),
+                "components": long_components
+            },
+            "short_exhaustion": {
+                "score": short_score,
+                "level": score_to_level(short_score),
+                "action": score_to_action(short_score),
+                "components": short_components
+            },
+            "interpretation": (
+                f"LONG exhaustion: {long_score}/100 ({score_to_level(long_score)}). "
+                f"SHORT exhaustion: {short_score}/100 ({score_to_level(short_score)}). "
+                f"Fresh direction: {fresh_direction}."
+            ),
             "component_weights": {
                 "cvd_divergence": 20,
                 "rsi_divergence": 20,
@@ -1932,6 +1963,22 @@ def calculate_exhaustion_score(
                 "volume_decline": 20
             }
         }
+
+        # For backward compatibility, if direction was specified, also include legacy fields
+        if direction:
+            direction = direction.upper()
+            if direction == "LONG":
+                result["score"] = long_score
+                result["level"] = score_to_level(long_score)
+                result["suggested_action"] = score_to_action(long_score)
+                result["direction"] = "LONG"
+            else:
+                result["score"] = short_score
+                result["level"] = score_to_level(short_score)
+                result["suggested_action"] = score_to_action(short_score)
+                result["direction"] = "SHORT"
+
+        return result
 
     except Exception as e:
         return {"error": str(e), "ticker": ticker, "score": 0, "level": "ERROR"}

@@ -115,24 +115,45 @@ The server provides **47 tools** for comprehensive financial analysis.
    - Past earnings performance
    - Use for: Fundamental quality, catalyst timing
 
+6b. **`detect_catalyst_strength(ticker)`** ⭐⚠️ **MANDATORY - VERIFICATION SYSTEM**
+   - **REAL MONEY PROTECTION**: Every catalyst is verified before trading
+   - Returns: unified catalyst assessment with verification status
+   - **Key Fields:**
+     - `catalyst_direction`: BULLISH / BEARISH / NEUTRAL
+     - `catalyst_strength`: STRONG / MODERATE / WEAK / NONE
+     - `trade_allowed`: bool (False if critical catalysts UNVERIFIED)
+     - `verified_catalysts[]`: Catalysts that PASSED verification (with confidence)
+     - `unverified_catalysts[]`: Catalysts that FAILED verification - **DANGER**
+     - `verification_summary`: {total, verified, unverified, verification_rate}
+     - `requires_manual_verification`: True if human check needed
+   - **Verification Confidence Levels:**
+     - HIGH: SEC filing, credible source (Reuters, Bloomberg, CNBC), API data
+     - MEDIUM: Recent but unverified source
+     - LOW: Old news (>3 days) - DO NOT TRADE
+     - UNVERIFIED: Could not verify - BLOCKED
+   - **Blocking Rules:**
+     - trade_allowed = False if <50% verified AND has critical unverified
+   - Use for: Phase 2 scoring (15.2% weight) - REQUIRED for all reports
+
 7. **`get_options(ticker_symbol, num_options=20)`**
    - Options chain data: strikes, OI, volume, IV
    - Use for: Basic options data collection
 
-8. **`analyze_options_mcmillan(ticker, direction="LONG", holding_period_days=30)`** ⭐ **NEW - MANDATORY**
+8. **`analyze_options_mcmillan(ticker, holding_period_days=30)`** ⭐ **MANDATORY - Direction-Independent**
    - **McMillan Options Strategy Analysis** (Phase 3 - 13.4% weight)
    - Comprehensive institutional-grade options analysis using Lawrence McMillan's methodology
+   - **DIRECTION-INDEPENDENT**: Provides pure analytical data, does NOT assume direction
    - Returns:
-     - **IV Analysis**: IV Rank, IV Percentile, IV environment (HIGH/LOW/NORMAL)
-       - **Divergence Check**: ALIGNED (both high/low) vs DIVERGENT (recent spike or compression)
+     - **IV Analysis**: TRUE IV Rank/Percentile using actual options IV (not HV!)
+       - `iv_rank`: (Current Options IV - 52w Low) / (52w High - 52w Low) × 100
+       - `iv_premium`: Shows options IV vs HV-20 spread
      - **P/C Ratio**: Volume and OI-based ratios
        - **Contrarian Signal**: BULLISH if >1.2 / BEARISH if <0.5 / NO SIGNAL 0.5-1.2
      - **Open Interest**: Max pain, key OI levels, positioning bias
-       - **Max Pain Reliability**: HIGH (near expiry + high OI) / MEDIUM / LOW (early cycle)
      - **Unusual Activity**: Smart money signals, unusual volume detection
-     - **Greeks Assessment**: Delta, Gamma, Theta, Vega (Questrade if available)
-     - **Strategy Selection**: McMillan matrix recommends optimal strategy based on IV + direction
-     - **Composite Score**: 0-100 options score with confidence level
+     - **Greeks Assessment**: Delta, Gamma, Theta, Vega (Questrade real-time if available)
+     - **Strategy Suggestions**: IV-based strategies (HIGH IV → sell premium, LOW IV → buy premium)
+     - **Options Quality Score**: 0-100 measuring trade environment quality
    - Use for: Phase 3 scoring (13.4% weight) - REQUIRED for all reports
    - Reference: McMillan, L.G. "Options as a Strategic Investment" (5th Edition)
 
@@ -302,13 +323,15 @@ get_ticker_data(ticker, max_news=10)
 get_financial_statements(ticker, statement_types=["income","balance","cash"])
 calculate_fundamental_scores_tool(ticker)  # F-Score, Z-Score
 
-# PHASE 2: Catalysts (15.2%)
+# PHASE 2: Catalysts (15.2%) - WITH VERIFICATION
+detect_catalyst_strength(ticker)  # ⚠️ MANDATORY - Returns verified/unverified catalysts
 get_earnings_history(ticker)
 get_nasdaq_earnings_calendar(date)
+# CHECK: verification_summary.verification_rate >= 50% before proceeding
 
 # PHASE 3: McMillan Options Strategy (13.4%) ⭐ MAJOR COMPONENT
-analyze_options_mcmillan(ticker, direction="LONG", holding_period_days=30)  # ⚠️ MANDATORY
-# Returns: IV Rank/Percentile, P/C Ratio, Max Pain, UOA, Strategy Recommendation, Composite Score
+analyze_options_mcmillan(ticker, holding_period_days=30)  # ⚠️ MANDATORY - Direction-Independent
+# Returns: TRUE IV Rank (options IV), P/C Ratio, Max Pain, UOA, IV-based strategies, Quality Score
 # Reference: McMillan "Options as a Strategic Investment" (5th Ed.)
 
 # PHASE 4: Insiders (4.5%)
@@ -431,6 +454,14 @@ print(f"Open in Obsidian: [[{ticker}_COMPREHENSIVE_{date}]]")
 3. If historical has limited samples → Note sample count, calculate anyway
 4. Every number MUST trace to a specific tool output
 
+**🚨 CATALYST VERIFICATION (Dec 2025) - REAL MONEY PROTECTION:**
+1. **EVERY catalyst MUST be verified** before recommending a trade
+2. Check `detect_catalyst_strength().verification_summary.verification_rate`
+3. If verification_rate < 50% AND has critical unverified → **DO NOT TRADE**
+4. If `requires_manual_verification = True` → Warn user to verify manually
+5. Old news (>3 days) = **STALE** - Already priced in, DO NOT TRADE on it
+6. Report `verified_catalysts` and `unverified_catalysts` in every analysis
+
 **MARKET HOURS CHECK (Before Intraday Calls):**
 ```python
 # Check before calling fetch_intraday_1h / fetch_intraday_15m
@@ -454,6 +485,9 @@ Every data point must show its source: `**RSI:** 73.78 [analyze_technical]`
 **ALWAYS:**
 ✓ Generate COMPREHENSIVE report by default (unless user requests concise)
 ✓ Follow 10-phase order (Phases 1-7 → Brooks → Historical → Final)
+✓ Run detect_catalyst_strength() in Phase 2 (MANDATORY - 15.2% weight) ⭐ **WITH VERIFICATION**
+✓ Check verification_rate >= 50% before proceeding with trade recommendation
+✓ Report verified_catalysts and unverified_catalysts in every analysis
 ✓ Run analyze_options_mcmillan() in Phase 3 (MANDATORY - 13.4% weight) ⭐
 ✓ Check intraday context (fetch_intraday_1h + fetch_intraday_15m) - MANDATORY
 ✓ Run analyze_ml_enhanced() in Phase 6 (MANDATORY - 9.8% weight)
@@ -472,6 +506,9 @@ Every data point must show its source: `**RSI:** 73.78 [analyze_technical]`
 ✓ Include McMillan strategy recommendation in reports
 
 **NEVER:**
+✗ Trade on UNVERIFIED catalysts (check verification_summary first)
+✗ Trade on OLD NEWS (>3 days) - Already priced in
+✗ Ignore requires_manual_verification flag - Warn user if True
 ✗ Run historical BEFORE Brooks (must be Phase 9 after Phase 8)
 ✗ Weight historical in final score (0% only)
 ✗ Use historical to calculate Brooks probability (circular logic)

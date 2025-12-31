@@ -65,9 +65,12 @@ class QuestradeClient:
         # If no env var, try loading from token file
         if not self.refresh_token:
             token_file_paths = [
-                Path.cwd() / ".questrade_token",  # Current directory
-                Path("/app/.questrade_token"),     # Docker container path
-                Path.home() / ".questrade_token",  # Home directory
+                Path.home() / ".questrade.json",   # Home directory (standard)
+                Path("/root/.questrade.json"),     # Docker container root home
+                Path.cwd() / ".questrade.json",    # Current directory
+                Path.cwd() / ".questrade_token",   # Legacy: Current directory
+                Path("/app/.questrade_token"),     # Legacy: Docker container path
+                Path.home() / ".questrade_token",  # Legacy: Home directory
             ]
             for token_path in token_file_paths:
                 if token_path.exists():
@@ -100,56 +103,86 @@ class QuestradeClient:
         """
         Get or create the Questrade API client instance.
 
-        Checks token expiration and forces refresh if needed. Access tokens expire
-        every 5 minutes, so we check the token file age and force a refresh if it's
-        older than 4 minutes to be safe.
+        Token priority (CRITICAL - Questrade uses single-use refresh tokens):
+        1. If file exists → TRY file's refresh_token FIRST (most recent after any API call)
+        2. If file fails with HTTP 400 → try ENV as fallback (user may have provided fresh token)
+        3. If no file → use ENV token
 
-        On first use, we pass the manual refresh token from the environment.
-        On subsequent uses, we check if tokens are expired and refresh if needed.
+        WHY: After the first API call, the file contains the NEW refresh token,
+        while ENV contains the ORIGINAL (now CONSUMED/DEAD) token.
+        The only time ENV is fresher is if user explicitly generated a new token.
 
         Returns:
             Questrade: The initialized Questrade API client.
         """
         try:
             token_file_path = Path.home() / ".questrade.json"
+            env_token = os.getenv("QUESTRADE_REFRESH_TOKEN")
 
             if token_file_path.exists():
+                # Read the token file
+                with open(token_file_path, 'r') as f:
+                    token_data = json.load(f)
+
+                stored_refresh_token = token_data.get('refresh_token')
+                has_access_token = token_data.get('access_token') is not None
+
+                if not stored_refresh_token:
+                    logger.error("No refresh token found in token file")
+                    # File is corrupt, try ENV as fallback
+                    if env_token:
+                        logger.info("Falling back to ENV token")
+                        token_file_path.unlink()
+                        client = Questrade(refresh_token=env_token)
+                        self._auto_encrypt_token()
+                        return client
+                    raise ValueError("No refresh token found in stored token file")
+
                 # Check token file age (access tokens expire after 5 minutes)
                 file_age_seconds = time.time() - token_file_path.stat().st_mtime
                 file_age_minutes = file_age_seconds / 60
 
-                # If token file is older than 4 minutes, force refresh to be safe
-                if file_age_minutes > 4:
-                    logger.info(f"Token file is {file_age_minutes:.1f} minutes old, forcing refresh")
+                # Force refresh if: file is old OR file only has refresh_token (no access_token)
+                if file_age_minutes > 4 or not has_access_token:
+                    reason = "file is old" if file_age_minutes > 4 else "no access_token in file"
+                    logger.info(f"Refreshing token ({reason}, age: {file_age_minutes:.1f} min)")
 
-                    # Read the refresh token from the file
-                    with open(token_file_path, 'r') as f:
-                        token_data = json.load(f)
-
-                    stored_refresh_token = token_data.get('refresh_token')
-
-                    if not stored_refresh_token:
-                        logger.error("No refresh token found in token file")
-                        raise ValueError("No refresh token found in stored token file")
-
-                    # Force refresh by passing the refresh token
-                    logger.info("Refreshing expired access token")
-                    client = Questrade(refresh_token=stored_refresh_token)
-                    logger.info("Questrade API client connected with refreshed tokens")
-                    self._auto_encrypt_token()  # Re-encrypt after refresh
-                    return client
+                    try:
+                        # Try file's refresh token first (most recent after first API call)
+                        client = Questrade(refresh_token=stored_refresh_token)
+                        logger.info("Questrade API client connected with refreshed tokens")
+                        self._auto_encrypt_token()
+                        return client
+                    except Exception as file_token_error:
+                        # File token failed (likely HTTP 400 - consumed)
+                        # Try ENV as fallback - user may have generated fresh token
+                        if env_token and env_token != stored_refresh_token:
+                            logger.warning(
+                                f"File token failed ({file_token_error}). "
+                                f"Trying ENV token as fallback..."
+                            )
+                            token_file_path.unlink()
+                            client = Questrade(refresh_token=env_token)
+                            logger.info("Questrade API client connected with ENV token")
+                            self._auto_encrypt_token()
+                            return client
+                        else:
+                            # No fallback available, re-raise original error
+                            raise
                 else:
-                    # Token is still fresh, use stored tokens
+                    # Token is still fresh and has access_token, use stored tokens
                     logger.info(f"Using stored tokens (age: {file_age_minutes:.1f} min)")
                     client = Questrade()
                     logger.info("Questrade API client connected")
                     return client
             else:
                 # First time - use manual refresh token from environment
+                if not self.refresh_token:
+                    raise ValueError("No token file and no QUESTRADE_REFRESH_TOKEN env var")
                 logger.info("No stored tokens found, using manual refresh token from environment")
                 client = Questrade(refresh_token=self.refresh_token)
                 logger.info("Questrade API client connected")
-                self._auto_encrypt_token()  # Encrypt new token
+                self._auto_encrypt_token()
                 return client
 
         except Exception as e:
@@ -947,7 +980,8 @@ class QuestradeClient:
         try:
             client = self._get_client()
             logger.info(f"Fetching option quotes for {len(option_ids)} options")
-            quotes = client.markets_options(option_ids)
+            # questrade-api passes kwargs to POST body, Questrade API expects optionIds
+            quotes = client.markets_options(optionIds=option_ids)
 
             if quotes is None:
                 raise ValueError("No option quotes returned")

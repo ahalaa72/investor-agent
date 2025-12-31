@@ -125,14 +125,28 @@
 
 ---
 
-#### Gate 1: Catalyst Lifecycle [detect_catalyst_strength]
+#### Gate 1: Catalyst Lifecycle [detect_catalyst_strength] ⭐ ENHANCED (Dec 2025)
 
 | Metric | Value | Status |
 |--------|-------|--------|
 | Primary Catalyst | [Earnings/Product/FDA/etc.] | [Active/Exhausted/Failed] |
+| Catalyst Direction | [BULLISH/BEARISH/NEUTRAL] | Score: XX/100 |
 | Catalyst Date | YYYY-MM-DD | [X days ago/away] |
 | Next Catalyst | [Description] | In X days |
 | Catalyst Stage | [PRE/ACTIVE/POST/EXHAUSTED] | - |
+
+**NEW ENHANCED FIELDS:**
+| Field | Value |
+|-------|-------|
+| News Sentiment | [BULLISH/BEARISH/NEUTRAL] - X headlines (last 3 days) |
+| Major Catalysts | [Recent headlines with dates and sources] |
+| 10b5-1 Detected | [YES/NO] - Confidence: [HIGH/MEDIUM/LOW] |
+| Warnings | [Any items requiring manual verification] |
+
+**Key Enhancements:**
+- Web search fetches dated news from Google News RSS
+- Only news ≤3 days old counts toward score; today's news = 2x weight
+- Insider selling discounted 75% if 10b5-1 pre-planned sale detected
 
 **Catalyst Verdict:** [ACTIVE ✅ / EXHAUSTED ⚠️ / FAILED ❌]
 

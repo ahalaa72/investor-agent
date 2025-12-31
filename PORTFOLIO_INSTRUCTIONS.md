@@ -167,7 +167,7 @@ scores = calculate_fundamental_scores_tool(symbol)  # F-Score, Z-Score
 # ═══════════════════════════════════════════════════════════
 # ADDITIONAL VALIDATION
 # ═══════════════════════════════════════════════════════════
-options = analyze_options_mcmillan(symbol, direction="LONG")  # Options flow
+options = analyze_options_mcmillan(symbol)  # Options flow (direction-independent)
 unusual = detect_unusual_options_activity(symbol)              # Smart money flow
 rs = calculate_relative_strength_tool(symbol, benchmark="SPY") # Still leader?
 competitors = analyze_competitors(symbol, top_n=5)             # Sector rank
@@ -213,6 +213,37 @@ GATES HOLDING: X/4
 | Primary Catalyst | [Original] | [Current] | [ACTIVE/EXHAUSTED/FAILED] |
 | Catalyst Score | XX/100 | XX/100 | [+/-XX change] |
 | Next Catalyst | - | [Date] | [XX days away] |
+
+**NEW ENHANCED FEATURES (Dec 2025):**
+- **Web Search Integration**: Fetches news from Google News RSS with publication dates
+- **Recency Scoring**: Only news ≤3 days old counts toward score; today's news = 2x weight
+- **10b5-1 Detection**: Checks if insider selling is pre-planned (neutral) vs discretionary (bearish)
+- **Warnings**: Flags unverified insider selling for manual review
+
+**VERIFICATION SYSTEM (Dec 2025) - REAL MONEY PROTECTION:**
+- **EVERY catalyst is verified** before being used for trading decisions
+- **Unverified catalysts generate warnings** and may block trades
+- **Verification checks**: source credibility, recency, SEC filings, multiple sources
+- **trade_allowed = False** if critical catalysts are UNVERIFIED
+
+| Enhanced Field | Description |
+|----------------|-------------|
+| `news_sentiment` | Sentiment analysis of recent headlines (BULLISH/BEARISH/NEUTRAL) |
+| `major_catalysts[]` | List of catalysts with `days_ago`, `is_recent`, `news_source` |
+| `warnings[]` | Items requiring manual verification (e.g., unconfirmed 10b5-1) |
+| `insider_selling_context.is_10b5_1` | True if pre-planned sale detected |
+| `verified_catalysts[]` | List of catalysts that PASSED verification (with confidence level) |
+| `unverified_catalysts[]` | List of catalysts that FAILED verification - **DANGER** |
+| `verification_summary` | Counts: total, verified, unverified, high_confidence, requires_manual |
+| `requires_manual_verification` | True if ANY catalyst needs human check before trading |
+
+**Verification Confidence Levels:**
+| Level | Meaning | Trade Action |
+|-------|---------|--------------|
+| **HIGH** | SEC filing, credible source, API data | ✅ Trade allowed |
+| **MEDIUM** | Recent but unverified source | ⚠️ Trade with caution |
+| **LOW** | Old news (>3 days) or unknown source | ❌ Stale - DO NOT TRADE |
+| **UNVERIFIED** | Could not verify | 🚫 BLOCKED until verified |
 
 **Catalyst Status:** [ACTIVE / EXHAUSTED / WAITING]
 **GATE 1:** [PASS / WARN / FAIL]

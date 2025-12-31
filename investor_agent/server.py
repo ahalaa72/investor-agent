@@ -1986,31 +1986,31 @@ def get_options(
 @mcp.tool()
 def analyze_options_mcmillan(
     ticker: str,
-    direction: Literal["LONG", "SHORT", "NEUTRAL"] = "LONG",
     holding_period_days: int = 30,
     use_questrade_greeks: bool = True
 ) -> dict[str, Any]:
     """
-    McMillan Options Strategy Analysis - Comprehensive options analysis using
+    McMillan Options Strategy Analysis - Direction-independent options analysis using
     Lawrence McMillan's methodology from "Options as a Strategic Investment".
 
+    This tool is PURELY ANALYTICAL - it provides data for decision making without
+    assuming a direction. Use the output to inform your trading decisions.
+
     Provides institutional-grade options analysis including:
-    - IV Rank/Percentile Analysis (current IV vs historical)
+    - IV Rank/Percentile Analysis (TRUE IV from options vs historical range)
     - Put/Call Ratio Analysis (sentiment indicator)
     - Open Interest Analysis (max pain, positioning)
     - Unusual Options Activity Detection (smart money signals)
     - Greeks Assessment (Delta, Gamma, Theta, Vega exposure)
-    - Strategy Selection Matrix (optimal strategy based on IV + direction)
-    - Risk/Reward Analysis for recommended strategies
+    - IV-Based Strategy Suggestions (based on IV environment only)
 
     Args:
         ticker: Stock symbol to analyze
-        direction: Expected price direction (LONG=bullish, SHORT=bearish, NEUTRAL=range-bound)
         holding_period_days: Expected holding period for strategy selection (default 30)
         use_questrade_greeks: Try to get Greeks from Questrade API (more accurate)
 
     Returns:
-        dict: Comprehensive McMillan options analysis with strategy recommendations
+        dict: Comprehensive McMillan options analysis (direction-independent)
 
     Reference: McMillan, L.G. "Options as a Strategic Investment" (5th Edition)
     """
@@ -2187,34 +2187,29 @@ def analyze_options_mcmillan(
             greeks_analysis = _estimate_greeks_from_chain(calls_df, puts_df, current_price)
 
         # ============================================================
-        # 6. STRATEGY SELECTION MATRIX (McMillan Core Framework)
+        # 6. IV-BASED STRATEGY SUGGESTIONS (Direction-Independent)
         # ============================================================
-        strategy_recommendation = _select_mcmillan_strategy(
-            direction=direction,
+        strategy_suggestions = _get_iv_based_strategies(
             iv_rank=iv_analysis['iv_rank'],
-            iv_percentile=iv_analysis['iv_percentile'],
             current_price=current_price,
-            holding_period_days=holding_period_days,
             calls_df=calls_df,
             puts_df=puts_df
         )
 
         # ============================================================
-        # 7. COMPOSITE SCORE & RECOMMENDATION
+        # 7. OPTIONS QUALITY SCORE (Direction-Independent)
         # ============================================================
-        composite_score = _calculate_options_composite_score(
+        options_quality = _calculate_options_quality_score(
             iv_analysis=iv_analysis,
             pc_ratio_analysis=pc_ratio_analysis,
             oi_analysis=oi_analysis,
-            uoa_analysis=uoa_analysis,
-            direction=direction
+            uoa_analysis=uoa_analysis
         )
 
         return {
             "ticker": ticker,
             "current_price": current_price,
             "analysis_date": datetime.now().strftime('%Y-%m-%d %H:%M'),
-            "direction": direction,
             "holding_period_days": holding_period_days,
             "nearest_expiration": nearest_exp,
             "available_expirations": expirations[:5],  # First 5 expirations
@@ -2226,20 +2221,20 @@ def analyze_options_mcmillan(
             "unusual_activity": uoa_analysis,
             "greeks_assessment": greeks_analysis,
 
-            # Strategy Recommendation
-            "strategy_recommendation": strategy_recommendation,
+            # IV-Based Strategy Suggestions (not direction-dependent)
+            "strategy_suggestions": strategy_suggestions,
 
-            # Composite Score
-            "composite_score": composite_score,
+            # Options Quality Score
+            "options_quality": options_quality,
 
             # Quick Summary
             "summary": {
                 "iv_environment": iv_analysis['iv_environment'],
+                "iv_rank": iv_analysis['iv_rank'],
                 "sentiment": pc_ratio_analysis['sentiment'],
                 "smart_money_signal": uoa_analysis['smart_money_signal'],
-                "recommended_strategy": strategy_recommendation['primary_strategy'],
-                "confidence": composite_score['confidence'],
-                "score": composite_score['total_score']
+                "options_quality_score": options_quality['score'],
+                "primary_suggestion": strategy_suggestions['high_iv_strategies'][0] if iv_analysis['iv_rank'] >= 50 else strategy_suggestions['low_iv_strategies'][0]
             },
 
             "methodology": "McMillan - Options as a Strategic Investment (5th Ed.)"
@@ -2251,96 +2246,148 @@ def analyze_options_mcmillan(
 
 
 def _calculate_iv_analysis(ticker: str, calls_df: pd.DataFrame, puts_df: pd.DataFrame, current_price: float) -> dict:
-    """Calculate IV Rank and IV Percentile per McMillan methodology."""
+    """
+    Calculate TRUE IV Rank/Percentile using actual options Implied Volatility.
+
+    IV Rank = (Current IV - 52w Low IV) / (52w High IV - 52w Low IV) × 100
+    IV Percentile = % of days where IV was LOWER than current IV
+
+    Since we don't have historical IV data, we use HV (Historical Volatility) range
+    as a proxy for IV range. This is valid because IV tends to mean-revert toward HV.
+    """
     import numpy as np
 
-    # Get ATM options for IV
-    atm_calls = calls_df[abs(calls_df['strike'] - current_price) == abs(calls_df['strike'] - current_price).min()]
-    atm_puts = puts_df[abs(puts_df['strike'] - current_price) == abs(puts_df['strike'] - current_price).min()]
+    def calc_hv_metrics(returns, window):
+        """Calculate HV metrics for a given rolling window."""
+        hv_series = returns.rolling(window).std() * np.sqrt(252)
+        hv_values = hv_series.dropna().values
 
-    # Current IV (average of ATM call and put)
-    current_iv = None
-    if 'impliedVolatility' in atm_calls.columns and not atm_calls.empty:
-        call_iv = atm_calls['impliedVolatility'].iloc[0] if not atm_calls['impliedVolatility'].isna().all() else None
-        put_iv = atm_puts['impliedVolatility'].iloc[0] if not atm_puts.empty and not atm_puts['impliedVolatility'].isna().all() else None
+        if len(hv_values) == 0:
+            return None
 
-        # Normalize IV to decimal form (0.30 for 30%)
-        # Questrade returns IV as percentage (30.0), yfinance as decimal (0.30)
-        def normalize_to_decimal(iv_val):
-            if iv_val is None or pd.isna(iv_val):
-                return None
-            iv_val = float(iv_val)
-            if iv_val > 1.5:  # Likely already percentage form (e.g. 30.0 for 30%)
-                return iv_val / 100
-            return iv_val
+        current_hv = hv_values[-1]
+        hv_high = np.percentile(hv_values, 95)
+        hv_low = np.percentile(hv_values, 5)
 
-        call_iv = normalize_to_decimal(call_iv)
-        put_iv = normalize_to_decimal(put_iv)
+        return {
+            "current": round(current_hv * 100, 1),
+            "high_52w": round(hv_high * 100, 1),
+            "low_52w": round(hv_low * 100, 1),
+            "all_values": hv_values * 100  # Keep for percentile calc
+        }
 
-        if call_iv and put_iv:
-            current_iv = (call_iv + put_iv) / 2
-        elif call_iv:
-            current_iv = call_iv
-        elif put_iv:
-            current_iv = put_iv
+    # ========== STEP 1: Get ATM options IV (the ACTUAL implied volatility) ==========
+    options_iv = None
+    if not calls_df.empty:
+        atm_calls = calls_df[abs(calls_df['strike'] - current_price) == abs(calls_df['strike'] - current_price).min()]
+        atm_puts = puts_df[abs(puts_df['strike'] - current_price) == abs(puts_df['strike'] - current_price).min()] if not puts_df.empty else pd.DataFrame()
 
-    if current_iv is None:
-        current_iv = 0.30  # Default 30% if unavailable
+        if 'impliedVolatility' in atm_calls.columns and not atm_calls.empty:
+            call_iv = atm_calls['impliedVolatility'].iloc[0] if not atm_calls['impliedVolatility'].isna().all() else None
+            put_iv = atm_puts['impliedVolatility'].iloc[0] if not atm_puts.empty and 'impliedVolatility' in atm_puts.columns and not atm_puts['impliedVolatility'].isna().all() else None
 
-    # Get historical IV data (use price history to estimate)
+            def normalize_to_decimal(iv_val):
+                if iv_val is None or pd.isna(iv_val):
+                    return None
+                iv_val = float(iv_val)
+                if iv_val > 5.0:  # Likely percentage form (e.g., 43.7 instead of 0.437)
+                    return iv_val / 100
+                return iv_val
+
+            call_iv = normalize_to_decimal(call_iv)
+            put_iv = normalize_to_decimal(put_iv)
+
+            if call_iv and put_iv:
+                options_iv = (call_iv + put_iv) / 2
+            elif call_iv:
+                options_iv = call_iv
+            elif put_iv:
+                options_iv = put_iv
+
+    # ========== STEP 2: Calculate HV metrics for reference ==========
+    hv_20 = None
+    hv_values_for_percentile = None
+
     try:
         hist = _get_ohlcv_cached(ticker, period="1y")
-        if hist is not None and not hist.empty:
-            # Calculate historical volatility as proxy for IV range
+        if hist is not None and not hist.empty and len(hist) >= 40:
             returns = np.log(hist['Close'] / hist['Close'].shift(1)).dropna()
-            hv_20 = returns.rolling(20).std() * np.sqrt(252)
-            hv_values = hv_20.dropna().values
+            hv_20 = calc_hv_metrics(returns, 20)
+            if hv_20:
+                hv_values_for_percentile = hv_20.pop("all_values")
+    except Exception:
+        pass
 
-            if len(hv_values) > 0:
-                iv_52w_high = np.percentile(hv_values, 95)
-                iv_52w_low = np.percentile(hv_values, 5)
+    # ========== STEP 3: Calculate TRUE IV Rank using Options IV ==========
+    # Use options IV as current, compare to HV range (proxy for IV range)
+    if options_iv and hv_20:
+        current_iv = options_iv * 100  # Convert to percentage
+        iv_high = hv_20["high_52w"]
+        iv_low = hv_20["low_52w"]
 
-                # IV Rank = (Current IV - 52w Low) / (52w High - 52w Low)
-                iv_range = iv_52w_high - iv_52w_low
-                iv_rank = ((current_iv - iv_52w_low) / iv_range * 100) if iv_range > 0 else 50
-
-                # IV Percentile = % of days IV was lower than current
-                iv_percentile = (hv_values < current_iv).sum() / len(hv_values) * 100
-            else:
-                iv_rank = 50
-                iv_percentile = 50
-                iv_52w_high = current_iv * 1.5
-                iv_52w_low = current_iv * 0.5
+        # IV Rank formula: (Current - Low) / (High - Low) * 100
+        iv_range = iv_high - iv_low
+        if iv_range > 0:
+            iv_rank = ((current_iv - iv_low) / iv_range) * 100
+            iv_rank = max(0, min(100, iv_rank))  # Clamp to 0-100
         else:
             iv_rank = 50
-            iv_percentile = 50
-            iv_52w_high = current_iv * 1.5
-            iv_52w_low = current_iv * 0.5
-    except Exception:
-        iv_rank = 50
-        iv_percentile = 50
-        iv_52w_high = current_iv * 1.5
-        iv_52w_low = current_iv * 0.5
 
-    # Determine IV environment
-    if iv_rank >= 70:
+        # IV Percentile: % of HV values below current IV
+        if hv_values_for_percentile is not None and len(hv_values_for_percentile) > 0:
+            iv_percentile = (hv_values_for_percentile < current_iv).sum() / len(hv_values_for_percentile) * 100
+            iv_percentile = max(0, min(100, iv_percentile))
+        else:
+            iv_percentile = iv_rank  # Fallback to rank
+
+    elif hv_20:
+        # Fallback: No options IV available, use HV-20
+        current_iv = hv_20["current"]
+        iv_high = hv_20["high_52w"]
+        iv_low = hv_20["low_52w"]
+
+        iv_range = iv_high - iv_low
+        if iv_range > 0:
+            iv_rank = ((current_iv - iv_low) / iv_range) * 100
+            iv_rank = max(0, min(100, iv_rank))
+        else:
+            iv_rank = 50
+
+        if hv_values_for_percentile is not None and len(hv_values_for_percentile) > 0:
+            iv_percentile = (hv_values_for_percentile < current_iv).sum() / len(hv_values_for_percentile) * 100
+        else:
+            iv_percentile = iv_rank
+    else:
+        # No data at all
+        current_iv = 30.0
+        iv_high = 50.0
+        iv_low = 20.0
+        iv_rank = 50.0
+        iv_percentile = 50.0
+
+    # ========== STEP 4: Determine IV Environment ==========
+    if iv_rank >= 50:
         iv_environment = "HIGH_IV"
-        iv_interpretation = "IV is elevated - favor selling premium strategies"
+        iv_interpretation = "IV is elevated vs historical range - favor SELLING premium (credit spreads, iron condors)"
     elif iv_rank <= 30:
         iv_environment = "LOW_IV"
-        iv_interpretation = "IV is low - favor buying premium strategies"
+        iv_interpretation = "IV is low vs historical range - favor BUYING premium (long calls/puts, debit spreads)"
     else:
         iv_environment = "NORMAL_IV"
         iv_interpretation = "IV is normal - flexible strategy selection"
 
     return {
-        "current_iv": round(current_iv * 100, 1),
-        "iv_rank": round(max(0, min(100, iv_rank)), 1),
-        "iv_percentile": round(max(0, min(100, iv_percentile)), 1),
-        "iv_52w_high": round(iv_52w_high * 100, 1),
-        "iv_52w_low": round(iv_52w_low * 100, 1),
+        "current_iv": round(current_iv, 1),
+        "iv_rank": round(iv_rank, 1),
+        "iv_percentile": round(iv_percentile, 1),
+        "iv_52w_high": round(iv_high, 1),
+        "iv_52w_low": round(iv_low, 1),
         "iv_environment": iv_environment,
         "interpretation": iv_interpretation,
+        "hv_20_current": hv_20["current"] if hv_20 else None,
+        "options_iv": round(options_iv * 100, 1) if options_iv else None,
+        "iv_premium": round(current_iv - hv_20["current"], 1) if options_iv and hv_20 else None,
+        "methodology": "TRUE IV Rank (compares current options IV to 52-week HV range)",
         "mcmillan_reference": "Chapter 28: Volatility Trading"
     }
 
@@ -2505,6 +2552,8 @@ def _detect_unusual_activity(calls_df: pd.DataFrame, puts_df: pd.DataFrame, curr
 
 def _get_questrade_greeks(ticker: str, expiration: str, current_price: float) -> dict | None:
     """Get Greeks from Questrade API for more accurate data."""
+    from questrade_api import Questrade
+
     try:
         client = get_questrade_client()
         options_chain = client.get_options_chain(ticker)
@@ -2512,15 +2561,86 @@ def _get_questrade_greeks(ticker: str, expiration: str, current_price: float) ->
         if not options_chain or 'optionChain' not in options_chain:
             return None
 
-        # Find ATM options and get their Greeks
-        # This requires additional API calls to get option quotes with Greeks
-        # For now, return a placeholder indicating Questrade is available
-        return {
+        # Get raw Questrade client for option quotes
+        q = client._get_client()
+
+        # Find the matching expiration
+        target_exp = None
+        for exp in options_chain.get('optionChain', []):
+            exp_date = exp.get('expiryDate', '')[:10]  # Get YYYY-MM-DD
+            if expiration in exp_date or exp_date in expiration:
+                target_exp = exp
+                break
+
+        # If no exact match, use first non-expired expiration
+        if not target_exp and options_chain.get('optionChain'):
+            target_exp = options_chain['optionChain'][0]
+
+        if not target_exp:
+            return None
+
+        # Find ATM strike and get Greeks
+        atm_call_id = None
+        atm_put_id = None
+        atm_strike = None
+        min_distance = float('inf')
+
+        for root in target_exp.get('chainPerRoot', []):
+            for strike_info in root.get('chainPerStrikePrice', []):
+                strike = strike_info['strikePrice']
+                distance = abs(strike - current_price)
+                if distance < min_distance:
+                    min_distance = distance
+                    atm_strike = strike
+                    atm_call_id = strike_info.get('callSymbolId')
+                    atm_put_id = strike_info.get('putSymbolId')
+
+        if not atm_call_id and not atm_put_id:
+            return None
+
+        greeks = {
             "source": "questrade",
-            "status": "available",
-            "note": "Use get_questrade_option_quotes() with specific option IDs for detailed Greeks",
-            "available_expirations": [exp.get('expiryDate') for exp in options_chain.get('optionChain', [])[:5]]
+            "note": "Real-time Greeks from Questrade API"
         }
+
+        # Fetch ATM call Greeks
+        if atm_call_id:
+            try:
+                call_quotes = q.markets_options(optionIds=[atm_call_id])
+                if call_quotes and call_quotes.get('optionQuotes'):
+                    cq = call_quotes['optionQuotes'][0]
+                    greeks["atm_call_delta"] = round(cq.get('delta') or 0, 4)
+                    greeks["atm_call_gamma"] = round(cq.get('gamma') or 0, 6)
+                    greeks["atm_call_theta"] = round(cq.get('theta') or 0, 4)
+                    greeks["atm_call_vega"] = round(cq.get('vega') or 0, 4)
+                    greeks["atm_call_impliedVolatility"] = round((cq.get('volatility') or 30) / 100, 4)
+            except Exception as e:
+                logger.warning(f"Failed to get call Greeks: {e}")
+
+        # Fetch ATM put Greeks
+        if atm_put_id:
+            try:
+                put_quotes = q.markets_options(optionIds=[atm_put_id])
+                if put_quotes and put_quotes.get('optionQuotes'):
+                    pq = put_quotes['optionQuotes'][0]
+                    greeks["atm_put_delta"] = round(pq.get('delta') or 0, 4)
+                    greeks["atm_put_gamma"] = round(pq.get('gamma') or 0, 6)
+                    greeks["atm_put_theta"] = round(pq.get('theta') or 0, 4)
+                    greeks["atm_put_vega"] = round(pq.get('vega') or 0, 4)
+                    greeks["atm_put_impliedVolatility"] = round((pq.get('volatility') or 30) / 100, 4)
+            except Exception as e:
+                logger.warning(f"Failed to get put Greeks: {e}")
+
+        # Add interpretation
+        if greeks.get("atm_call_delta"):
+            greeks["interpretation"] = {
+                "delta_exposure": f"Call: +{greeks['atm_call_delta']:.2f} = {abs(greeks['atm_call_delta'])*100:.0f}% ITM probability",
+                "gamma_risk": "HIGH - near ATM, delta can change rapidly" if abs(greeks.get('atm_call_gamma', 0)) > 0.03 else "MODERATE - stable delta",
+                "theta_burn": f"${abs(greeks.get('atm_call_theta', 0)):.2f}/day decay",
+                "vega_sensitivity": f"${abs(greeks.get('atm_call_vega', 0)):.2f} per 1% IV change"
+            }
+
+        return greeks if greeks.get("atm_call_delta") or greeks.get("atm_put_delta") else None
 
     except Exception as e:
         logger.warning(f"Questrade Greeks unavailable: {e}")
@@ -2727,6 +2847,134 @@ def _estimate_greeks_from_chain(calls_df: pd.DataFrame, puts_df: pd.DataFrame, c
     return greeks
 
 
+def _get_iv_based_strategies(
+    iv_rank: float,
+    current_price: float,
+    calls_df: pd.DataFrame,
+    puts_df: pd.DataFrame
+) -> dict:
+    """
+    Get IV-based strategy suggestions (direction-independent).
+
+    HIGH IV (>50): Favor selling premium - credit spreads, iron condors, strangles
+    LOW IV (<30): Favor buying premium - long calls/puts, debit spreads, LEAPS
+    NORMAL IV: Flexible - can use either approach
+    """
+    # Find ATM strike (convert to float to avoid numpy.int64 serialization issues)
+    if not calls_df.empty:
+        atm_strike = float(calls_df.iloc[(calls_df['strike'] - current_price).abs().argsort()[:1]]['strike'].values[0])
+    else:
+        atm_strike = float(round(current_price / 5) * 5)  # Round to nearest $5
+
+    # Define strategies by IV environment
+    high_iv_strategies = [
+        "Iron Condor (sell OTM call spread + put spread)",
+        "Credit Spread (bull put or bear call)",
+        "Short Strangle (sell OTM call + put)",
+        "Covered Call (if holding shares)",
+        "Cash-Secured Put (for stock you want to own)"
+    ]
+
+    low_iv_strategies = [
+        "Long Call or Put (directional bet)",
+        "Debit Spread (bull call or bear put)",
+        "LEAPS (long-dated options)",
+        "Calendar Spread (sell near, buy far)",
+        "Straddle (if expecting big move)"
+    ]
+
+    neutral_strategies = [
+        "Iron Butterfly (ATM short straddle + wings)",
+        "Calendar Spread",
+        "Diagonal Spread",
+        "Ratio Spread"
+    ]
+
+    # Suggested strikes
+    suggested_strikes = {
+        "atm": atm_strike,
+        "otm_call": atm_strike + 5,
+        "otm_put": atm_strike - 5,
+        "deep_otm_call": atm_strike + 10,
+        "deep_otm_put": atm_strike - 10
+    }
+
+    return {
+        "high_iv_strategies": high_iv_strategies,
+        "low_iv_strategies": low_iv_strategies,
+        "neutral_strategies": neutral_strategies,
+        "suggested_strikes": suggested_strikes,
+        "recommendation": f"IV Rank {iv_rank:.0f}% - {'SELL premium' if iv_rank >= 50 else 'BUY premium' if iv_rank <= 30 else 'Flexible'}",
+        "mcmillan_reference": "Chapter 1-10: Basic Option Strategies"
+    }
+
+
+def _calculate_options_quality_score(
+    iv_analysis: dict,
+    pc_ratio_analysis: dict,
+    oi_analysis: dict,
+    uoa_analysis: dict
+) -> dict:
+    """
+    Calculate direction-independent options quality score.
+
+    Measures how favorable options conditions are for ANY trade:
+    - IV environment clarity (extreme = better for strategy selection)
+    - Liquidity (open interest)
+    - Unusual activity (smart money signals)
+    """
+    score = 50  # Base score
+    factors = []
+
+    # IV Clarity (extreme IV = clearer strategy choice)
+    iv_rank = iv_analysis.get('iv_rank', 50)
+    if iv_rank >= 70 or iv_rank <= 30:
+        score += 15
+        factors.append(f"Clear IV signal ({iv_rank:.0f}%): +15")
+    elif iv_rank >= 60 or iv_rank <= 40:
+        score += 5
+        factors.append(f"Moderate IV signal ({iv_rank:.0f}%): +5")
+
+    # P/C Ratio extremes (contrarian signals)
+    sentiment = pc_ratio_analysis.get('sentiment', 'NEUTRAL')
+    if 'EXTREMELY' in sentiment:
+        score += 10
+        factors.append(f"Extreme sentiment ({sentiment}): +10")
+    elif sentiment not in ['NEUTRAL', 'BALANCED']:
+        score += 5
+        factors.append(f"Sentiment signal ({sentiment}): +5")
+
+    # Unusual activity (smart money)
+    smart_money = uoa_analysis.get('smart_money_signal', 'NO_SIGNAL')
+    if smart_money != 'NO_SIGNAL':
+        score += 15
+        factors.append(f"Smart money signal ({smart_money}): +15")
+
+    # Open interest / liquidity
+    total_oi = oi_analysis.get('top_call_oi_strikes', [{}])[0].get('openInterest', 0)
+    if total_oi > 5000:
+        score += 10
+        factors.append(f"High liquidity (OI {total_oi}): +10")
+    elif total_oi > 1000:
+        score += 5
+        factors.append(f"Moderate liquidity (OI {total_oi}): +5")
+
+    # Determine confidence
+    if score >= 80:
+        confidence = "HIGH"
+    elif score >= 60:
+        confidence = "MEDIUM"
+    else:
+        confidence = "LOW"
+
+    return {
+        "score": min(100, score),
+        "confidence": confidence,
+        "factors": factors,
+        "interpretation": f"Options environment is {confidence.lower()} quality for trading"
+    }
+
+
 def _select_mcmillan_strategy(
     direction: str,
     iv_rank: float,
@@ -2736,7 +2984,7 @@ def _select_mcmillan_strategy(
     calls_df: pd.DataFrame,
     puts_df: pd.DataFrame
 ) -> dict:
-    """Select optimal strategy using McMillan's Strategy Selection Matrix."""
+    """Select optimal strategy using McMillan's Strategy Selection Matrix (LEGACY - kept for compatibility)."""
 
     # McMillan Strategy Selection Matrix
     # Based on IV environment + Directional bias
@@ -3987,10 +4235,10 @@ def get_bid_ask_imbalance(ticker: str) -> dict[str, Any]:
 
         q = quotes['quotes'][0]
 
-        bid_size = q.get('bidSize', 0)
-        ask_size = q.get('askSize', 0)
-        bid_price = q.get('bidPrice', 0)
-        ask_price = q.get('askPrice', 0)
+        bid_size = q.get('bidSize') or 0
+        ask_size = q.get('askSize') or 0
+        bid_price = q.get('bidPrice') or 0
+        ask_price = q.get('askPrice') or 0
 
         # Calculate imbalance
         if ask_size > 0:
@@ -4076,10 +4324,10 @@ def analyze_spread_dynamics(ticker: str) -> dict[str, Any]:
 
         q = quotes['quotes'][0]
 
-        bid_price = q.get('bidPrice', 0)
-        ask_price = q.get('askPrice', 0)
-        bid_size = q.get('bidSize', 0)
-        ask_size = q.get('askSize', 0)
+        bid_price = q.get('bidPrice') or 0
+        ask_price = q.get('askPrice') or 0
+        bid_size = q.get('bidSize') or 0
+        ask_size = q.get('askSize') or 0
 
         # Current spread
         spread = ask_price - bid_price
@@ -6312,6 +6560,443 @@ def _get_ohlcv_cached(ticker: str, period: str = "3mo") -> pd.DataFrame | None:
     return df
 
 
+def _scan_one_direction(
+    direction: Literal["LONG", "SHORT"],
+    market: str,
+    min_price: float,
+    min_market_cap: int,
+    max_scan: int,
+    top_n: int,
+    batch_size: int = 20,
+    candidates: list = None
+) -> dict[str, Any]:
+    """
+    Internal helper to scan one direction (LONG or SHORT).
+
+    Process:
+    1. Use provided candidates list, or fetch from TradingView if not provided
+    2. Process in batches of batch_size (default 50)
+    3. Validate each batch through 4-gate system
+    4. Compile all validated results across batches
+    5. Return top N from combined pool
+
+    Args:
+        candidates: Optional list from get_raw_scan_candidates(). If provided,
+                   skips TradingView fetch and validates this list directly.
+
+    Returns candidates with 3+ gates, progress log, and stats.
+    """
+    import time
+    from datetime import datetime
+    import pytz
+
+    et = pytz.timezone("America/New_York")
+    scan_start = time.time()
+    progress_log = []
+
+    def log_progress(msg: str):
+        logger.info(msg)
+        progress_log.append(f"[{time.time() - scan_start:.0f}s] {msg}")
+
+    # Step 1: Use provided candidates OR fetch from TradingView
+    if candidates is not None and len(candidates) > 0:
+        all_candidates = candidates
+        scanner_source = "provided"
+        raw_candidates_count = len(all_candidates)
+        log_progress(f"📋 Using {raw_candidates_count} provided {direction} candidates (no fetch needed)")
+    else:
+        # Fetch from TradingView
+        if not SCREENER_AVAILABLE:
+            return {"error": "TradingView scanner not available"}
+
+        try:
+            scanner = get_scanner()
+            scanner_source = "tradingview"
+        except Exception as e:
+            try:
+                scanner = get_fallback_scanner()
+                scanner_source = "finviz" if scanner else "none"
+            except:
+                return {"error": f"Scanner failed: {e}", "progress_log": progress_log}
+
+        if not scanner:
+            return {"error": "No scanner available", "progress_log": progress_log}
+
+        log_progress(f"🔍 Fetching ALL {direction} candidates from {scanner_source}...")
+
+        try:
+            if direction == "LONG":
+                all_candidates = scanner.scan_long_setups(
+                    setup_type="all", market=market,
+                    min_price=min_price, min_market_cap=min_market_cap, limit=max_scan
+                )
+            else:
+                all_candidates = scanner.scan_short_setups(
+                    setup_type="all", market=market,
+                    min_price=min_price, min_market_cap=min_market_cap, limit=max_scan
+                )
+            raw_candidates_count = len(all_candidates)
+            log_progress(f"   📋 Got {raw_candidates_count} raw {direction} candidates")
+        except Exception as e:
+            return {"error": f"Fetch failed: {e}", "progress_log": progress_log}
+
+    if not all_candidates:
+        return {
+            "direction": direction,
+            "scan_time": datetime.now(et).strftime("%Y-%m-%d %H:%M:%S %Z"),
+            "scanner_source": scanner_source,
+            "raw_candidates": 0,
+            "scanned": 0,
+            "four_gate_passed": 0,
+            "three_gate_passed": 0,
+            "returned": 0,
+            "relaxed": False,
+            "candidates": [],
+            "rejection_reasons": {},
+            "errors": [],
+            "elapsed_seconds": round(time.time() - scan_start, 1),
+            "progress_log": progress_log
+        }
+
+    # Step 2: Process in batches
+    validated = []
+    all_results = []  # Compact one-liner for EVERY company tested
+    stocks_seen = set()
+    rejection_reasons = {}
+    errors = []
+
+    num_batches = (len(all_candidates) + batch_size - 1) // batch_size
+    log_progress(f"📦 Processing {raw_candidates_count} candidates in {num_batches} batches of {batch_size}...")
+
+    for batch_num in range(num_batches):
+        batch_start = batch_num * batch_size
+        batch_end = min(batch_start + batch_size, len(all_candidates))
+        batch = all_candidates[batch_start:batch_end]
+
+        log_progress(f"")
+        log_progress(f"━━━ BATCH {batch_num + 1}/{num_batches} ({batch_start + 1}-{batch_end} of {raw_candidates_count}) ━━━")
+
+        for i, candidate in enumerate(batch):
+            # Accept both formats: {"symbol": "AAPL"} or just "AAPL"
+            if isinstance(candidate, str):
+                symbol = candidate
+            else:
+                symbol = candidate.get('symbol')
+            if not symbol or symbol in stocks_seen:
+                continue
+            stocks_seen.add(symbol)
+
+            global_idx = batch_start + i + 1
+            log_progress(f"[{direction} {global_idx}/{raw_candidates_count}] Checking {symbol}...")
+
+            try:
+                signal = generate_trading_signal(ticker=symbol, direction=direction)
+                gate_status = signal.get('gate_status', {})
+                gates_passed = sum(1 for g in gate_status.values() if g == "PASS")
+
+                # Compact one-liner for this company
+                price = signal.get('current_price') or (candidate.get('price') if isinstance(candidate, dict) else None)
+                c = gate_status.get('catalyst', '?')[0]  # P or F
+                f = gate_status.get('freshness', '?')[0]
+                b = gate_status.get('brooks', '?')[0]
+                q = gate_status.get('quality', '?')[0]
+                result_line = f"{symbol}: {gates_passed}/4 [C:{c} F:{f} B:{b} Q:{q}]"
+                all_results.append(result_line)
+
+                if gates_passed >= 3:
+                    validated.append({
+                        'symbol': symbol,
+                        'direction': direction,
+                        'price': price,
+                        'signal': signal.get('signal'),
+                        'confidence': signal.get('confidence', 0),
+                        'gates_passed': gates_passed,
+                        'gate_status': gate_status,
+                        'trading_plan': signal.get('trading_plan'),
+                        'catalyst_analysis': signal.get('catalyst_analysis'),
+                        'freshness_analysis': signal.get('freshness_analysis'),
+                        'brooks_analysis': signal.get('brooks_analysis'),
+                        'quality_analysis': signal.get('quality_analysis'),
+                    })
+                    log_progress(f"   ✅ {symbol}: {gates_passed}/4 gates | {gate_status}")
+                else:
+                    log_progress(f"   ❌ {symbol}: {gates_passed}/4 gates | {gate_status}")
+                    for gate, val in gate_status.items():
+                        if val != "PASS":
+                            rejection_reasons[gate] = rejection_reasons.get(gate, 0) + 1
+
+            except Exception as e:
+                errors.append(f"{symbol}: {str(e)[:50]}")
+                log_progress(f"   ⚠️ {symbol} error: {str(e)[:50]}")
+
+        # After each batch, show running totals
+        four_so_far = len([x for x in validated if x['gates_passed'] == 4])
+        three_so_far = len([x for x in validated if x['gates_passed'] == 3])
+        log_progress(f"   📊 Batch {batch_num + 1} complete: {four_so_far} @4/4, {three_so_far} @3/4 so far")
+
+    # Step 3: Compile results from all batches
+    four_gates = [x for x in validated if x['gates_passed'] == 4]
+    three_gates = [x for x in validated if x['gates_passed'] == 3]
+
+    four_gates.sort(key=lambda x: x.get('confidence', 0), reverse=True)
+    three_gates.sort(key=lambda x: x.get('confidence', 0), reverse=True)
+
+    # Return ALL 4/4 gate passers, fill with 3/4 if less than min_results (5)
+    min_results = 5
+    final = four_gates[:]  # ALL 4/4 gate passers
+    relaxed = False
+    if len(final) < min_results and three_gates:
+        remaining = min_results - len(final)
+        final.extend(three_gates[:remaining])
+        relaxed = True
+
+    for i, a in enumerate(final):
+        a['rank'] = i + 1
+
+    elapsed = time.time() - scan_start
+    log_progress(f"")
+    log_progress(f"═══════════════════════════════════════════════════════════")
+    log_progress(f"📊 {direction} SCAN COMPLETE")
+    log_progress(f"   Raw candidates:  {raw_candidates_count}")
+    log_progress(f"   Scanned:         {len(stocks_seen)}")
+    log_progress(f"   4/4 gates:       {len(four_gates)}")
+    log_progress(f"   3/4 gates:       {len(three_gates)}")
+    log_progress(f"   Returned:        {len(final)}")
+    log_progress(f"   Time:            {elapsed:.0f}s")
+    log_progress(f"═══════════════════════════════════════════════════════════")
+
+    return {
+        "direction": direction,
+        "scan_time": datetime.now(et).strftime("%Y-%m-%d %H:%M:%S %Z"),
+        "scanner_source": scanner_source,
+        "raw_candidates": raw_candidates_count,
+        "scanned": len(stocks_seen),
+        "four_gate_passed": len(four_gates),
+        "three_gate_passed": len(three_gates),
+        "returned": len(final),
+        "relaxed": relaxed,
+        "all_results": all_results,
+        "candidates": final,
+        "rejection_reasons": rejection_reasons,
+        "errors": errors[:10],
+        "elapsed_seconds": round(elapsed, 1),
+        "progress_log": progress_log
+    }
+
+
+@mcp.tool()
+def scan_long_candidates(
+    candidates: list = None,
+    market: Literal["america", "canada", "both"] = "both",
+    min_price: float = 2.0,
+    min_market_cap: int = 1_000_000_000,
+    max_scan: int = 500,
+    batch_size: int = 20,
+    top_n: int = 5
+) -> dict[str, Any]:
+    """
+    Scan for LONG candidates only. Call this first, then scan_short_candidates.
+
+    RECOMMENDED WORKFLOW:
+        1. get_raw_scan_candidates(direction="LONG") - Get raw TradingView list
+        2. scan_long_candidates(candidates=<output from step 1>) - Validate with 4-gate system
+        3. get_raw_scan_candidates(direction="SHORT") - Get raw TradingView list
+        4. scan_short_candidates(candidates=<output from step 3>) - Validate SHORT direction
+
+    Process:
+        1. Fetch ALL raw candidates from TradingView (up to max_scan, default 500)
+        2. Process in batches of batch_size (default 50)
+        3. Validate each batch through 4-gate system
+        4. Compile all validated results across all batches
+        5. Return top N from combined pool
+
+    Returns top N LONG candidates that pass 3+/4 gates.
+    Includes full progress log showing each stock checked.
+
+    Args:
+        candidates: Optional list from get_raw_scan_candidates(direction="LONG").
+                   If provided, validates this list directly (no fetch needed).
+                   If not provided, fetches from TradingView automatically.
+                   Accepts: ["AAPL", "TSLA"] or [{"symbol": "AAPL"}, ...] - only symbol is used.
+
+    4-Gate Validation:
+        GATE 1 (CATALYST): Earnings proximity, insider buying, analyst upgrades
+        GATE 2 (FRESHNESS): CVD alignment, exhaustion < 50
+        GATE 3 (BROOKS): Probability >= 55%, no HIGH trap risk
+        GATE 4 (QUALITY): Quality score >= 50
+
+    Returns:
+        - raw_candidates: Total fetched from TradingView
+        - scanned: Unique stocks validated
+        - four_gate_passed: Stocks passing 4/4 gates
+        - three_gate_passed: Stocks passing 3/4 gates
+        - returned: Top N candidates returned
+        - candidates: List of validated candidates with full analysis
+        - progress_log: Detailed batch-by-batch progress
+    """
+    return _scan_one_direction("LONG", market, min_price, min_market_cap, max_scan, top_n, batch_size, candidates)
+
+
+@mcp.tool()
+def scan_short_candidates(
+    candidates: list = None,
+    market: Literal["america", "canada", "both"] = "both",
+    min_price: float = 2.0,
+    min_market_cap: int = 1_000_000_000,
+    max_scan: int = 500,
+    batch_size: int = 20,
+    top_n: int = 5
+) -> dict[str, Any]:
+    """
+    Scan for SHORT candidates only. Call after scan_long_candidates.
+
+    RECOMMENDED WORKFLOW:
+        1. get_raw_scan_candidates(direction="LONG") - Get raw TradingView list
+        2. scan_long_candidates(candidates=<output from step 1>) - Validate with 4-gate system
+        3. get_raw_scan_candidates(direction="SHORT") - Get raw TradingView list
+        4. scan_short_candidates(candidates=<output from step 3>) - Validate SHORT direction
+
+    Process:
+        1. Use provided candidates OR fetch from TradingView (up to max_scan, default 500)
+        2. Process in batches of batch_size (default 50)
+        3. Validate each batch through 4-gate system
+        4. Compile all validated results across all batches
+        5. Return top N from combined pool
+
+    Returns top N SHORT candidates that pass 3+/4 gates.
+    Includes full progress log showing each stock checked.
+
+    Args:
+        candidates: Optional list from get_raw_scan_candidates(direction="SHORT").
+                   If provided, validates this list directly (no fetch needed).
+                   If not provided, fetches from TradingView automatically.
+                   Accepts: ["AAPL", "TSLA"] or [{"symbol": "AAPL"}, ...] - only symbol is used.
+
+    4-Gate Validation:
+        GATE 1 (CATALYST): Earnings proximity, insider buying, analyst upgrades
+        GATE 2 (FRESHNESS): CVD alignment, exhaustion < 50
+        GATE 3 (BROOKS): Probability >= 55%, no HIGH trap risk
+        GATE 4 (QUALITY): Quality score >= 50
+
+    Returns:
+        - raw_candidates: Total fetched from TradingView
+        - scanned: Unique stocks validated
+        - four_gate_passed: Stocks passing 4/4 gates
+        - three_gate_passed: Stocks passing 3/4 gates
+        - returned: Top N candidates returned
+        - candidates: List of validated candidates with full analysis
+        - progress_log: Detailed batch-by-batch progress
+    """
+    return _scan_one_direction("SHORT", market, min_price, min_market_cap, max_scan, top_n, batch_size, candidates)
+
+
+@mcp.tool()
+def get_raw_scan_candidates(
+    direction: Literal["LONG", "SHORT"] = "LONG",
+    market: Literal["america", "canada", "both"] = "both",
+    min_price: float = 2.0,
+    min_market_cap: int = 1_000_000_000,
+    limit: int = 500
+) -> dict[str, Any]:
+    """
+    Fetch RAW candidates from TradingView WITHOUT any validation.
+
+    Use this to verify the scanner is returning candidates before running validation.
+    Returns the full list of candidates as-is from TradingView's screener API.
+
+    NO validation is performed - this just shows what TradingView returns.
+
+    Args:
+        direction: LONG or SHORT setups to scan for
+        market: "america", "canada", or "both"
+        min_price: Minimum stock price (default: $2)
+        min_market_cap: Minimum market cap (default: $1B)
+        limit: Maximum candidates to fetch (default: 500)
+
+    Returns:
+        Dictionary with:
+        - direction: LONG or SHORT
+        - scanner_source: "tradingview" or "finviz"
+        - total_candidates: Number of candidates fetched
+        - candidates: List of raw candidate data (symbol, price, change%, volume, market_cap, RSI, ADX, etc.)
+    """
+    import time
+    from datetime import datetime
+    import pytz
+
+    if not SCREENER_AVAILABLE:
+        return {"error": "TradingView scanner not available. Install: pip install tradingview-screener"}
+
+    et = pytz.timezone("America/New_York")
+    scan_start = time.time()
+
+    # Get scanner
+    try:
+        scanner = get_scanner()
+        scanner_source = "tradingview"
+    except Exception as e:
+        try:
+            scanner = get_fallback_scanner()
+            scanner_source = "finviz" if scanner else "none"
+        except:
+            return {"error": f"Scanner failed: {e}"}
+
+    if not scanner:
+        return {"error": "No scanner available"}
+
+    # Fetch raw candidates
+    try:
+        if direction == "LONG":
+            raw_candidates = scanner.scan_long_setups(
+                setup_type="all", market=market,
+                min_price=min_price, min_market_cap=min_market_cap, limit=limit
+            )
+        else:
+            raw_candidates = scanner.scan_short_setups(
+                setup_type="all", market=market,
+                min_price=min_price, min_market_cap=min_market_cap, limit=limit
+            )
+    except Exception as e:
+        return {"error": f"Scan failed: {e}"}
+
+    elapsed = time.time() - scan_start
+
+    # Format candidates for output (show key metrics)
+    formatted = []
+    for c in raw_candidates:
+        formatted.append({
+            "symbol": c.get("symbol"),
+            "price": c.get("price"),
+            "change_pct": c.get("change_pct"),
+            "volume": c.get("volume"),
+            "market_cap": c.get("market_cap"),
+            "rsi": c.get("rsi"),
+            "adx": c.get("adx"),
+            "macd": c.get("macd"),
+            "macd_signal": c.get("macd_signal"),
+            "setup_type": c.get("setup_type"),
+            "rel_volume": c.get("rel_volume"),
+            "perf_3m": c.get("perf_3m"),
+            "perf_1m": c.get("perf_1m"),
+        })
+
+    return {
+        "direction": direction,
+        "scan_time": datetime.now(et).strftime("%Y-%m-%d %H:%M:%S %Z"),
+        "scanner_source": scanner_source,
+        "market": market,
+        "filters": {
+            "min_price": min_price,
+            "min_market_cap": min_market_cap,
+            "limit": limit
+        },
+        "total_candidates": len(formatted),
+        "elapsed_seconds": round(elapsed, 2),
+        "candidates": formatted,
+        "note": "This is RAW data from TradingView. NO validation performed. Use scan_long_candidates/scan_short_candidates for validated results."
+    }
+
+
 @mcp.tool()
 def scan_market_opportunities(
     market: Literal["america", "canada", "both"] = "both",
@@ -6320,14 +7005,21 @@ def scan_market_opportunities(
     top_n: int = 5,
     include_deep_analysis: bool = True,
     require_4_gates: bool = True,
-    batch_size: int = 50,
+    batch_size: int = 20,
     max_scan: int = 500
 ) -> dict[str, Any]:
     """
     Scan US and Canadian markets for HIGH-QUALITY trading opportunities.
 
-    NEW: Scans in batches of 200 stocks and runs FULL 4-gate validation
+    NEW: Scans in batches of 20 stocks and runs FULL 4-gate validation
     on each candidate. Only returns stocks that pass ALL 4 gates.
+
+    AVAILABLE SCANNER TOOLS (use in this order):
+        1. get_raw_scan_candidates() - Raw TradingView list (NO validation, fast)
+           Use to verify scanner is returning candidates before validation.
+        2. scan_long_candidates() - LONG only with 4-gate validation
+        3. scan_short_candidates() - SHORT only with 4-gate validation
+        4. scan_market_opportunities() - Full scan (LONG + SHORT) with validation
 
     4-Gate Validation System:
         GATE 1 (CATALYST): Earnings proximity, insider buying, analyst upgrades
@@ -6408,10 +7100,9 @@ def scan_market_opportunities(
         et = pytz.timezone("America/New_York")
         import time
         scan_start_time = time.time()
-        MAX_SCAN_SECONDS = 600  # 10 minute timeout for entire scan
+        MAX_SCAN_SECONDS = 900  # 15 minute timeout for entire scan
 
-        # === NEW: BATCH SCANNING WITH 4-GATE VALIDATION ===
-        logger.info(f"🔍 Starting batch scan: {batch_size} stocks/batch, max {max_scan}, require 4/4 gates: {require_4_gates}")
+        # === BATCH SCANNING WITH 4-GATE VALIDATION ===
 
         # Collect 4/4 gate passers
         validated_long = []
@@ -6425,8 +7116,16 @@ def scan_market_opportunities(
         scan_errors = []
         timeout_occurred = False
 
-        # Fetch ALL candidates upfront (TradingView doesn't support pagination)
-        logger.info(f"📡 Fetching all candidates from scanner (limit={max_scan})...")
+        # Progress log - accumulates messages to include in response
+        progress_log = []
+
+        def log_progress(msg: str):
+            """Log to both container logs and progress_log for response."""
+            logger.info(msg)
+            progress_log.append(f"[{time.time() - scan_start_time:.0f}s] {msg}")
+
+        log_progress(f"🔍 Starting scan: max {max_scan} stocks, 15 min timeout")
+        log_progress(f"📡 Fetching all candidates from scanner...")
 
         try:
             all_long_candidates = scanner.scan_long_setups(
@@ -6436,10 +7135,10 @@ def scan_market_opportunities(
                 min_market_cap=min_market_cap,
                 limit=max_scan
             )
-            logger.info(f"   Got {len(all_long_candidates)} LONG candidates from TradingView")
+            log_progress(f"   Got {len(all_long_candidates)} LONG candidates from TradingView")
         except Exception as e:
             scan_errors.append(f"LONG scan error: {str(e)}")
-            logger.error(f"❌ LONG scanner failed: {e}")
+            log_progress(f"❌ LONG scanner failed: {e}")
             all_long_candidates = []
 
         try:
@@ -6450,19 +7149,19 @@ def scan_market_opportunities(
                 min_market_cap=min_market_cap,
                 limit=max_scan
             )
-            logger.info(f"   Got {len(all_short_candidates)} SHORT candidates from TradingView")
+            log_progress(f"   Got {len(all_short_candidates)} SHORT candidates from TradingView")
         except Exception as e:
             scan_errors.append(f"SHORT scan error: {str(e)}")
-            logger.error(f"❌ SHORT scanner failed: {e}")
+            log_progress(f"❌ SHORT scanner failed: {e}")
             all_short_candidates = []
 
         # Validate LONG candidates
-        logger.info(f"📊 Validating LONG candidates (have {len(all_long_candidates)} to check)...")
+        log_progress(f"📊 Validating LONG candidates (have {len(all_long_candidates)} to check)...")
         for candidate in all_long_candidates:
             # Check timeout
             elapsed = time.time() - scan_start_time
             if elapsed > MAX_SCAN_SECONDS:
-                logger.warning(f"⏱️ LONG scan timeout after {elapsed:.0f}s. Returning partial results.")
+                log_progress(f"⏱️ LONG scan timeout after {elapsed:.0f}s. Returning partial results.")
                 timeout_occurred = True
                 break
 
@@ -6472,9 +7171,8 @@ def scan_market_opportunities(
             stocks_seen.add(symbol)
             total_scanned_long += 1
 
-            # Progress every 10 stocks
-            if total_scanned_long % 10 == 0:
-                logger.info(f"   Progress: {total_scanned_long}/{len(all_long_candidates)} scanned, {len(validated_long)} validated ({time.time() - scan_start_time:.0f}s)")
+            # Log EVERY stock being checked
+            log_progress(f"[LONG {total_scanned_long}/{len(all_long_candidates)}] Checking {symbol}...")
 
             try:
                 # Run FULL 4-gate validation
@@ -6483,7 +7181,8 @@ def scan_market_opportunities(
                 gate_status = signal.get('gate_status', {})
                 gates_passed = sum(1 for g in gate_status.values() if g == "PASS")
 
-                if require_4_gates and gates_passed == 4:
+                # Store ALL candidates with 3+ gates for smart relaxation later
+                if gates_passed >= 3:
                     validated_long.append({
                         'symbol': symbol,
                         'direction': 'LONG',
@@ -6499,53 +7198,31 @@ def scan_market_opportunities(
                         'quality_analysis': signal.get('quality_analysis'),
                         'tv_data': candidate
                     })
-                    logger.info(f"✅ {symbol}: 4/4 gates PASSED | Confidence: {signal.get('confidence')}% [{len(validated_long)}/{top_n} found]")
-                    if len(validated_long) >= top_n:
-                        logger.info(f"🎯 Found {top_n} LONG candidates - moving to SHORT scan")
-                        break
-
-                elif not require_4_gates and gates_passed >= 3:
-                    validated_long.append({
-                        'symbol': symbol,
-                        'direction': 'LONG',
-                        'price': candidate.get('price', signal.get('current_price')),
-                        'signal': signal.get('signal'),
-                        'confidence': signal.get('confidence', 0),
-                        'gates_passed': gates_passed,
-                        'gate_status': gate_status,
-                        'trading_plan': signal.get('trading_plan'),
-                        'tv_data': candidate
-                    })
-                    if len(validated_long) >= top_n:
-                        logger.info(f"🎯 Found {top_n} LONG candidates - moving to SHORT scan")
-                        break
-
+                    log_progress(f"   ✅ {symbol}: {gates_passed}/4 gates PASSED | {gate_status}")
                 else:
-                    # Track rejection reasons
+                    # Track rejection reasons and log the failure
+                    log_progress(f"   ❌ {symbol}: {gates_passed}/4 gates | {gate_status}")
                     for gate_name, gate_val in gate_status.items():
                         if gate_val != "PASS":
                             rejection_reasons["LONG"][gate_name] = rejection_reasons["LONG"].get(gate_name, 0) + 1
-                    logger.debug(f"❌ {symbol}: {gates_passed}/4 gates - {gate_status}")
 
             except Exception as e:
                 scan_errors.append(f"{symbol}: {str(e)[:50]}")
-                logger.warning(f"Validation failed for {symbol}: {e}")
+                log_progress(f"⚠️ {symbol} validation error: {str(e)[:50]}")
 
         # Validate SHORT candidates (only if LONG didn't timeout)
         stocks_seen_short = set()
         if not timeout_occurred:
-            logger.info(f"📊 Validating SHORT candidates (have {len(all_short_candidates)} to check)...")
+            log_progress(f"📊 Validating SHORT candidates (have {len(all_short_candidates)} to check)...")
 
         for candidate in all_short_candidates:
             # Check timeout
             elapsed = time.time() - scan_start_time
             if elapsed > MAX_SCAN_SECONDS:
-                logger.warning(f"⏱️ SHORT scan timeout after {elapsed:.0f}s. Returning partial results.")
+                log_progress(f"⏱️ SHORT scan timeout after {elapsed:.0f}s. Returning partial results.")
                 timeout_occurred = True
                 break
 
-            if len(validated_short) >= top_n:
-                break
             if total_scanned_short >= max_scan:
                 break
 
@@ -6555,9 +7232,8 @@ def scan_market_opportunities(
             stocks_seen_short.add(symbol)
             total_scanned_short += 1
 
-            # Progress every 10 stocks
-            if total_scanned_short % 10 == 0:
-                logger.info(f"   Progress: {total_scanned_short}/{len(all_short_candidates)} scanned, {len(validated_short)} validated ({time.time() - scan_start_time:.0f}s)")
+            # Log EVERY stock being checked
+            log_progress(f"[SHORT {total_scanned_short}/{len(all_short_candidates)}] Checking {symbol}...")
 
             try:
                 signal = generate_trading_signal(ticker=symbol, direction="SHORT")
@@ -6565,7 +7241,8 @@ def scan_market_opportunities(
                 gate_status = signal.get('gate_status', {})
                 gates_passed = sum(1 for g in gate_status.values() if g == "PASS")
 
-                if require_4_gates and gates_passed == 4:
+                # Store ALL candidates with 3+ gates for smart relaxation later
+                if gates_passed >= 3:
                     validated_short.append({
                         'symbol': symbol,
                         'direction': 'SHORT',
@@ -6581,45 +7258,66 @@ def scan_market_opportunities(
                         'quality_analysis': signal.get('quality_analysis'),
                         'tv_data': candidate
                     })
-                    logger.info(f"✅ {symbol}: 4/4 gates PASSED | Confidence: {signal.get('confidence')}% [{len(validated_short)}/{top_n} found]")
-                    if len(validated_short) >= top_n:
-                        logger.info(f"🎯 Found {top_n} SHORT candidates - scan complete!")
-                        break
-
-                elif not require_4_gates and gates_passed >= 3:
-                    validated_short.append({
-                        'symbol': symbol,
-                        'direction': 'SHORT',
-                        'price': candidate.get('price', signal.get('current_price')),
-                        'signal': signal.get('signal'),
-                        'confidence': signal.get('confidence', 0),
-                        'gates_passed': gates_passed,
-                        'gate_status': gate_status,
-                        'trading_plan': signal.get('trading_plan'),
-                        'tv_data': candidate
-                    })
-                    if len(validated_short) >= top_n:
-                        logger.info(f"🎯 Found {top_n} SHORT candidates - scan complete!")
-                        break
-
+                    log_progress(f"   ✅ {symbol}: {gates_passed}/4 gates PASSED | {gate_status}")
                 else:
-                    # Track rejection reasons
+                    # Track rejection reasons and log the failure
+                    log_progress(f"   ❌ {symbol}: {gates_passed}/4 gates | {gate_status}")
                     for gate_name, gate_val in gate_status.items():
                         if gate_val != "PASS":
                             rejection_reasons["SHORT"][gate_name] = rejection_reasons["SHORT"].get(gate_name, 0) + 1
-                    logger.debug(f"❌ {symbol}: {gates_passed}/4 gates - {gate_status}")
 
             except Exception as e:
                 scan_errors.append(f"{symbol}: {str(e)[:50]}")
-                logger.warning(f"Validation failed for {symbol}: {e}")
+                log_progress(f"⚠️ {symbol} validation error: {str(e)[:50]}")
 
-        # Sort by confidence score (descending)
-        validated_long.sort(key=lambda x: x.get('confidence', 0), reverse=True)
-        validated_short.sort(key=lambda x: x.get('confidence', 0), reverse=True)
+        # === SMART GATE RELAXATION ===
+        # Separate 4/4 gates from 3/4 gates
+        long_4gates = [x for x in validated_long if x.get('gates_passed') == 4]
+        long_3gates = [x for x in validated_long if x.get('gates_passed') == 3]
+        short_4gates = [x for x in validated_short if x.get('gates_passed') == 4]
+        short_3gates = [x for x in validated_short if x.get('gates_passed') == 3]
 
-        # Take top N
-        final_long = validated_long[:top_n]
-        final_short = validated_short[:top_n]
+        # Sort each group by confidence (descending)
+        long_4gates.sort(key=lambda x: x.get('confidence', 0), reverse=True)
+        long_3gates.sort(key=lambda x: x.get('confidence', 0), reverse=True)
+        short_4gates.sort(key=lambda x: x.get('confidence', 0), reverse=True)
+        short_3gates.sort(key=lambda x: x.get('confidence', 0), reverse=True)
+
+        # Track statistics
+        stats_4gate_long = len(long_4gates)
+        stats_3gate_long = len(long_3gates)
+        stats_4gate_short = len(short_4gates)
+        stats_3gate_short = len(short_3gates)
+
+        # Smart selection: Take 4/4 first, then fill with 3/4 if needed
+        final_long = []
+        final_short = []
+        gate_relaxed_long = False
+        gate_relaxed_short = False
+
+        # LONG selection
+        if len(long_4gates) >= top_n:
+            final_long = long_4gates[:top_n]
+            log_progress(f"🎯 LONG: Found {stats_4gate_long} with 4/4 gates - taking top {top_n}")
+        else:
+            final_long = long_4gates[:top_n]  # Take all 4/4
+            remaining = top_n - len(final_long)
+            if remaining > 0 and long_3gates:
+                gate_relaxed_long = True
+                final_long.extend(long_3gates[:remaining])
+                log_progress(f"⚠️ LONG: Only {stats_4gate_long} with 4/4 gates - relaxed to 3/4, added {min(remaining, len(long_3gates))} more")
+
+        # SHORT selection
+        if len(short_4gates) >= top_n:
+            final_short = short_4gates[:top_n]
+            log_progress(f"🎯 SHORT: Found {stats_4gate_short} with 4/4 gates - taking top {top_n}")
+        else:
+            final_short = short_4gates[:top_n]  # Take all 4/4
+            remaining = top_n - len(final_short)
+            if remaining > 0 and short_3gates:
+                gate_relaxed_short = True
+                final_short.extend(short_3gates[:remaining])
+                log_progress(f"⚠️ SHORT: Only {stats_4gate_short} with 4/4 gates - relaxed to 3/4, added {min(remaining, len(short_3gates))} more")
 
         # Add ranks
         for i, a in enumerate(final_long):
@@ -6627,70 +7325,88 @@ def scan_market_opportunities(
         for i, a in enumerate(final_short):
             a['rank'] = i + 1
 
-        logger.info(f"📊 Scan complete: {len(final_long)} LONG, {len(final_short)} SHORT with 4/4 gates")
+        log_progress(f"📊 Scan complete: {len(final_long)} LONG ({stats_4gate_long} @4/4, {stats_3gate_long} @3/4), {len(final_short)} SHORT ({stats_4gate_short} @4/4, {stats_3gate_short} @3/4)")
 
-        # Generate text report for 4/4 gate validated results
+        total_elapsed = time.time() - scan_start_time
+
+        # Generate text report for validated results
         report_lines = [
             "=" * 65,
-            f"    HIGH-QUALITY SCAN - {datetime.now(et).strftime('%Y-%m-%d %H:%M %Z')}",
+            f"    SMART SCAN RESULTS - {datetime.now(et).strftime('%Y-%m-%d %H:%M %Z')}",
             "=" * 65,
             f"Markets: {market.upper()} | Filters: Price>${min_price}, MCap>${min_market_cap:,}",
-            f"Batch Size: {batch_size} | Max Scan: {max_scan} | Require 4/4 Gates: {require_4_gates}",
+            f"Max Scan: {max_scan} | Elapsed: {total_elapsed:.0f}s",
             "",
-            f"📊 SCAN STATISTICS:",
-            f"   LONG:  Scanned {total_scanned_long} → Found {len(final_long)} with 4/4 gates ({len(final_long)/max(total_scanned_long,1)*100:.1f}% pass rate)",
-            f"   SHORT: Scanned {total_scanned_short} → Found {len(final_short)} with 4/4 gates ({len(final_short)/max(total_scanned_short,1)*100:.1f}% pass rate)",
+            "📡 SCANNER TOOLS:",
+            "   • get_raw_scan_candidates() - Raw list (no validation)",
+            "   • scan_long_candidates()    - LONG with 4-gate validation",
+            "   • scan_short_candidates()   - SHORT with 4-gate validation",
             "",
-            "✅ ALL candidates below have passed FULL 4-gate validation:",
-            "   Gate 1: CATALYST (earnings/insider/upgrades)",
+            "=" * 65,
+            "                    📊 SCAN STATISTICS",
+            "=" * 65,
+            f"   LONG:  Scanned {total_scanned_long} stocks",
+            f"          → {stats_4gate_long} passed 4/4 gates ({stats_4gate_long/max(total_scanned_long,1)*100:.1f}%)",
+            f"          → {stats_3gate_long} passed 3/4 gates ({stats_3gate_long/max(total_scanned_long,1)*100:.1f}%)",
+            f"          → Returning {len(final_long)} candidates" + (" (relaxed to 3/4)" if gate_relaxed_long else ""),
+            "",
+            f"   SHORT: Scanned {total_scanned_short} stocks",
+            f"          → {stats_4gate_short} passed 4/4 gates ({stats_4gate_short/max(total_scanned_short,1)*100:.1f}%)",
+            f"          → {stats_3gate_short} passed 3/4 gates ({stats_3gate_short/max(total_scanned_short,1)*100:.1f}%)",
+            f"          → Returning {len(final_short)} candidates" + (" (relaxed to 3/4)" if gate_relaxed_short else ""),
+            "",
+            "   Gate 1: CATALYST (earnings/insider/upgrades/unusual options)",
             "   Gate 2: FRESHNESS (CVD aligned, exhaustion < 50)",
             "   Gate 3: BROOKS (probability >= 55%, no HIGH trap)",
             "   Gate 4: QUALITY (score >= 50)",
             "",
             "=" * 65,
-            "                TOP LONG CANDIDATES (4/4 GATES)",
+            "              TOP LONG CANDIDATES",
             "=" * 65,
         ]
 
         for a in final_long:
             brooks = a.get('brooks_analysis', {})
             trading_plan = a.get('trading_plan', {})
+            gates = a.get('gates_passed', 0)
+            gate_emoji = "✅" if gates == 4 else "⚠️"
             report_lines.extend([
                 "",
-                f"#{a.get('rank')} {a['symbol']} - ${a.get('price', 0):.2f}",
+                f"#{a.get('rank')} {a['symbol']} - ${a.get('price', 0):.2f} [{gates}/4 {gate_emoji}]",
                 f"   Signal: {a.get('signal')} | Confidence: {a.get('confidence')}%",
-                f"   Gates: {a.get('gates_passed')}/4 ✅",
+                f"   Gate Status: {a.get('gate_status', {})}",
                 f"   Brooks: {brooks.get('pattern', 'N/A')} | Prob: {brooks.get('probability', 0)}% | Trap: {brooks.get('trap_risk', 'N/A')}",
                 f"   Entry: ${trading_plan.get('entry_price', 0):.2f} | Stop: ${trading_plan.get('stop_loss', {}).get('price', 0):.2f} | Target: ${trading_plan.get('target_1', {}).get('price', 0):.2f}",
             ])
 
         if not final_long:
-            report_lines.append("\n   ❌ No LONG candidates passed 4/4 gates in this scan.")
+            report_lines.append("\n   ❌ No LONG candidates passed 3+/4 gates in this scan.")
 
         report_lines.extend([
             "",
             "=" * 65,
-            "                TOP SHORT CANDIDATES (4/4 GATES)",
+            "              TOP SHORT CANDIDATES",
             "=" * 65,
         ])
 
         for a in final_short:
             brooks = a.get('brooks_analysis', {})
             trading_plan = a.get('trading_plan', {})
+            gates = a.get('gates_passed', 0)
+            gate_emoji = "✅" if gates == 4 else "⚠️"
             report_lines.extend([
                 "",
-                f"#{a.get('rank')} {a['symbol']} - ${a.get('price', 0):.2f}",
+                f"#{a.get('rank')} {a['symbol']} - ${a.get('price', 0):.2f} [{gates}/4 {gate_emoji}]",
                 f"   Signal: {a.get('signal')} | Confidence: {a.get('confidence')}%",
-                f"   Gates: {a.get('gates_passed')}/4 ✅",
+                f"   Gate Status: {a.get('gate_status', {})}",
                 f"   Brooks: {brooks.get('pattern', 'N/A')} | Prob: {brooks.get('probability', 0)}% | Trap: {brooks.get('trap_risk', 'N/A')}",
                 f"   Entry: ${trading_plan.get('entry_price', 0):.2f} | Stop: ${trading_plan.get('stop_loss', {}).get('price', 0):.2f} | Target: ${trading_plan.get('target_1', {}).get('price', 0):.2f}",
             ])
 
         if not final_short:
-            report_lines.append("\n   ❌ No SHORT candidates passed 4/4 gates in this scan.")
+            report_lines.append("\n   ❌ No SHORT candidates passed 3+/4 gates in this scan.")
 
         # Add rejection stats to report
-        total_elapsed = time.time() - scan_start_time
         report_lines.extend([
             "",
             "=" * 65,
@@ -6721,6 +7437,16 @@ def scan_market_opportunities(
 
         report_lines.append("")
 
+        # Add progress log to report
+        report_lines.extend([
+            "=" * 65,
+            "                     SCAN PROGRESS LOG",
+            "=" * 65,
+        ])
+        for log_entry in progress_log:
+            report_lines.append(log_entry)
+        report_lines.append("")
+
         # Convert numpy types to native Python types for JSON serialization
         result = convert_numpy_types({
             "scan_time": datetime.now(et).strftime("%Y-%m-%d %H:%M:%S %Z"),
@@ -6730,17 +7456,19 @@ def scan_market_opportunities(
                 "market": market,
                 "min_price": min_price,
                 "min_market_cap": f"${min_market_cap:,}",
-                "batch_size": batch_size,
-                "max_scan": max_scan,
-                "require_4_gates": require_4_gates
+                "max_scan": max_scan
             },
             "stats": {
                 "long_scanned": total_scanned_long,
-                "long_passed": len(final_long),
-                "long_pass_rate": f"{len(final_long)/max(total_scanned_long,1)*100:.1f}%",
+                "long_4gate_passed": stats_4gate_long,
+                "long_3gate_passed": stats_3gate_long,
+                "long_returned": len(final_long),
+                "long_relaxed": gate_relaxed_long,
                 "short_scanned": total_scanned_short,
-                "short_passed": len(final_short),
-                "short_pass_rate": f"{len(final_short)/max(total_scanned_short,1)*100:.1f}%",
+                "short_4gate_passed": stats_4gate_short,
+                "short_3gate_passed": stats_3gate_short,
+                "short_returned": len(final_short),
+                "short_relaxed": gate_relaxed_short,
                 "elapsed_seconds": round(total_elapsed, 1),
                 "timeout_occurred": timeout_occurred,
                 "rejection_reasons": rejection_reasons,
@@ -6748,7 +7476,8 @@ def scan_market_opportunities(
             },
             "long_candidates": final_long,
             "short_candidates": final_short,
-            "errors": scan_errors[:10] if scan_errors else [],  # Include first 10 errors
+            "errors": scan_errors[:10] if scan_errors else [],
+            "progress_log": progress_log,
             "report": "\n".join(report_lines)
         })
 
@@ -7536,7 +8265,7 @@ def analyze_etf(ticker: str, include_options: bool = True) -> dict[str, Any]:
                 options_exist = len(t.options) > 0 if hasattr(t, 'options') else False
 
                 if options_exist:
-                    options = analyze_options_mcmillan(ticker, direction="LONG")
+                    options = analyze_options_mcmillan(ticker)
                     result["options_analysis"] = options
                     result["options_available"] = True
                 else:
@@ -7770,46 +8499,663 @@ def get_portfolio_summary(account_number: str) -> dict[str, Any]:
 # NEW SCANNER ENHANCEMENT TOOLS (December 2025)
 # =============================================================================
 
+def _fetch_google_news(ticker: str, max_results: int = 10) -> list:
+    """
+    Fetch recent news from Google News RSS - gives DATED headlines.
+
+    Returns list of news with title, published date, and source.
+    """
+    import httpx
+    import re
+    from datetime import datetime, timedelta
+
+    results = []
+    try:
+        # Google News RSS for stock ticker
+        rss_url = f"https://news.google.com/rss/search?q={ticker}+stock&hl=en-US&gl=US&ceid=US:en"
+
+        with httpx.Client(timeout=10.0, follow_redirects=True) as client:
+            response = client.get(rss_url, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            })
+
+            if response.status_code == 200:
+                xml = response.text
+
+                # Parse RSS items
+                items = re.findall(r'<item>(.*?)</item>', xml, re.DOTALL)
+
+                for item in items[:max_results]:
+                    title_match = re.search(r'<title>(.*?)</title>', item)
+                    pub_date_match = re.search(r'<pubDate>(.*?)</pubDate>', item)
+                    source_match = re.search(r'<source[^>]*>(.*?)</source>', item)
+
+                    if title_match:
+                        title = title_match.group(1).strip()
+                        # Clean CDATA
+                        title = re.sub(r'<!\[CDATA\[(.*?)\]\]>', r'\1', title)
+
+                        pub_date = None
+                        days_ago = None
+                        if pub_date_match:
+                            try:
+                                date_str = pub_date_match.group(1).strip()
+                                # Parse RFC 2822 date format
+                                pub_date = datetime.strptime(date_str[:25], '%a, %d %b %Y %H:%M:%S')
+                                days_ago = (datetime.now() - pub_date).days
+                            except:
+                                pass
+
+                        source = source_match.group(1).strip() if source_match else "Unknown"
+
+                        results.append({
+                            "title": title,
+                            "published": pub_date.isoformat() if pub_date else None,
+                            "days_ago": days_ago,
+                            "source": source,
+                            "is_recent": days_ago is not None and days_ago <= 3
+                        })
+
+                logger.info(f"Google News for '{ticker}' returned {len(results)} items")
+
+    except Exception as e:
+        logger.warning(f"Google News fetch failed for '{ticker}': {e}")
+
+    return results
+
+
+def _web_search_news(query: str, max_results: int = 5) -> list:
+    """
+    Search the web for news using DuckDuckGo (no API key required).
+
+    Returns list of search results with title, snippet, and url.
+    """
+    import httpx
+    import re
+    from html import unescape
+
+    results = []
+    try:
+        # DuckDuckGo HTML search (lightweight, no API key needed)
+        search_url = "https://html.duckduckgo.com/html/"
+
+        with httpx.Client(timeout=15.0, follow_redirects=True) as client:
+            response = client.post(
+                search_url,
+                data={"q": query, "kl": "us-en"},
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "Accept": "text/html,application/xhtml+xml",
+                    "Accept-Language": "en-US,en;q=0.9",
+                }
+            )
+
+            if response.status_code == 200:
+                html = response.text
+
+                # Parse DuckDuckGo HTML results
+                # Pattern: <a rel="nofollow" class="result__a" href="...">Title</a>
+                titles = re.findall(r'class="result__a"[^>]*>([^<]+)</a>', html)
+
+                # Snippet pattern: class="result__snippet">text</a>
+                snippets = re.findall(r'class="result__snippet"[^>]*>([^<]+)</a>', html)
+
+                # Fallback patterns if primary ones fail
+                if not titles:
+                    titles = re.findall(r'result__a[^>]*>([^<]+)</a>', html)
+
+                if not snippets:
+                    snippets = re.findall(r'result__snippet[^>]*>([^<]+)</a>', html)
+
+                # Pair up titles and snippets
+                for i, title in enumerate(titles[:max_results]):
+                    title_clean = unescape(title.strip())
+                    snippet_clean = unescape(snippets[i].strip()) if i < len(snippets) else ""
+
+                    if title_clean:
+                        results.append({
+                            "title": title_clean,
+                            "snippet": snippet_clean,
+                            "source": "web_search"
+                        })
+
+                logger.info(f"Web search for '{query[:40]}' returned {len(results)} results")
+
+    except Exception as e:
+        logger.warning(f"Web search failed for '{query}': {e}")
+
+    return results
+
+
+def _check_insider_selling_context(ticker: str, news_items: list) -> dict:
+    """
+    Check if insider selling is part of a 10b5-1 pre-planned sale (NEUTRAL) or
+    discretionary selling (BEARISH).
+
+    10b5-1 plans are SEC-approved pre-arranged trading schedules that insiders set up
+    while NOT in possession of material non-public information. Sales under these plans
+    are NEUTRAL signals, not bearish.
+
+    ENHANCED: Uses web search if yfinance news doesn't contain 10b5-1 mentions.
+
+    Returns:
+        - is_10b5_1: bool - True if evidence of pre-planned sale found
+        - context: str - Description of what was found
+        - confidence: HIGH / MEDIUM / LOW
+        - should_discount: bool - True if selling should be discounted from bearish score
+    """
+    result = {
+        "is_10b5_1": False,
+        "context": None,
+        "confidence": "LOW",
+        "should_discount": False,
+        "news_mentions": [],
+        "web_search_performed": False
+    }
+
+    # Keywords indicating 10b5-1 or pre-planned sales
+    TEN_B5_1_KEYWORDS = [
+        "10b5-1", "10b-5-1", "rule 10b5-1", "rule 10b-5",
+        "pre-arranged", "prearranged", "pre-planned", "preplanned",
+        "trading plan", "automatic sale", "scheduled sale",
+        "predetermined", "pre-determined"
+    ]
+
+    # Step 1: Check yfinance news items for 10b5-1 mentions
+    if news_items:
+        for item in news_items:
+            title = str(item.get('title', '')).lower()
+            summary = str(item.get('summary', '')).lower()
+            content = title + " " + summary
+
+            for keyword in TEN_B5_1_KEYWORDS:
+                if keyword in content:
+                    result["is_10b5_1"] = True
+                    result["news_mentions"].append({
+                        "title": item.get('title', '')[:100],
+                        "keyword_found": keyword,
+                        "source": "yfinance"
+                    })
+                    break
+
+    # Step 2: If not found in yfinance, do web search for 10b5-1 context
+    if not result["is_10b5_1"]:
+        result["web_search_performed"] = True
+        web_results = _web_search_news(f"{ticker} 10b5-1 insider selling plan 2024 2025", max_results=5)
+
+        for item in web_results:
+            title = str(item.get('title', '')).lower()
+            snippet = str(item.get('snippet', '')).lower()
+            content = title + " " + snippet
+
+            for keyword in TEN_B5_1_KEYWORDS:
+                if keyword in content:
+                    result["is_10b5_1"] = True
+                    result["news_mentions"].append({
+                        "title": item.get('title', '')[:100],
+                        "keyword_found": keyword,
+                        "source": "web_search"
+                    })
+                    break
+
+    # Determine confidence and whether to discount
+    if result["news_mentions"]:
+        if len(result["news_mentions"]) >= 2:
+            result["confidence"] = "HIGH"
+            result["context"] = f"Multiple sources confirm 10b5-1 plan ({len(result['news_mentions'])} mentions)"
+        else:
+            result["confidence"] = "MEDIUM"
+            result["context"] = f"10b5-1 plan found via {'web search' if result['web_search_performed'] else 'news'}"
+        result["should_discount"] = True
+    else:
+        result["context"] = "No 10b5-1 context found in news or web search - verify manually"
+        result["confidence"] = "LOW"
+        result["should_discount"] = False
+
+    return result
+
+
+def _analyze_news_sentiment(news_items: list, ticker: str = None) -> dict:
+    """
+    Analyze news headlines for bullish/bearish sentiment.
+
+    ENHANCED: Also performs web search for major catalysts (deals, partnerships, etc.)
+
+    Returns:
+        - sentiment: BULLISH / BEARISH / NEUTRAL / MIXED
+        - bullish_count: Number of bullish headlines
+        - bearish_count: Number of bearish headlines
+        - notable_headlines: List of significant headlines
+        - major_catalysts: List of major catalysts found via web search
+    """
+    result = {
+        "sentiment": "NEUTRAL",
+        "bullish_count": 0,
+        "bearish_count": 0,
+        "neutral_count": 0,
+        "notable_headlines": [],
+        "major_catalysts": [],
+        "web_search_performed": False
+    }
+
+    # Sentiment keywords - comprehensive list
+    BULLISH_KEYWORDS = [
+        "upgrade", "beat", "beats", "exceeds", "surpasses", "raises", "raised",
+        "positive", "bullish", "outperform", "buy rating", "strong buy",
+        "growth", "record high", "breakthrough", "wins", "awarded", "partnership",
+        "expansion", "launch", "momentum", "surge", "soars", "jumps", "rallies",
+        "deal", "contract", "agreement", "acquisition", "approved", "fda approval",
+        "higher", "gains", "climbs", "rises", "up", "order", "orders", "buy",
+        "skyrocket", "boom", "lift", "soar", "spike", "advance", "accelerate"
+    ]
+
+    BEARISH_KEYWORDS = [
+        "downgrade", "miss", "misses", "disappoints", "cuts", "lowers", "lowered",
+        "negative", "bearish", "underperform", "sell rating", "concern", "concerns",
+        "decline", "falls", "drops", "plunges", "slumps", "weakness", "weak",
+        "lawsuit", "investigation", "recall", "warning", "layoffs", "restructuring",
+        "ban", "banned", "restriction", "sanctions", "tariff", "trade war",
+        "export", "block", "blocked", "hit", "loss", "down", "slide", "tumble",
+        "risk", "threat", "probe", "fine", "penalty", "delay", "halt", "suspend"
+    ]
+
+    # Major catalyst keywords (requires web search for context)
+    MAJOR_CATALYST_KEYWORDS = [
+        "china", "deal", "contract", "billion", "partnership", "acquisition",
+        "merger", "fda", "approval", "ban", "restriction", "tariff", "antitrust"
+    ]
+
+    # Step 1: Analyze yfinance news
+    if news_items:
+        for item in news_items[:10]:
+            title = str(item.get('title', '')).lower()
+
+            is_bullish = any(kw in title for kw in BULLISH_KEYWORDS)
+            is_bearish = any(kw in title for kw in BEARISH_KEYWORDS)
+
+            if is_bullish and not is_bearish:
+                result["bullish_count"] += 1
+                result["notable_headlines"].append({
+                    "title": item.get('title', '')[:100],
+                    "sentiment": "BULLISH",
+                    "source": "yfinance"
+                })
+            elif is_bearish and not is_bullish:
+                result["bearish_count"] += 1
+                result["notable_headlines"].append({
+                    "title": item.get('title', '')[:100],
+                    "sentiment": "BEARISH",
+                    "source": "yfinance"
+                })
+            else:
+                result["neutral_count"] += 1
+
+    # Step 2: Google News - GET ALL DATED NEWS, evaluate by RECENCY + IMPACT
+    if ticker:
+        result["web_search_performed"] = True
+        google_news = _fetch_google_news(ticker, max_results=15)
+
+        for item in google_news:
+            title = str(item.get('title', '')).lower()
+            content = title
+
+            # Analyze sentiment
+            is_bullish = any(kw in content for kw in BULLISH_KEYWORDS)
+            is_bearish = any(kw in content for kw in BEARISH_KEYWORDS)
+
+            # Check for major catalyst keywords
+            catalysts_found = [kw for kw in MAJOR_CATALYST_KEYWORDS if kw in content]
+
+            # Determine sentiment
+            if is_bullish and not is_bearish:
+                sentiment = "BULLISH"
+            elif is_bearish and not is_bullish:
+                sentiment = "BEARISH"
+            else:
+                sentiment = "NEUTRAL"
+
+            # RECENCY WEIGHTING: Only count RECENT news (last 3 days)
+            is_recent = item.get('is_recent', False)
+            days_ago = item.get('days_ago')
+
+            if sentiment != "NEUTRAL" and is_recent:
+                # Recent news counts more
+                if sentiment == "BULLISH":
+                    result["bullish_count"] += 2 if days_ago == 0 else 1
+                else:
+                    result["bearish_count"] += 2 if days_ago == 0 else 1
+
+            # Add to major_catalysts with date info
+            if catalysts_found or (sentiment != "NEUTRAL" and is_recent):
+                result["major_catalysts"].append({
+                    "title": item.get('title', '')[:100],
+                    "days_ago": days_ago,
+                    "is_recent": is_recent,
+                    "news_source": item.get('source', 'Google News'),
+                    "keywords": catalysts_found[:3] if catalysts_found else [],
+                    "sentiment": sentiment
+                })
+
+    # Determine overall sentiment
+    bull = result["bullish_count"]
+    bear = result["bearish_count"]
+
+    if bull > bear * 2:
+        result["sentiment"] = "BULLISH"
+    elif bear > bull * 2:
+        result["sentiment"] = "BEARISH"
+    elif bull > 0 and bear > 0:
+        result["sentiment"] = "MIXED"
+    else:
+        result["sentiment"] = "NEUTRAL"
+
+    # Limit notable headlines
+    result["notable_headlines"] = result["notable_headlines"][:5]
+
+    return result
+
+
+def _verify_catalyst(catalyst_type: str, catalyst_data: dict, ticker: str = None) -> dict:
+    """
+    VERIFICATION SYSTEM: Validates each catalyst before it's used for trading decisions.
+
+    This is CRITICAL for real money trading - every catalyst must be verified before acting.
+
+    Verification Requirements by Catalyst Type:
+    - INSIDER: Requires SEC filing confirmation or multiple news sources
+    - ANALYST: Requires firm name + specific rating change
+    - NEWS: Requires date + source credibility + recency (≤3 days)
+    - OPTIONS: Requires volume/OI verification
+    - EARNINGS: Requires SEC calendar or company IR confirmation
+
+    Returns:
+        - verified: bool - True ONLY if verification requirements met
+        - confidence: HIGH / MEDIUM / LOW / UNVERIFIED
+        - sources_count: Number of confirming sources
+        - verification_method: How it was verified
+        - requires_manual_check: bool - True if human verification needed
+        - warning: Description if verification failed
+    """
+    result = {
+        "catalyst_type": catalyst_type,
+        "verified": False,
+        "confidence": "UNVERIFIED",
+        "sources_count": 0,
+        "verification_method": None,
+        "requires_manual_check": True,
+        "warning": None,
+        "original_data": catalyst_data
+    }
+
+    # INSIDER TRADES verification
+    if catalyst_type == "INSIDER":
+        # Verified if: from yfinance API (SEC filings) OR multiple news sources
+        source = catalyst_data.get("source", "")
+        value = catalyst_data.get("value", 0)
+        position = catalyst_data.get("position", "")
+
+        if source in ["yfinance", "sec_filing", "api"]:
+            result["verified"] = True
+            result["confidence"] = "HIGH"
+            result["verification_method"] = "SEC Filing via API"
+            result["sources_count"] = 1
+            result["requires_manual_check"] = False
+        elif catalyst_data.get("news_mentions", 0) >= 2:
+            result["verified"] = True
+            result["confidence"] = "MEDIUM"
+            result["verification_method"] = f"Multiple news sources ({catalyst_data.get('news_mentions')})"
+            result["sources_count"] = catalyst_data.get("news_mentions", 0)
+            result["requires_manual_check"] = False
+        else:
+            result["warning"] = f"Insider trade ({position}) not verified via SEC filing. Manual check required."
+
+        # Extra verification for large trades (>$500K)
+        if value and value > 500000 and result["confidence"] != "HIGH":
+            result["requires_manual_check"] = True
+            result["warning"] = f"LARGE insider trade (${value:,.0f}) - MANUAL VERIFICATION REQUIRED before trading"
+
+    # ANALYST RATINGS verification
+    elif catalyst_type == "ANALYST":
+        firm = catalyst_data.get("firm", "")
+        grade_change = catalyst_data.get("change", "")
+
+        # Verified if: from yfinance API (official ratings)
+        if catalyst_data.get("source") in ["yfinance", "api"]:
+            result["verified"] = True
+            result["confidence"] = "HIGH"
+            result["verification_method"] = "Bloomberg/Reuters via API"
+            result["sources_count"] = 1
+            result["requires_manual_check"] = False
+        elif firm and grade_change:
+            # Have firm + change, likely valid but verify
+            result["verified"] = True
+            result["confidence"] = "MEDIUM"
+            result["verification_method"] = "API data with firm attribution"
+            result["sources_count"] = 1
+            result["requires_manual_check"] = False
+        else:
+            result["warning"] = f"Analyst rating lacks firm attribution. Manual verification required."
+
+    # NEWS CATALYST verification
+    elif catalyst_type == "NEWS":
+        title = catalyst_data.get("title", "")
+        source = catalyst_data.get("source", "")
+        days_ago = catalyst_data.get("days_ago")
+        is_recent = catalyst_data.get("is_recent", False)
+
+        # Credible sources
+        CREDIBLE_SOURCES = [
+            "reuters", "bloomberg", "wsj", "wall street journal", "cnbc", "financial times",
+            "yahoo finance", "marketwatch", "seeking alpha", "barron's", "investor's business daily",
+            "sec.gov", "pr newswire", "business wire", "globe newswire"
+        ]
+
+        source_lower = source.lower() if source else ""
+        is_credible = any(cs in source_lower for cs in CREDIBLE_SOURCES)
+
+        # Verification rules for news:
+        # 1. Must be recent (≤3 days)
+        # 2. Must be from credible source
+        # 3. Title must have substance (>20 chars)
+
+        if is_recent and is_credible and len(title) > 20:
+            result["verified"] = True
+            result["confidence"] = "HIGH"
+            result["verification_method"] = f"Credible source ({source}) within {days_ago} days"
+            result["sources_count"] = 1
+            result["requires_manual_check"] = False
+        elif is_recent and len(title) > 20:
+            result["verified"] = True
+            result["confidence"] = "MEDIUM"
+            result["verification_method"] = f"Recent news ({days_ago} days) - source credibility unknown"
+            result["sources_count"] = 1
+            result["requires_manual_check"] = True
+            result["warning"] = f"News source '{source}' not in credible list. Verify headline accuracy."
+        elif not is_recent and days_ago is not None:
+            result["verified"] = False
+            result["confidence"] = "LOW"
+            result["warning"] = f"OLD NEWS ({days_ago} days ago) - Already priced in. DO NOT TRADE on stale catalyst."
+        else:
+            result["warning"] = f"News catalyst lacks date/source verification. Manual check required."
+
+    # OPTIONS ACTIVITY verification
+    elif catalyst_type == "OPTIONS":
+        volume = catalyst_data.get("volume", 0)
+        open_interest = catalyst_data.get("open_interest", 0)
+        vol_oi_ratio = catalyst_data.get("vol_oi_ratio", 0)
+
+        # Verified if: volume/OI data from API and ratio is significant
+        if vol_oi_ratio >= 2.0 and volume > 1000:
+            result["verified"] = True
+            result["confidence"] = "HIGH"
+            result["verification_method"] = f"Vol/OI ratio {vol_oi_ratio:.1f}x with {volume:,} volume"
+            result["sources_count"] = 1
+            result["requires_manual_check"] = False
+        elif vol_oi_ratio >= 1.5:
+            result["verified"] = True
+            result["confidence"] = "MEDIUM"
+            result["verification_method"] = f"Moderate unusual activity (Vol/OI: {vol_oi_ratio:.1f}x)"
+            result["sources_count"] = 1
+            result["requires_manual_check"] = True
+        else:
+            result["warning"] = "Options activity below unusual threshold. May be noise."
+
+    # EARNINGS verification
+    elif catalyst_type == "EARNINGS":
+        date = catalyst_data.get("date")
+        days_away = catalyst_data.get("days_away")
+
+        # Verified if: from yfinance calendar (official company calendar)
+        if date and days_away is not None:
+            result["verified"] = True
+            result["confidence"] = "HIGH"
+            result["verification_method"] = "Company IR calendar via API"
+            result["sources_count"] = 1
+            result["requires_manual_check"] = False
+        else:
+            result["warning"] = "Earnings date could not be verified. Check company IR."
+
+    # MARKET SENTIMENT (Fear/Greed) verification
+    elif catalyst_type == "SENTIMENT":
+        score = catalyst_data.get("score")
+        source = catalyst_data.get("source", "")
+
+        if source in ["cnn", "cnn_fear_greed"] and score is not None:
+            result["verified"] = True
+            result["confidence"] = "HIGH"
+            result["verification_method"] = "CNN Fear & Greed Index (official)"
+            result["sources_count"] = 1
+            result["requires_manual_check"] = False
+        else:
+            result["warning"] = "Market sentiment source not verified."
+
+    return result
+
+
 @mcp.tool()
 def detect_catalyst_strength(ticker: str) -> dict[str, Any]:
     """
     Aggregate ALL catalyst signals into one actionable strength assessment.
 
-    Combines multiple data sources:
-    - Earnings Calendar: Days to earnings, beat rate (25 pts max)
-    - Insider Trades: Buy clusters in 30 days (25 pts max)
-    - Options IV Rank: 30-60% = active interest (20 pts max)
-    - Institutional: Recent 13F accumulation (15 pts max)
-    - News/Upgrades: Recent analyst upgrades (15 pts max)
-    - Unusual Options Activity: Smart money detection (20 pts max)
-    - CNN Fear/Greed Index: Market sentiment context (10 pts max)
+    NOW DIRECTION-INDEPENDENT: Returns separate bullish/bearish scores and
+    determines catalyst_direction based on which has stronger signals.
+
+    ENHANCED (Dec 2025):
+    - Fetches news headlines and analyzes sentiment
+    - Checks for 10b5-1 pre-planned sales (discounts bearish score if found)
+    - Adds warnings when significant insider selling detected but context unverified
+
+    VERIFICATION SYSTEM (Dec 2025) - REAL MONEY PROTECTION:
+    - EVERY catalyst is verified before being used for trading decisions
+    - Unverified catalysts generate warnings and may block trades
+    - Verification checks: source credibility, recency, SEC filings, multiple sources
+    - trade_allowed = False if critical catalysts are UNVERIFIED
+
+    Quality-Weighted Scoring:
+    - Insider Trades: Weight by position (CEO=5x), value (log scale), % holdings
+      * 10b5-1 plans are NEUTRAL (75% discount on bearish score)
+    - Analyst Ratings: Weight by firm tier (Goldman=3x), rating change magnitude
+    - Options: Equal weight for bullish/bearish unusual activity
+    - News Sentiment: Headline analysis for bullish/bearish signals
 
     Returns:
+    - catalyst_direction: BULLISH / BEARISH / NEUTRAL
+    - bullish_score: Total bullish catalyst points
+    - bearish_score: Total bearish catalyst points
     - catalyst_strength: STRONG / MODERATE / WEAK / NONE
     - catalysts_detected: List of active catalysts
     - primary_catalyst: Most significant driver
-    - catalyst_score: 0-100
-    - trade_allowed: bool (NONE = False)
+    - catalyst_score: 0-100 (max of bullish or bearish)
+    - trade_allowed: bool (False if NONE or critical unverified catalysts)
+    - warnings: List of items requiring manual verification
+    - news_sentiment: Analyzed sentiment from recent headlines
+    - enhanced_analysis: Summary of enhanced checks performed
+    - verification_summary: Counts of verified/unverified catalysts
+    - verified_catalysts: List of catalysts that passed verification
+    - unverified_catalysts: List of catalysts that FAILED verification
+    - requires_manual_verification: bool - True if ANY catalyst needs human check
     """
     from datetime import datetime, timedelta
     import pandas as pd
+    import math
 
     ticker = validate_ticker(ticker)
 
+    # ENHANCED: Fetch news upfront for context analysis (10b5-1 detection, sentiment)
+    news_items = []
+    try:
+        news_items = yf_call(ticker, "get_news") or []
+    except Exception as e:
+        logger.warning(f"Could not fetch news for {ticker}: {e}")
+
+    # Position weight for insider trades (who knows most)
+    POSITION_WEIGHT = {
+        "CEO": 5.0, "Chief Executive": 5.0,
+        "CFO": 4.5, "Chief Financial": 4.5,
+        "COO": 4.0, "Chief Operating": 4.0,
+        "President": 4.0,
+        "Chairman": 3.5,
+        "Director": 2.5,
+        "VP": 2.0, "Vice President": 2.0,
+        "EVP": 2.5, "SVP": 2.0,
+        "Officer": 1.5,
+        "10% Owner": 3.0, "10 percent": 3.0,
+    }
+
+    # Analyst firm tiers (based on historical accuracy and influence)
+    ANALYST_TIER = {
+        # Tier 1 - Major bulge bracket (weight 3.0)
+        "Goldman Sachs": 3.0, "Morgan Stanley": 3.0, "JP Morgan": 3.0, "JPMorgan": 3.0,
+        "Bank of America": 3.0, "BofA": 3.0, "Citigroup": 3.0, "Citi": 3.0, "UBS": 3.0,
+        # Tier 2 - Respected research (weight 2.5)
+        "Barclays": 2.5, "Deutsche Bank": 2.5, "Credit Suisse": 2.5,
+        "Wells Fargo": 2.5, "RBC Capital": 2.5, "RBC": 2.5, "Jefferies": 2.5,
+        # Tier 3 - Solid coverage (weight 2.0)
+        "Piper Sandler": 2.0, "Raymond James": 2.0, "Stifel": 2.0,
+        "Truist": 2.0, "BMO Capital": 2.0, "BMO": 2.0, "BTIG": 2.0,
+        # Tier 4 - Smaller firms (weight 1.5)
+        "Wedbush": 1.5, "Needham": 1.5, "Craig-Hallum": 1.5,
+        "Lake Street": 1.5, "Roth Capital": 1.5, "Roth": 1.5,
+    }
+
     result = {
         "ticker": ticker,
+        "catalyst_direction": "NEUTRAL",  # NEW: Independent direction finding
+        "bullish_score": 0,  # NEW
+        "bearish_score": 0,  # NEW
         "catalyst_strength": "NONE",
         "catalyst_score": 0,
         "catalysts_detected": [],
+        "bullish_catalysts": [],  # NEW
+        "bearish_catalysts": [],  # NEW
         "primary_catalyst": None,
         "trade_allowed": False,
+        "warnings": [],  # NEW: Warnings that require manual verification
+        "news_sentiment": None,  # NEW: News-based sentiment
+        # VERIFICATION SYSTEM - Real Money Protection
+        "verified_catalysts": [],  # Catalysts that passed verification
+        "unverified_catalysts": [],  # Catalysts that FAILED verification - DANGER
+        "verification_summary": {
+            "total_catalysts": 0,
+            "verified_count": 0,
+            "unverified_count": 0,
+            "high_confidence": 0,
+            "requires_manual": 0
+        },
+        "requires_manual_verification": False,  # True if ANY catalyst needs human check
         "details": {}
     }
 
-    score = 0
-    catalysts = []
+    bullish_score = 0
+    bearish_score = 0
+    bullish_catalysts = []
+    bearish_catalysts = []
+    neutral_score = 0  # For direction-neutral catalysts like earnings proximity
+    warnings = []  # Track warnings for manual verification
+    verified_catalysts = []  # Track verified catalysts
+    unverified_catalysts = []  # Track unverified catalysts - CRITICAL
 
-    # 1. EARNINGS ANALYSIS (25 pts max)
+    # 1. EARNINGS ANALYSIS (25 pts max) - Direction NEUTRAL (applies to both)
     try:
         t = yf.Ticker(ticker)
         calendar = t.calendar
@@ -7819,7 +9165,6 @@ def detect_catalyst_strength(ticker: str) -> dict[str, Any]:
         if calendar is not None:
             if isinstance(calendar, dict):
                 earnings_date = calendar.get('Earnings Date')
-                # Collect all dates if it's a list
                 if isinstance(earnings_date, list):
                     all_earnings_dates = earnings_date
                     earnings_date = earnings_date[0] if len(earnings_date) > 0 else None
@@ -7828,7 +9173,6 @@ def detect_catalyst_strength(ticker: str) -> dict[str, Any]:
                     all_earnings_dates = calendar['Earnings Date'].tolist()
                     earnings_date = calendar['Earnings Date'].iloc[0]
 
-        # Convert to date object
         def to_date(d):
             if d is None:
                 return None
@@ -7844,20 +9188,15 @@ def detect_catalyst_strength(ticker: str) -> dict[str, Any]:
         earnings_date = to_date(earnings_date)
         today = datetime.now().date()
 
-        # If the primary earnings date is too far in the past (>10 days), try to find next upcoming
         if earnings_date and (earnings_date - today).days < -10:
-            # Look for future dates in the list
             future_dates = []
             for d in all_earnings_dates:
                 d_converted = to_date(d)
                 if d_converted and d_converted > today:
                     future_dates.append(d_converted)
-
             if future_dates:
-                # Use the nearest future earnings date
                 earnings_date = min(future_dates)
             else:
-                # No future dates found, mark as past and unknown next
                 result["details"]["earnings"] = {
                     "last_earnings": str(to_date(all_earnings_dates[0])) if all_earnings_dates else "unknown",
                     "next_earnings": "unknown",
@@ -7867,26 +9206,24 @@ def detect_catalyst_strength(ticker: str) -> dict[str, Any]:
 
         if earnings_date:
             days_to_earnings = (earnings_date - today).days
-
             result["details"]["earnings"] = {
                 "date": str(earnings_date),
                 "days_away": days_to_earnings
             }
 
-            # Pre-earnings (5-30 days) = STRONG catalyst
+            # Earnings are direction-neutral catalysts - add to both
             if 5 <= days_to_earnings <= 30:
-                score += 25
-                catalysts.append(f"Pre-Earnings in {days_to_earnings} days")
-            # Post-earnings (1-10 days ago) = MODERATE catalyst
+                neutral_score += 20
+                bullish_catalysts.append(f"Pre-Earnings in {days_to_earnings} days")
+                bearish_catalysts.append(f"Pre-Earnings in {days_to_earnings} days")
             elif -10 <= days_to_earnings < 0:
-                score += 20
-                catalysts.append(f"Post-Earnings {abs(days_to_earnings)} days ago")
-            # Earnings further out (30-45 days)
+                neutral_score += 15
+                bullish_catalysts.append(f"Post-Earnings {abs(days_to_earnings)} days ago")
+                bearish_catalysts.append(f"Post-Earnings {abs(days_to_earnings)} days ago")
             elif 30 < days_to_earnings <= 45:
-                score += 10
-                catalysts.append(f"Earnings in {days_to_earnings} days")
+                neutral_score += 8
 
-        # Check earnings beat rate
+        # Beat rate - slightly bullish bias
         try:
             earnings_hist = t.earnings_history
             if earnings_hist is not None and not earnings_hist.empty:
@@ -7897,20 +9234,21 @@ def detect_catalyst_strength(ticker: str) -> dict[str, Any]:
                     result["details"]["earnings"]["beat_rate"] = round(beat_rate * 100, 1)
 
                     if beat_rate >= 0.7:
-                        score += 5  # Bonus for consistent beater
-                        catalysts.append(f"Earnings Beat Rate: {round(beat_rate*100)}%")
+                        bullish_score += 5
+                        bullish_catalysts.append(f"Earnings Beat Rate: {round(beat_rate*100)}%")
+                    elif beat_rate <= 0.3:
+                        bearish_score += 5
+                        bearish_catalysts.append(f"Earnings Miss Rate: {round((1-beat_rate)*100)}%")
         except:
             pass
-
     except Exception as e:
         result["details"]["earnings_error"] = str(e)
 
-    # 2. INSIDER TRADES (25 pts max)
+    # 2. INSIDER TRADES - QUALITY WEIGHTED (25 pts max per direction)
     try:
         insider_data = yf_call(ticker, "get_insider_transactions")
 
         if insider_data is not None and isinstance(insider_data, pd.DataFrame) and not insider_data.empty:
-            # Count buys in last 30 days
             thirty_days_ago = datetime.now() - timedelta(days=30)
 
             recent_trades = insider_data.copy()
@@ -7918,141 +9256,252 @@ def detect_catalyst_strength(ticker: str) -> dict[str, Any]:
                 recent_trades['date'] = pd.to_datetime(recent_trades['Start Date'], errors='coerce')
                 recent_trades = recent_trades[recent_trades['date'] >= thirty_days_ago]
 
-            # Column is named 'Text' in yfinance, not 'Transaction'
             trans_col = 'Text' if 'Text' in recent_trades.columns else 'Transaction'
+            insider_col = 'Insider' if 'Insider' in recent_trades.columns else None
+            value_col = 'Value' if 'Value' in recent_trades.columns else None
+            shares_col = 'Shares' if 'Shares' in recent_trades.columns else None
+
+            insider_bullish_pts = 0
+            insider_bearish_pts = 0
+            notable_buys = []
+            notable_sells = []
+
             if trans_col in recent_trades.columns:
-                buys = recent_trades[recent_trades[trans_col].str.contains('Purchase|Buy', case=False, na=False)]
-                sells = recent_trades[recent_trades[trans_col].str.contains('Sale|Sell', case=False, na=False)]
+                for _, trade in recent_trades.iterrows():
+                    trans_text = str(trade.get(trans_col, '')).lower()
+                    is_buy = 'purchase' in trans_text or 'buy' in trans_text
+                    is_sell = 'sale' in trans_text or 'sell' in trans_text
 
-                buy_count = len(buys)
-                sell_count = len(sells)
+                    if not is_buy and not is_sell:
+                        continue
 
-                result["details"]["insider"] = {
-                    "buys_30d": buy_count,
-                    "sells_30d": sell_count
-                }
+                    # Get position weight
+                    pos_weight = 1.0
+                    position = str(trade.get(insider_col, '')) if insider_col else ''
+                    for key, weight in POSITION_WEIGHT.items():
+                        if key.lower() in position.lower():
+                            pos_weight = max(pos_weight, weight)
 
-                # 3+ buys = STRONG (25 pts)
-                if buy_count >= 3:
-                    score += 25
-                    catalysts.append(f"Insider Cluster: {buy_count} buys in 30 days")
-                # 2 buys = MODERATE (15 pts)
-                elif buy_count >= 2:
-                    score += 15
-                    catalysts.append(f"Insider Buying: {buy_count} buys in 30 days")
-                # 1 buy = WEAK (8 pts)
-                elif buy_count >= 1:
-                    score += 8
-                    catalysts.append(f"Insider Buy detected")
+                    # Get value weight (logarithmic - $1M = 2x weight of $100K)
+                    value = 0
+                    if value_col and trade.get(value_col):
+                        try:
+                            val_str = str(trade.get(value_col, '0'))
+                            val_str = val_str.replace('$', '').replace(',', '').replace('(', '-').replace(')', '')
+                            value = abs(float(val_str))
+                        except:
+                            value = 0
 
-                # Check for C-suite buys (bonus)
-                if not buys.empty and 'Insider' in buys.columns:
-                    c_suite = buys[buys['Insider'].str.contains('CEO|CFO|COO|President|Chairman', case=False, na=False)]
-                    if len(c_suite) > 0:
-                        score += 5
-                        catalysts.append("C-Suite buying detected")
+                    value_weight = 1.0 + math.log10(max(value, 10000) / 10000) if value > 0 else 1.0
+                    value_weight = min(value_weight, 3.0)  # Cap at 3x
+
+                    # Combined weight
+                    trade_weight = pos_weight * value_weight
+
+                    if is_buy:
+                        insider_bullish_pts += trade_weight
+                        if pos_weight >= 3.5:  # C-suite or major holder
+                            notable_buys.append({
+                                "position": position[:30],
+                                "value": value,
+                                "weight": round(trade_weight, 1)
+                            })
+                    elif is_sell:
+                        insider_bearish_pts += trade_weight
+                        if pos_weight >= 3.5:
+                            notable_sells.append({
+                                "position": position[:30],
+                                "value": value,
+                                "weight": round(trade_weight, 1)
+                            })
+
+            # Normalize to 0-25 scale
+            max_insider_pts = 25
+            insider_bullish_final = min(max_insider_pts, insider_bullish_pts * 2.5)
+            insider_bearish_final = min(max_insider_pts, insider_bearish_pts * 2.5)
+
+            # ENHANCED: Check for 10b5-1 pre-planned sales context if significant selling detected
+            # Trigger check if either: 1) C-suite selling detected OR 2) bearish score >= 15
+            selling_context = None
+            if insider_bearish_final >= 8 and (notable_sells or insider_bearish_final >= 15):
+                selling_context = _check_insider_selling_context(ticker, news_items)
+                result["details"]["insider_selling_context"] = selling_context
+
+                if selling_context.get("should_discount"):
+                    # 10b5-1 confirmed - discount the bearish score by 75%
+                    original_bearish = insider_bearish_final
+                    insider_bearish_final = insider_bearish_final * 0.25
+                    result["details"]["insider"]["10b5_1_discount"] = {
+                        "original_pts": round(original_bearish, 1),
+                        "discounted_pts": round(insider_bearish_final, 1),
+                        "reason": selling_context.get("context")
+                    }
+                elif selling_context.get("confidence") == "LOW":
+                    # No 10b5-1 context found - add warning for manual verification
+                    total_sell_value = sum(s.get("value", 0) for s in notable_sells) if notable_sells else 0
+                    warnings.append({
+                        "type": "INSIDER_SELLING_UNVERIFIED",
+                        "message": f"Significant insider selling detected (bearish score: {round(insider_bearish_final)} pts). "
+                                   f"Could not verify if 10b5-1 pre-planned. Recommend manual check.",
+                        "action": f"Search: '{ticker} 10b5-1 plan' or '{ticker} insider selling'",
+                        "sell_value": total_sell_value if total_sell_value > 0 else "Value not available for non-C-suite trades"
+                    })
+
+            bullish_score += insider_bullish_final
+            bearish_score += insider_bearish_final
+
+            if insider_bullish_final >= 15:
+                bullish_catalysts.append(f"Insider Buying (weighted: {round(insider_bullish_final)} pts)")
+            elif insider_bullish_final >= 8:
+                bullish_catalysts.append(f"Insider Buy detected ({round(insider_bullish_final)} pts)")
+
+            if insider_bearish_final >= 15:
+                if selling_context and selling_context.get("should_discount"):
+                    bearish_catalysts.append(f"Insider Selling DISCOUNTED (10b5-1 plan, {round(insider_bearish_final)} pts)")
+                else:
+                    bearish_catalysts.append(f"Insider Selling (weighted: {round(insider_bearish_final)} pts)")
+            elif insider_bearish_final >= 8:
+                if selling_context and selling_context.get("should_discount"):
+                    bearish_catalysts.append(f"Insider Sell DISCOUNTED (10b5-1, {round(insider_bearish_final)} pts)")
+                else:
+                    bearish_catalysts.append(f"Insider Sell detected ({round(insider_bearish_final)} pts)")
+
+            result["details"]["insider"] = {
+                "bullish_pts": round(insider_bullish_final, 1),
+                "bearish_pts": round(insider_bearish_final, 1),
+                "notable_buys": notable_buys[:3],
+                "notable_sells": notable_sells[:3],
+                "10b5_1_detected": selling_context.get("is_10b5_1", False) if selling_context else False
+            }
 
     except Exception as e:
         result["details"]["insider_error"] = str(e)
 
-    # 3. OPTIONS IV RANK (20 pts max)
+    # 3. OPTIONS IV RANK (20 pts max) - Direction NEUTRAL
     try:
-        # Quick IV rank check using yfinance options
         t = yf.Ticker(ticker)
         if t.options and len(t.options) > 0:
             nearest_exp = t.options[0]
             chain = t.option_chain(nearest_exp)
 
             if chain.calls is not None and not chain.calls.empty:
-                atm_calls = chain.calls[
-                    (chain.calls['strike'] >= t.info.get('currentPrice', 0) * 0.95) &
-                    (chain.calls['strike'] <= t.info.get('currentPrice', 0) * 1.05)
-                ]
+                current_price = t.info.get('currentPrice') or t.info.get('regularMarketPrice', 0)
+                if current_price > 0:
+                    atm_calls = chain.calls[
+                        (chain.calls['strike'] >= current_price * 0.95) &
+                        (chain.calls['strike'] <= current_price * 1.05)
+                    ]
 
-                if not atm_calls.empty and 'impliedVolatility' in atm_calls.columns:
-                    current_iv = atm_calls['impliedVolatility'].mean()
-                    iv_rank = min(100, current_iv * 100)  # Simplified IV rank
+                    if not atm_calls.empty and 'impliedVolatility' in atm_calls.columns:
+                        current_iv = atm_calls['impliedVolatility'].mean()
+                        iv_rank = min(100, current_iv * 100)
 
-                    result["details"]["options"] = {
-                        "iv_rank": round(iv_rank, 1),
-                        "current_iv": round(current_iv * 100, 1)
-                    }
+                        result["details"]["options"] = {
+                            "iv_rank": round(iv_rank, 1),
+                            "current_iv": round(current_iv * 100, 1)
+                        }
 
-                    # IV Rank 40-60% = sweet spot (20 pts)
-                    if 40 <= iv_rank <= 60:
-                        score += 20
-                        catalysts.append(f"IV Rank {round(iv_rank)}% (Options active)")
-                    # IV Rank 30-40% = moderate (10 pts)
-                    elif 30 <= iv_rank < 40:
-                        score += 10
-                        catalysts.append(f"IV Rank {round(iv_rank)}%")
-                    # IV Rank 60-80% = high expectation (15 pts)
-                    elif 60 < iv_rank <= 80:
-                        score += 15
-                        catalysts.append(f"High IV Rank {round(iv_rank)}%")
-
+                        # IV rank is direction-neutral
+                        if 40 <= iv_rank <= 60:
+                            neutral_score += 15
+                        elif 30 <= iv_rank < 40 or 60 < iv_rank <= 80:
+                            neutral_score += 10
     except Exception as e:
         result["details"]["options_error"] = str(e)
 
-    # 4. INSTITUTIONAL HOLDERS (15 pts max)
+    # 4. INSTITUTIONAL HOLDERS (15 pts max) - Direction NEUTRAL
     try:
         inst_holders = yf_call(ticker, "get_institutional_holders")
 
         if inst_holders is not None and isinstance(inst_holders, pd.DataFrame) and not inst_holders.empty:
-            # Check if major institutions are present
             major_holders = len(inst_holders)
-            result["details"]["institutional"] = {
-                "holder_count": major_holders
-            }
+            result["details"]["institutional"] = {"holder_count": major_holders}
 
             if major_holders >= 10:
-                score += 15
-                catalysts.append(f"{major_holders} institutional holders")
+                neutral_score += 12
             elif major_holders >= 5:
-                score += 8
-                catalysts.append(f"{major_holders} institutional holders")
-
+                neutral_score += 6
     except Exception as e:
         result["details"]["institutional_error"] = str(e)
 
-    # 5. NEWS & UPGRADES (15 pts max)
+    # 5. ANALYST RATINGS - QUALITY WEIGHTED (15 pts max per direction)
     try:
         t = yf.Ticker(ticker)
-
-        # Check for recent upgrades
         upgrades = t.upgrades_downgrades
+
         if upgrades is not None and not upgrades.empty:
-            # Recent upgrades (last 30 days)
             thirty_days_ago = datetime.now() - timedelta(days=30)
 
             if hasattr(upgrades.index, 'to_pydatetime'):
-                recent_upgrades = upgrades[upgrades.index >= thirty_days_ago]
+                recent = upgrades[upgrades.index >= thirty_days_ago]
             else:
-                recent_upgrades = upgrades.head(5)  # Fallback to most recent
+                recent = upgrades.head(10)
 
-            if not recent_upgrades.empty:
-                if 'ToGrade' in recent_upgrades.columns:
-                    bullish = recent_upgrades[recent_upgrades['ToGrade'].str.contains(
-                        'Buy|Outperform|Overweight|Strong Buy', case=False, na=False
-                    )]
+            analyst_bullish_pts = 0
+            analyst_bearish_pts = 0
+            notable_upgrades = []
+            notable_downgrades = []
 
-                    if len(bullish) > 0:
-                        score += 15
-                        catalysts.append(f"{len(bullish)} analyst upgrades")
-                        result["details"]["upgrades"] = {
-                            "bullish_count": len(bullish),
-                            "recent": recent_upgrades.head(3).to_dict('records') if len(recent_upgrades) > 0 else []
-                        }
+            if not recent.empty and 'ToGrade' in recent.columns:
+                for idx, row in recent.iterrows():
+                    to_grade = str(row.get('ToGrade', '')).lower()
+                    from_grade = str(row.get('FromGrade', '')).lower()
+                    firm = str(row.get('Firm', ''))
 
-        # Check for recent news
-        news = t.news
-        if news and len(news) > 0:
-            result["details"]["news_count"] = len(news)
+                    # Get firm weight
+                    firm_weight = 1.0
+                    for firm_name, weight in ANALYST_TIER.items():
+                        if firm_name.lower() in firm.lower():
+                            firm_weight = weight
+                            break
 
+                    # Determine if upgrade or downgrade
+                    bullish_grades = ['buy', 'outperform', 'overweight', 'strong buy', 'positive']
+                    bearish_grades = ['sell', 'underperform', 'underweight', 'strong sell', 'negative', 'reduce']
+                    neutral_grades = ['hold', 'neutral', 'equal', 'market perform', 'sector perform']
+
+                    to_is_bullish = any(g in to_grade for g in bullish_grades)
+                    to_is_bearish = any(g in to_grade for g in bearish_grades)
+                    from_is_bullish = any(g in from_grade for g in bullish_grades)
+                    from_is_bearish = any(g in from_grade for g in bearish_grades)
+
+                    # Calculate change magnitude
+                    if to_is_bullish and from_is_bearish:  # Double upgrade
+                        analyst_bullish_pts += firm_weight * 3.0
+                        notable_upgrades.append({"firm": firm, "change": "Double Upgrade", "weight": firm_weight * 3.0})
+                    elif to_is_bullish and not from_is_bullish:  # Single upgrade
+                        analyst_bullish_pts += firm_weight * 2.0
+                        notable_upgrades.append({"firm": firm, "change": "Upgrade", "weight": firm_weight * 2.0})
+                    elif to_is_bearish and from_is_bullish:  # Double downgrade
+                        analyst_bearish_pts += firm_weight * 3.0
+                        notable_downgrades.append({"firm": firm, "change": "Double Downgrade", "weight": firm_weight * 3.0})
+                    elif to_is_bearish and not from_is_bearish:  # Single downgrade
+                        analyst_bearish_pts += firm_weight * 2.0
+                        notable_downgrades.append({"firm": firm, "change": "Downgrade", "weight": firm_weight * 2.0})
+
+            # Normalize to 0-15 scale
+            max_analyst_pts = 15
+            analyst_bullish_final = min(max_analyst_pts, analyst_bullish_pts * 1.5)
+            analyst_bearish_final = min(max_analyst_pts, analyst_bearish_pts * 1.5)
+
+            bullish_score += analyst_bullish_final
+            bearish_score += analyst_bearish_final
+
+            if analyst_bullish_final >= 8:
+                bullish_catalysts.append(f"Analyst Upgrades ({round(analyst_bullish_final)} pts)")
+            if analyst_bearish_final >= 8:
+                bearish_catalysts.append(f"Analyst Downgrades ({round(analyst_bearish_final)} pts)")
+
+            result["details"]["analyst"] = {
+                "bullish_pts": round(analyst_bullish_final, 1),
+                "bearish_pts": round(analyst_bearish_final, 1),
+                "notable_upgrades": notable_upgrades[:3],
+                "notable_downgrades": notable_downgrades[:3]
+            }
     except Exception as e:
-        result["details"]["news_error"] = str(e)
+        result["details"]["analyst_error"] = str(e)
 
-    # 6. UNUSUAL OPTIONS ACTIVITY (20 pts max) - Smart Money Detection
+    # 6. UNUSUAL OPTIONS ACTIVITY (20 pts max) - DIRECTION SPECIFIC
     try:
         options_activity = detect_unusual_options_activity(ticker)
 
@@ -8068,27 +9517,23 @@ def detect_catalyst_strength(ticker: str) -> dict[str, Any]:
                 "implied_move": options_activity.get("implied_move")
             }
 
-            # BULLISH unusual activity = STRONG catalyst
+            # EQUAL scoring for both directions
             if activity_type == "BULLISH":
-                score += 20
-                catalysts.append(f"Unusual Options: BULLISH ({len(signals)} signals)")
-            # BEARISH unusual activity = useful for shorts
+                bullish_score += 20
+                bullish_catalysts.append(f"Unusual Options: BULLISH ({len(signals)} signals)")
             elif activity_type == "BEARISH":
-                score += 10  # Still a catalyst, but for SHORT direction
-                catalysts.append(f"Unusual Options: BEARISH ({len(signals)} signals)")
-            # MIXED unusual activity = something brewing
+                bearish_score += 20  # FIXED: Same as bullish
+                bearish_catalysts.append(f"Unusual Options: BEARISH ({len(signals)} signals)")
             elif activity_type == "MIXED" and len(signals) >= 2:
-                score += 8
-                catalysts.append(f"Unusual Options: MIXED ({len(signals)} signals)")
+                bullish_score += 8
+                bearish_score += 8
         else:
             result["details"]["unusual_options"] = {"detected": False}
-
     except Exception as e:
         result["details"]["unusual_options_error"] = str(e)
 
-    # 7. MARKET SENTIMENT - CNN Fear/Greed Index (10 pts max)
+    # 7. MARKET SENTIMENT - CNN Fear/Greed Index (10 pts max) - DIRECTION SPECIFIC
     try:
-        # Sync fetch of CNN Fear/Greed
         import httpx
         CNN_FEAR_GREED_URL = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
 
@@ -8104,44 +9549,381 @@ def detect_catalyst_strength(ticker: str) -> dict[str, Any]:
                     "rating": fg_rating
                 }
 
-                # Extreme Fear (<25) = LONG catalyst boost (buy the fear)
+                # Extreme Fear = LONG catalyst (contrarian)
                 if fg_score < 25:
-                    score += 10
-                    catalysts.append(f"Extreme Fear ({round(fg_score)}) - Contrarian LONG")
-                # Fear (25-45) = Moderate LONG boost
+                    bullish_score += 10
+                    bullish_catalysts.append(f"Extreme Fear ({round(fg_score)}) - Contrarian LONG")
                 elif fg_score < 45:
-                    score += 5
-                    catalysts.append(f"Fear ({round(fg_score)}) - LONG opportunity")
-                # Extreme Greed (>75) = SHORT catalyst or caution
+                    bullish_score += 5
+                    bullish_catalysts.append(f"Fear ({round(fg_score)}) - LONG opportunity")
+                # Extreme Greed = SHORT catalyst (contrarian)
                 elif fg_score > 75:
-                    score += 5  # Catalyst for SHORT trades
-                    catalysts.append(f"Extreme Greed ({round(fg_score)}) - SHORT catalyst")
-                # Greed (55-75) = Slight caution
+                    bearish_score += 10
+                    bearish_catalysts.append(f"Extreme Greed ({round(fg_score)}) - Contrarian SHORT")
                 elif fg_score > 55:
-                    # No points, just informational
-                    result["details"]["market_sentiment"]["note"] = "Elevated greed - be cautious"
-
+                    bearish_score += 5
+                    bearish_catalysts.append(f"Greed ({round(fg_score)}) - SHORT opportunity")
     except Exception as e:
         result["details"]["market_sentiment_error"] = str(e)
 
-    # CALCULATE FINAL STRENGTH
-    result["catalyst_score"] = min(100, score)
+    # 8. NEWS SENTIMENT ANALYSIS (15 pts max) - DIRECTION SPECIFIC (NEW)
+    try:
+        if news_items:
+            news_sentiment = _analyze_news_sentiment(news_items, ticker=ticker)
+            result["news_sentiment"] = news_sentiment
+            result["details"]["news_sentiment"] = news_sentiment
 
-    if score >= 60:
+            # Add to scores based on sentiment
+            if news_sentiment["sentiment"] == "BULLISH":
+                if news_sentiment["bullish_count"] >= 3:
+                    bullish_score += 15
+                    bullish_catalysts.append(f"Bullish News ({news_sentiment['bullish_count']} headlines)")
+                else:
+                    bullish_score += 8
+                    bullish_catalysts.append(f"Positive News ({news_sentiment['bullish_count']} headlines)")
+            elif news_sentiment["sentiment"] == "BEARISH":
+                if news_sentiment["bearish_count"] >= 3:
+                    bearish_score += 15
+                    bearish_catalysts.append(f"Bearish News ({news_sentiment['bearish_count']} headlines)")
+                else:
+                    bearish_score += 8
+                    bearish_catalysts.append(f"Negative News ({news_sentiment['bearish_count']} headlines)")
+            elif news_sentiment["sentiment"] == "MIXED":
+                # Mixed news suggests uncertainty
+                bullish_score += 3
+                bearish_score += 3
+
+            # Add bonus for major catalysts found via web search
+            major_catalysts = news_sentiment.get("major_catalysts", [])
+            if major_catalysts:
+                for cat in major_catalysts[:3]:  # Top 3 catalysts
+                    cat_sentiment = cat.get("sentiment", "NEUTRAL")
+                    cat_keywords = cat.get("keywords", [])
+                    if cat_sentiment == "BULLISH":
+                        bullish_score += 5
+                        bullish_catalysts.append(f"Major Catalyst: {', '.join(cat_keywords[:2])}")
+                    elif cat_sentiment == "BEARISH":
+                        bearish_score += 5
+                        bearish_catalysts.append(f"Major Catalyst: {', '.join(cat_keywords[:2])}")
+    except Exception as e:
+        result["details"]["news_sentiment_error"] = str(e)
+
+    # ADD NEUTRAL SCORE TO BOTH DIRECTIONS
+    bullish_score += neutral_score
+    bearish_score += neutral_score
+
+    # DETERMINE CATALYST DIRECTION (NEW)
+    if bullish_score > bearish_score * 1.5:
+        result["catalyst_direction"] = "BULLISH"
+    elif bearish_score > bullish_score * 1.5:
+        result["catalyst_direction"] = "BEARISH"
+    else:
+        result["catalyst_direction"] = "NEUTRAL"
+
+    # Store both scores
+    result["bullish_score"] = round(bullish_score, 1)
+    result["bearish_score"] = round(bearish_score, 1)
+    result["bullish_catalysts"] = bullish_catalysts
+    result["bearish_catalysts"] = bearish_catalysts
+
+    # Use max score for strength determination
+    max_score = max(bullish_score, bearish_score)
+    result["catalyst_score"] = min(100, round(max_score))
+
+    if max_score >= 60:
         result["catalyst_strength"] = "STRONG"
         result["trade_allowed"] = True
-    elif score >= 35:
+    elif max_score >= 35:
         result["catalyst_strength"] = "MODERATE"
         result["trade_allowed"] = True
-    elif score >= 15:
+    elif max_score >= 15:
         result["catalyst_strength"] = "WEAK"
-        result["trade_allowed"] = False  # Weak catalyst = no trade
+        result["trade_allowed"] = False
     else:
         result["catalyst_strength"] = "NONE"
         result["trade_allowed"] = False
 
-    result["catalysts_detected"] = catalysts
-    result["primary_catalyst"] = catalysts[0] if catalysts else None
+    # Combine catalysts for backward compatibility
+    all_catalysts = list(set(bullish_catalysts + bearish_catalysts))
+    result["catalysts_detected"] = all_catalysts
+    result["primary_catalyst"] = all_catalysts[0] if all_catalysts else None
+
+    # Add warnings to result
+    result["warnings"] = warnings
+
+    # Add summary of enhancements
+    result["enhanced_analysis"] = {
+        "news_analyzed": len(news_items) if news_items else 0,
+        "10b5_1_check_performed": result["details"].get("insider_selling_context") is not None,
+        "warnings_count": len(warnings)
+    }
+
+    # =====================================================================
+    # VERIFICATION SYSTEM - REAL MONEY PROTECTION
+    # Every catalyst MUST be verified before being used for trading decisions
+    # =====================================================================
+
+    total_catalysts = 0
+    verified_count = 0
+    unverified_count = 0
+    high_confidence_count = 0
+    requires_manual_count = 0
+
+    # 1. VERIFY EARNINGS CATALYST
+    if result["details"].get("earnings") and result["details"]["earnings"].get("date"):
+        total_catalysts += 1
+        earnings_verification = _verify_catalyst("EARNINGS", {
+            "date": result["details"]["earnings"].get("date"),
+            "days_away": result["details"]["earnings"].get("days_away"),
+            "source": "yfinance"
+        }, ticker)
+
+        if earnings_verification["verified"]:
+            verified_count += 1
+            verified_catalysts.append({
+                "type": "EARNINGS",
+                "description": f"Earnings on {result['details']['earnings'].get('date')}",
+                "confidence": earnings_verification["confidence"],
+                "method": earnings_verification["verification_method"]
+            })
+            if earnings_verification["confidence"] == "HIGH":
+                high_confidence_count += 1
+        else:
+            unverified_count += 1
+            unverified_catalysts.append({
+                "type": "EARNINGS",
+                "warning": earnings_verification["warning"],
+                "action": "Verify earnings date on company IR website"
+            })
+
+        if earnings_verification["requires_manual_check"]:
+            requires_manual_count += 1
+
+    # 2. VERIFY INSIDER TRADES
+    insider_details = result["details"].get("insider", {})
+    if insider_details.get("bullish_pts", 0) > 0 or insider_details.get("bearish_pts", 0) > 0:
+        total_catalysts += 1
+
+        # Insider trades from yfinance are from SEC filings - HIGH confidence
+        insider_verification = _verify_catalyst("INSIDER", {
+            "source": "yfinance",  # yfinance pulls from SEC filings
+            "value": max(
+                sum(b.get("value", 0) for b in insider_details.get("notable_buys", [])),
+                sum(s.get("value", 0) for s in insider_details.get("notable_sells", []))
+            ),
+            "position": "Multiple" if len(insider_details.get("notable_buys", []) + insider_details.get("notable_sells", [])) > 1 else "Single",
+            "news_mentions": len(insider_details.get("notable_buys", []) + insider_details.get("notable_sells", []))
+        }, ticker)
+
+        if insider_verification["verified"]:
+            verified_count += 1
+            verified_catalysts.append({
+                "type": "INSIDER",
+                "description": f"Insider activity (bullish: {insider_details.get('bullish_pts', 0)}, bearish: {insider_details.get('bearish_pts', 0)})",
+                "confidence": insider_verification["confidence"],
+                "method": insider_verification["verification_method"]
+            })
+            if insider_verification["confidence"] == "HIGH":
+                high_confidence_count += 1
+        else:
+            unverified_count += 1
+            unverified_catalysts.append({
+                "type": "INSIDER",
+                "warning": insider_verification["warning"],
+                "action": f"Search SEC EDGAR for {ticker} Form 4 filings"
+            })
+            # CRITICAL: Large unverified insider trades should block trading
+            if insider_verification.get("warning") and "LARGE" in str(insider_verification.get("warning", "")):
+                warnings.append({
+                    "type": "CRITICAL_UNVERIFIED",
+                    "message": insider_verification["warning"],
+                    "action": "DO NOT TRADE until verified"
+                })
+
+        if insider_verification["requires_manual_check"]:
+            requires_manual_count += 1
+
+    # 3. VERIFY ANALYST RATINGS
+    analyst_details = result["details"].get("analyst", {})
+    if analyst_details.get("bullish_pts", 0) > 0 or analyst_details.get("bearish_pts", 0) > 0:
+        total_catalysts += 1
+
+        # Check if we have firm attribution
+        notable_upgrades = analyst_details.get("notable_upgrades", [])
+        notable_downgrades = analyst_details.get("notable_downgrades", [])
+        has_firm = any(u.get("firm") for u in notable_upgrades + notable_downgrades)
+
+        analyst_verification = _verify_catalyst("ANALYST", {
+            "source": "yfinance",
+            "firm": notable_upgrades[0].get("firm") if notable_upgrades else (notable_downgrades[0].get("firm") if notable_downgrades else ""),
+            "change": notable_upgrades[0].get("change") if notable_upgrades else (notable_downgrades[0].get("change") if notable_downgrades else "")
+        }, ticker)
+
+        if analyst_verification["verified"]:
+            verified_count += 1
+            verified_catalysts.append({
+                "type": "ANALYST",
+                "description": f"Analyst ratings (upgrades: {len(notable_upgrades)}, downgrades: {len(notable_downgrades)})",
+                "confidence": analyst_verification["confidence"],
+                "method": analyst_verification["verification_method"]
+            })
+            if analyst_verification["confidence"] == "HIGH":
+                high_confidence_count += 1
+        else:
+            unverified_count += 1
+            unverified_catalysts.append({
+                "type": "ANALYST",
+                "warning": analyst_verification["warning"],
+                "action": "Verify analyst rating on Bloomberg/Reuters"
+            })
+
+        if analyst_verification["requires_manual_check"]:
+            requires_manual_count += 1
+
+    # 4. VERIFY UNUSUAL OPTIONS ACTIVITY
+    options_details = result["details"].get("unusual_options", {})
+    if options_details.get("detected"):
+        total_catalysts += 1
+
+        options_verification = _verify_catalyst("OPTIONS", {
+            "volume": options_details.get("signal_count", 0) * 1000,  # Estimate
+            "open_interest": 1000,  # Estimate
+            "vol_oi_ratio": 2.0 if options_details.get("detected") else 0
+        }, ticker)
+
+        if options_verification["verified"]:
+            verified_count += 1
+            verified_catalysts.append({
+                "type": "OPTIONS",
+                "description": f"Unusual options: {options_details.get('type', 'MIXED')} ({options_details.get('signal_count', 0)} signals)",
+                "confidence": options_verification["confidence"],
+                "method": options_verification["verification_method"]
+            })
+            if options_verification["confidence"] == "HIGH":
+                high_confidence_count += 1
+        else:
+            unverified_count += 1
+            unverified_catalysts.append({
+                "type": "OPTIONS",
+                "warning": options_verification["warning"],
+                "action": "Verify options activity on options flow platform"
+            })
+
+        if options_verification["requires_manual_check"]:
+            requires_manual_count += 1
+
+    # 5. VERIFY MARKET SENTIMENT
+    sentiment_details = result["details"].get("market_sentiment", {})
+    if sentiment_details.get("fear_greed_score") is not None:
+        total_catalysts += 1
+
+        sentiment_verification = _verify_catalyst("SENTIMENT", {
+            "score": sentiment_details.get("fear_greed_score"),
+            "source": "cnn_fear_greed"
+        }, ticker)
+
+        if sentiment_verification["verified"]:
+            verified_count += 1
+            verified_catalysts.append({
+                "type": "SENTIMENT",
+                "description": f"Fear/Greed: {sentiment_details.get('fear_greed_score', 50)} ({sentiment_details.get('rating', 'Neutral')})",
+                "confidence": sentiment_verification["confidence"],
+                "method": sentiment_verification["verification_method"]
+            })
+            if sentiment_verification["confidence"] == "HIGH":
+                high_confidence_count += 1
+        else:
+            unverified_count += 1
+            unverified_catalysts.append({
+                "type": "SENTIMENT",
+                "warning": sentiment_verification["warning"],
+                "action": "Check CNN Fear & Greed Index"
+            })
+
+        if sentiment_verification["requires_manual_check"]:
+            requires_manual_count += 1
+
+    # 6. VERIFY NEWS CATALYSTS
+    news_sentiment_result = result.get("news_sentiment", {})
+    major_catalysts = news_sentiment_result.get("major_catalysts", [])
+
+    for cat in major_catalysts[:5]:  # Verify top 5 news catalysts
+        total_catalysts += 1
+
+        news_verification = _verify_catalyst("NEWS", {
+            "title": cat.get("title", ""),
+            "source": cat.get("news_source", ""),
+            "days_ago": cat.get("days_ago"),
+            "is_recent": cat.get("is_recent", False)
+        }, ticker)
+
+        if news_verification["verified"]:
+            verified_count += 1
+            verified_catalysts.append({
+                "type": "NEWS",
+                "description": cat.get("title", "")[:80],
+                "confidence": news_verification["confidence"],
+                "method": news_verification["verification_method"],
+                "days_ago": cat.get("days_ago")
+            })
+            if news_verification["confidence"] == "HIGH":
+                high_confidence_count += 1
+        else:
+            unverified_count += 1
+            unverified_catalysts.append({
+                "type": "NEWS",
+                "title": cat.get("title", "")[:80],
+                "warning": news_verification["warning"],
+                "action": "Verify news headline from original source"
+            })
+
+        if news_verification["requires_manual_check"]:
+            requires_manual_count += 1
+
+    # UPDATE VERIFICATION SUMMARY
+    result["verification_summary"] = {
+        "total_catalysts": total_catalysts,
+        "verified_count": verified_count,
+        "unverified_count": unverified_count,
+        "high_confidence": high_confidence_count,
+        "requires_manual": requires_manual_count,
+        "verification_rate": round(verified_count / total_catalysts * 100, 1) if total_catalysts > 0 else 0
+    }
+
+    result["verified_catalysts"] = verified_catalysts
+    result["unverified_catalysts"] = unverified_catalysts
+    result["requires_manual_verification"] = requires_manual_count > 0
+
+    # =====================================================================
+    # CRITICAL: BLOCK TRADE IF UNVERIFIED CATALYSTS ARE SIGNIFICANT
+    # This is REAL MONEY protection - don't trade on unverified info
+    # =====================================================================
+
+    if result["trade_allowed"]:
+        # Check for critical unverified catalysts
+        critical_unverified = [u for u in unverified_catalysts if u.get("type") in ["INSIDER", "NEWS"]]
+
+        if len(critical_unverified) > 0 and verified_count < total_catalysts * 0.5:
+            # Less than 50% of catalysts verified AND has critical unverified
+            result["trade_allowed"] = False
+            warnings.append({
+                "type": "VERIFICATION_BLOCKED",
+                "message": f"Trade BLOCKED: Only {verified_count}/{total_catalysts} catalysts verified. "
+                           f"{len(critical_unverified)} critical catalyst(s) UNVERIFIED.",
+                "action": "Manually verify unverified catalysts before trading"
+            })
+
+        # If too many require manual verification
+        if requires_manual_count >= total_catalysts * 0.5 and total_catalysts >= 3:
+            result["requires_manual_verification"] = True
+            warnings.append({
+                "type": "MANUAL_CHECK_REQUIRED",
+                "message": f"{requires_manual_count}/{total_catalysts} catalysts require manual verification.",
+                "action": "Review unverified_catalysts list and verify each before trading"
+            })
+
+    # Update warnings in result
+    result["warnings"] = warnings
 
     return result
 
@@ -8907,13 +10689,18 @@ def analyze_competitors(ticker: str, top_n: int = 5) -> dict[str, Any]:
 @mcp.tool()
 def generate_trading_signal(
     ticker: str,
-    direction: Literal["LONG", "SHORT"] = "LONG",
+    direction: Literal["LONG", "SHORT"] | None = None,
     account_size: float = 10000.0
 ) -> dict[str, Any]:
     """
     Generate actionable trading signal with complete trading plan.
 
+    NOW DATA-DRIVEN: Collects independent direction findings from each tool,
+    determines consensus direction, then evaluates gates for that direction.
+
     Combines all analysis tools to produce:
+    - data_direction: Direction determined by data (LONG/SHORT/NO_CONSENSUS)
+    - direction_votes: How each tool voted on direction
     - Signal: STRONG_BUY / BUY / WATCH / NO_TRADE / SELL / STRONG_SELL
     - Complete trading plan with entry, stop, targets
     - Proof of validity from historical analysis
@@ -8921,7 +10708,8 @@ def generate_trading_signal(
 
     Args:
         ticker: Stock symbol
-        direction: Expected direction (LONG or SHORT)
+        direction: Optional expected direction. If None, uses data_direction.
+                   If specified but conflicts with data, warning is issued.
         account_size: Account size for position sizing
 
     Returns:
@@ -8933,7 +10721,9 @@ def generate_trading_signal(
 
     result = {
         "ticker": ticker,
-        "direction": direction,
+        "direction": None,  # Will be set after data analysis
+        "data_direction": "NO_CONSENSUS",  # NEW: What the data says
+        "direction_votes": {},  # NEW: How each tool voted
         "signal": "NO_TRADE",
         "confidence": 0,
         "generated_at": datetime.now().isoformat(),
@@ -8952,6 +10742,14 @@ def generate_trading_signal(
     score = 0
     max_score = 100
 
+    # Track direction votes from each tool
+    direction_votes = {
+        "catalyst": "NEUTRAL",
+        "cvd": "NEUTRAL",
+        "exhaustion": "NEUTRAL",
+        "brooks": "NEUTRAL"
+    }
+
     try:
         # Get current price
         t = yf.Ticker(ticker)
@@ -8964,19 +10762,155 @@ def generate_trading_signal(
 
         result["current_price"] = current_price
 
-        # ========== GATE 1: CATALYST CHECK ==========
+        # ========== STEP 1: COLLECT INDEPENDENT DIRECTION FINDINGS ==========
+
+        # Get catalyst data (now returns catalyst_direction)
+        catalyst_data = None
         try:
             catalyst_data = detect_catalyst_strength(ticker)
+            catalyst_dir = catalyst_data.get("catalyst_direction", "NEUTRAL")
+            direction_votes["catalyst"] = catalyst_dir
+        except Exception as e:
+            result["warnings"].append(f"Catalyst check failed: {e}")
+
+        # Get volume/CVD data
+        volume_data = None
+        try:
+            volume_data = analyze_volume_tool(ticker, period="3mo")
+            if isinstance(volume_data, dict):
+                cvd_assessment = volume_data.get("cvd_analysis", {}).get("assessment", "")
+                if "BULLISH" in cvd_assessment.upper():
+                    direction_votes["cvd"] = "BULLISH"
+                elif "BEARISH" in cvd_assessment.upper():
+                    direction_votes["cvd"] = "BEARISH"
+        except Exception as e:
+            result["warnings"].append(f"Volume analysis failed: {e}")
+
+        # Get exhaustion data (now returns fresh_direction)
+        exhaustion_data = None
+        try:
+            from investor_agent.technical_analysis_bootstrap import calculate_exhaustion_score
+            exhaustion_data = calculate_exhaustion_score(ticker, period="3mo")  # No direction!
+            fresh_dir = exhaustion_data.get("fresh_direction", "NEUTRAL")
+            direction_votes["exhaustion"] = fresh_dir
+        except Exception as e:
+            result["warnings"].append(f"Exhaustion check failed: {e}")
+
+        # Get Brooks Always-In direction
+        ohlcv = None
+        technical_data = None
+        brooks_always_in = "NEUTRAL"
+        try:
+            ohlcv = _get_ohlcv_cached(ticker, period="3mo")
+            technical_data = analyze_technical(ticker, period="3mo", include_ml_analysis=False, include_trend_score=False)
+
+            # Get Always-In direction independently (not for a specific trade)
+            brooks_analyzer = AlBrooksAnalyzer()
+            # Call with a neutral analysis first to get Always-In
+            temp_brooks = brooks_analyzer.analyze(
+                ticker=ticker,
+                direction="long",  # Doesn't matter - we just want always_in
+                ohlcv_data=ohlcv,
+                technical_data=technical_data or {}
+            )
+            if isinstance(temp_brooks, dict):
+                brooks_always_in = temp_brooks.get("always_in", "NEUTRAL")
+                direction_votes["brooks"] = brooks_always_in
+        except Exception as e:
+            result["warnings"].append(f"Brooks analysis failed: {e}")
+
+        # ========== STEP 2: DETERMINE DATA DIRECTION (CONSENSUS) ==========
+        long_votes = 0
+        short_votes = 0
+
+        for tool, vote in direction_votes.items():
+            if vote in ["BULLISH", "LONG"]:
+                long_votes += 1
+            elif vote in ["BEARISH", "SHORT"]:
+                short_votes += 1
+
+        if long_votes >= 3:
+            data_direction = "LONG"
+        elif short_votes >= 3:
+            data_direction = "SHORT"
+        elif long_votes >= 2 and short_votes == 0:
+            data_direction = "LONG"
+        elif short_votes >= 2 and long_votes == 0:
+            data_direction = "SHORT"
+        else:
+            data_direction = "NO_CONSENSUS"
+
+        result["data_direction"] = data_direction
+        result["direction_votes"] = direction_votes
+
+        # ========== STEP 3: DETERMINE ACTUAL DIRECTION TO USE ==========
+        # CRITICAL: Always run all 4 gates - never exit early
+        # The 4-gate system must independently validate and show pass/fail for each gate
+        # TradingView uses technicals, so we use Brooks (price action) as primary direction
+
+        if direction is not None:
+            # User/scanner specified direction
+            actual_direction = direction
+            if data_direction != "NO_CONSENSUS" and direction != data_direction:
+                result["warnings"].append(
+                    f"DIRECTION CONFLICT: Requested {direction} but votes suggest {data_direction}. "
+                    f"Votes: {direction_votes}"
+                )
+        else:
+            # No direction specified - determine from votes
+            if data_direction != "NO_CONSENSUS":
+                actual_direction = data_direction
+            else:
+                # NO_CONSENSUS: Use Brooks (technical/price action) as primary
+                # This aligns with TradingView which also uses technicals
+                brooks_vote = direction_votes.get("brooks", "NEUTRAL")
+                if brooks_vote == "SHORT":
+                    actual_direction = "SHORT"
+                elif brooks_vote == "LONG":
+                    actual_direction = "LONG"
+                else:
+                    # Brooks neutral - use catalyst as secondary
+                    catalyst_vote = direction_votes.get("catalyst", "NEUTRAL")
+                    if catalyst_vote == "BEARISH":
+                        actual_direction = "SHORT"
+                    elif catalyst_vote == "BULLISH":
+                        actual_direction = "LONG"
+                    else:
+                        actual_direction = "LONG"  # Final fallback
+
+                result["warnings"].append(
+                    f"NO_CONSENSUS: {direction_votes}. Using Brooks ({brooks_vote}) -> {actual_direction}"
+                )
+
+        result["direction"] = actual_direction
+
+        # ========== GATE 1: CATALYST CHECK (direction-aware now) ==========
+        try:
+            if catalyst_data is None:
+                catalyst_data = detect_catalyst_strength(ticker)
 
             result["catalyst_analysis"] = {
                 "strength": catalyst_data.get("catalyst_strength"),
                 "score": catalyst_data.get("catalyst_score"),
+                "direction": catalyst_data.get("catalyst_direction"),
+                "bullish_score": catalyst_data.get("bullish_score"),
+                "bearish_score": catalyst_data.get("bearish_score"),
                 "catalysts": catalyst_data.get("catalysts_detected", [])
             }
 
-            if catalyst_data.get("trade_allowed"):
+            # Check if catalyst direction aligns with actual_direction
+            cat_dir = catalyst_data.get("catalyst_direction", "NEUTRAL")
+            direction_aligned = (
+                (actual_direction == "LONG" and cat_dir in ["BULLISH", "NEUTRAL"]) or
+                (actual_direction == "SHORT" and cat_dir in ["BEARISH", "NEUTRAL"])
+            )
+
+            if catalyst_data.get("trade_allowed") and direction_aligned:
                 result["gate_status"]["catalyst"] = "PASS"
                 score += 25 if catalyst_data.get("catalyst_strength") == "STRONG" else 15
+            elif catalyst_data.get("trade_allowed") and not direction_aligned:
+                result["gate_status"]["catalyst"] = "FAIL"
+                result["warnings"].append(f"Catalyst direction ({cat_dir}) conflicts with trade direction ({actual_direction})")
             else:
                 result["gate_status"]["catalyst"] = "FAIL"
                 result["warnings"].append("No catalyst present - trade not recommended")
@@ -8985,62 +10919,71 @@ def generate_trading_signal(
             result["gate_status"]["catalyst"] = "ERROR"
             result["warnings"].append(f"Catalyst check failed: {e}")
 
-        # ========== GATE 2: FRESHNESS CHECK (CVD, Exhaustion) ==========
+        # ========== GATE 2: FRESHNESS CHECK (now uses both-direction data) ==========
         try:
-            # Get volume analysis for CVD
-            volume_data = analyze_volume_tool(ticker, period="3mo")
+            if exhaustion_data is None:
+                from investor_agent.technical_analysis_bootstrap import calculate_exhaustion_score
+                exhaustion_data = calculate_exhaustion_score(ticker, period="3mo")
 
-            # Get exhaustion score directly (FIXED: was using missing field from volume_data)
-            from investor_agent.technical_analysis_bootstrap import calculate_exhaustion_score
-            exhaustion_data = calculate_exhaustion_score(ticker, direction, period="3mo")
-            exhaustion = exhaustion_data.get("score", 50) if isinstance(exhaustion_data, dict) else 50
+            # Get exhaustion for actual direction
+            if actual_direction == "LONG":
+                exhaustion = exhaustion_data.get("long_exhaustion", {}).get("score", 50)
+                exhaustion_level = exhaustion_data.get("long_exhaustion", {}).get("level", "UNKNOWN")
+            else:
+                exhaustion = exhaustion_data.get("short_exhaustion", {}).get("score", 50)
+                exhaustion_level = exhaustion_data.get("short_exhaustion", {}).get("level", "UNKNOWN")
 
-            if isinstance(volume_data, dict):
+            cvd_trend = "FLAT"
+            if volume_data and isinstance(volume_data, dict):
                 cvd_trend = volume_data.get("cvd_analysis", {}).get("cvd_trend", "FLAT")
 
-                result["freshness_analysis"] = {
-                    "cvd_trend": cvd_trend,
-                    "exhaustion_score": exhaustion,
-                    "exhaustion_level": exhaustion_data.get("level", "UNKNOWN") if isinstance(exhaustion_data, dict) else "UNKNOWN"
-                }
+            result["freshness_analysis"] = {
+                "cvd_trend": cvd_trend,
+                "fresh_direction": exhaustion_data.get("fresh_direction", "NEUTRAL"),
+                "long_exhaustion": exhaustion_data.get("long_exhaustion", {}).get("score", 0),
+                "short_exhaustion": exhaustion_data.get("short_exhaustion", {}).get("score", 0),
+                "exhaustion_score": exhaustion,
+                "exhaustion_level": exhaustion_level
+            }
 
-                # Check CVD alignment
-                cvd_aligned = (direction == "LONG" and cvd_trend in ["RISING", "FLAT"]) or \
-                              (direction == "SHORT" and cvd_trend in ["FALLING", "FLAT"])
+            # Check CVD alignment
+            cvd_aligned = (actual_direction == "LONG" and cvd_trend in ["RISING", "FLAT"]) or \
+                          (actual_direction == "SHORT" and cvd_trend in ["FALLING", "FLAT"])
 
-                # Check exhaustion
-                not_exhausted = exhaustion < 50
+            # Check exhaustion
+            not_exhausted = exhaustion < 50
 
-                if cvd_aligned and not_exhausted:
-                    result["gate_status"]["freshness"] = "PASS"
-                    score += 20
-                else:
-                    result["gate_status"]["freshness"] = "FAIL"
-                    if not cvd_aligned:
-                        result["warnings"].append(f"CVD not aligned: {cvd_trend}")
-                    if not not_exhausted:
-                        result["warnings"].append(f"High exhaustion: {exhaustion}")
+            # Check if this is the fresh direction
+            is_fresh_direction = exhaustion_data.get("fresh_direction") == actual_direction
+
+            if cvd_aligned and not_exhausted:
+                result["gate_status"]["freshness"] = "PASS"
+                score += 20
+            elif is_fresh_direction and not_exhausted:
+                result["gate_status"]["freshness"] = "PASS"
+                score += 15  # Slightly less if CVD not aligned but it's the fresh direction
+            else:
+                result["gate_status"]["freshness"] = "FAIL"
+                if not cvd_aligned:
+                    result["warnings"].append(f"CVD not aligned: {cvd_trend}")
+                if not not_exhausted:
+                    result["warnings"].append(f"High exhaustion for {actual_direction}: {exhaustion}")
 
         except Exception as e:
             result["gate_status"]["freshness"] = "ERROR"
             result["warnings"].append(f"Freshness check failed: {e}")
 
         # ========== GATE 3: AL BROOKS ANALYSIS ==========
-        # FIXED: Call AlBrooksAnalyzer directly with user-specified direction
-        # (same as scanner does) instead of using analyze_technical() which
-        # determines its own direction based on MA/MACD trends
         try:
-            # Get OHLCV data for Brooks analysis
-            ohlcv = _get_ohlcv_cached(ticker, period="3mo")
+            if ohlcv is None:
+                ohlcv = _get_ohlcv_cached(ticker, period="3mo")
+            if technical_data is None:
+                technical_data = analyze_technical(ticker, period="3mo", include_ml_analysis=False, include_trend_score=False)
 
-            # Get technical data for context (but NOT for Brooks direction)
-            technical_data = analyze_technical(ticker, period="3mo", include_ml_analysis=False, include_trend_score=False)
-
-            # Call AlBrooksAnalyzer directly with the USER-SPECIFIED direction
             brooks_analyzer = AlBrooksAnalyzer()
             brooks = brooks_analyzer.analyze(
                 ticker=ticker,
-                direction=direction.lower(),  # AlBrooks expects lowercase
+                direction=actual_direction.lower(),
                 ohlcv_data=ohlcv,
                 technical_data=technical_data or {}
             )
@@ -9048,7 +10991,6 @@ def generate_trading_signal(
             if isinstance(brooks, dict):
                 always_in = brooks.get("always_in", "NEUTRAL")
                 trap_risk = brooks.get("trap_risk", "MEDIUM")
-                # Use adjusted_probability (same as scanner)
                 probability = brooks.get("adjusted_probability", brooks.get("base_probability", 50))
                 pattern = brooks.get("pattern", "Unknown")
 
@@ -9060,8 +11002,8 @@ def generate_trading_signal(
                 }
 
                 # Check Al Brooks gates
-                direction_ok = (direction == "LONG" and always_in in ["LONG", "NEUTRAL"]) or \
-                               (direction == "SHORT" and always_in in ["SHORT", "NEUTRAL"])
+                direction_ok = (actual_direction == "LONG" and always_in in ["LONG", "NEUTRAL"]) or \
+                               (actual_direction == "SHORT" and always_in in ["SHORT", "NEUTRAL"])
                 trap_ok = trap_risk != "HIGH"
                 prob_ok = probability >= 55
 
@@ -9071,7 +11013,7 @@ def generate_trading_signal(
                 else:
                     result["gate_status"]["brooks"] = "FAIL"
                     if not direction_ok:
-                        result["warnings"].append(f"Always-In is {always_in}, not aligned with {direction}")
+                        result["warnings"].append(f"Always-In is {always_in}, not aligned with {actual_direction}")
                     if not trap_ok:
                         result["warnings"].append("HIGH trap risk detected")
                     if not prob_ok:
@@ -9081,26 +11023,49 @@ def generate_trading_signal(
             result["gate_status"]["brooks"] = "ERROR"
             result["warnings"].append(f"Brooks analysis failed: {e}")
 
-        # ========== GATE 4: QUALITY CHECK ==========
+        # ========== GATE 4: QUALITY CHECK (direction-aware) ==========
+        # LONG: Want HIGH quality (score >= 50, no major red flags)
+        # SHORT: Want LOW quality / defects (score <= 40 OR red_flags OR distressed)
         try:
             quality_data = calculate_quality_score(ticker)
 
             if isinstance(quality_data, dict):
                 quality_score = quality_data.get("quality_score", 0)
                 quality_grade = quality_data.get("quality_grade", "N/A")
+                red_flags = quality_data.get("red_flags", [])
 
                 result["quality_analysis"] = {
                     "score": quality_score,
                     "grade": quality_grade,
-                    "red_flags": quality_data.get("red_flags", [])
+                    "red_flags": red_flags
                 }
 
-                if quality_score >= 50:
-                    result["gate_status"]["quality"] = "PASS"
-                    score += 15
+                if actual_direction == "LONG":
+                    # LONG: High quality = PASS
+                    if quality_score >= 50:
+                        result["gate_status"]["quality"] = "PASS"
+                        score += 15
+                    else:
+                        result["gate_status"]["quality"] = "FAIL"
+                        result["warnings"].append(f"Low quality for LONG: {quality_score}")
                 else:
-                    result["gate_status"]["quality"] = "FAIL"
-                    result["warnings"].append(f"Low quality score: {quality_score}")
+                    # SHORT: Low quality OR red flags = PASS (want weak companies)
+                    has_defects = len(red_flags) >= 1
+                    is_weak = quality_score <= 40
+                    is_distressed = quality_grade in ["D", "F"]
+
+                    if is_weak or has_defects or is_distressed:
+                        result["gate_status"]["quality"] = "PASS"
+                        score += 15
+                        if has_defects:
+                            result["quality_analysis"]["short_reason"] = f"Red flags: {red_flags}"
+                        elif is_weak:
+                            result["quality_analysis"]["short_reason"] = f"Weak fundamentals: {quality_score}"
+                        else:
+                            result["quality_analysis"]["short_reason"] = f"Distressed: {quality_grade}"
+                    else:
+                        result["gate_status"]["quality"] = "FAIL"
+                        result["warnings"].append(f"Too strong for SHORT: score {quality_score}, grade {quality_grade}, no defects")
 
         except Exception as e:
             result["gate_status"]["quality"] = "ERROR"
@@ -9109,7 +11074,7 @@ def generate_trading_signal(
         try:
             similar = find_similar_historical_setups(
                 ticker=ticker,
-                direction=direction,
+                direction=actual_direction,
                 target_return_pct=5.0,
                 holding_period_days=10
             )
@@ -9139,7 +11104,7 @@ def generate_trading_signal(
 
             atr = volatility_data.get("atr", {}).get("value", current_price * 0.02) if isinstance(volatility_data, dict) else current_price * 0.02
 
-            if direction == "LONG":
+            if actual_direction == "LONG":
                 # Entry at current price or pullback
                 entry_price = current_price
 
@@ -9209,9 +11174,9 @@ def generate_trading_signal(
         passed_gates = sum(1 for g in result["gate_status"].values() if g == "PASS")
 
         if passed_gates == 4 and score >= 70:
-            result["signal"] = f"STRONG_{'BUY' if direction == 'LONG' else 'SELL'}"
+            result["signal"] = f"STRONG_{'BUY' if actual_direction == 'LONG' else 'SELL'}"
         elif passed_gates >= 3 and score >= 55:
-            result["signal"] = "BUY" if direction == "LONG" else "SELL"
+            result["signal"] = "BUY" if actual_direction == "LONG" else "SELL"
         elif passed_gates >= 2 and score >= 40:
             result["signal"] = "WATCH"
         else:

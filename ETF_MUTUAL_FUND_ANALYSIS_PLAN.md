@@ -75,7 +75,7 @@ def analyze_etf(symbol: str):
 
     # Options Analysis (if liquid ETF like SPY, QQQ, IWM)
     try:
-        options = analyze_options_mcmillan(symbol, direction="LONG")
+        options = analyze_options_mcmillan(symbol)  # direction-independent
         has_options = True
     except:
         has_options = False

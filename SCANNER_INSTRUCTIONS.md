@@ -69,19 +69,107 @@ User asks to scan the market without specifying a ticker:
 
 ## Workflow
 
-### Step 1: Run the Scanner
+### ⚠️ DO NOT USE `scan_market_opportunities()` - FOLLOW THIS SEQUENCE
+
+**WRONG:** `scan_market_opportunities()` (timeout risk, no control)
+
+**CORRECT SEQUENCE:**
+
+---
+
+### Step 1: Get LONG Raw Candidates
 
 ```python
-scan_market_opportunities(
-    market="america",              # US stocks only (Canada if user requests)
-    min_price=2.0,                 # Price > $2
-    min_market_cap=1_000_000_000,  # Market Cap > $1B
-    top_n=5,                       # Top 5 per direction
-    include_deep_analysis=True     # Get full analysis with gates
-)
+raw_long = get_raw_scan_candidates(direction="LONG", market="america", limit=500)
+long_symbols = [c["symbol"] for c in raw_long["candidates"]]
+# Example: 47 symbols ["AAPL", "TSLA", "NVDA", ...]
 ```
 
-### Step 2: Display Results Table with Gate Status
+---
+
+### Step 2: Validate LONG 20 at a Time (SHOW EACH BATCH)
+
+```python
+chunk_size = 20
+long_results = []
+long_validated = []
+
+for i in range(0, len(long_symbols), chunk_size):
+    chunk = long_symbols[i:i+chunk_size]
+    result = scan_long_candidates(candidates=chunk)
+
+    # SHOW results of this batch immediately
+    print(f"Batch {i//20 + 1}: {result['all_results']}")
+
+    long_results.extend(result["all_results"])
+    long_validated.extend(result["candidates"])
+```
+
+---
+
+### Step 3: Show LONG Top Results (All 4/4 or Top 5)
+
+```python
+# Get all 4/4 passers
+four_gate = [x for x in long_validated if x["gates_passed"] == 4]
+three_gate = [x for x in long_validated if x["gates_passed"] == 3]
+
+# Return ALL 4/4 passers, fill with 3/4 if less than 5
+final_long = four_gate[:]
+if len(final_long) < 5:
+    final_long.extend(three_gate[:5 - len(final_long)])
+
+# DISPLAY: "LONG RESULTS: X passed 4/4, showing top Y"
+```
+
+---
+
+### Step 4: Get SHORT Raw Candidates
+
+```python
+raw_short = get_raw_scan_candidates(direction="SHORT", market="america", limit=500)
+short_symbols = [c["symbol"] for c in raw_short["candidates"]]
+```
+
+---
+
+### Step 5: Validate SHORT 20 at a Time (SHOW EACH BATCH)
+
+```python
+short_results = []
+short_validated = []
+
+for i in range(0, len(short_symbols), chunk_size):
+    chunk = short_symbols[i:i+chunk_size]
+    result = scan_short_candidates(candidates=chunk)
+
+    # SHOW results of this batch immediately
+    print(f"Batch {i//20 + 1}: {result['all_results']}")
+
+    short_results.extend(result["all_results"])
+    short_validated.extend(result["candidates"])
+```
+
+---
+
+### Step 6: Show SHORT Top Results (All 4/4 or Top 5)
+
+```python
+# Get all 4/4 passers
+four_gate = [x for x in short_validated if x["gates_passed"] == 4]
+three_gate = [x for x in short_validated if x["gates_passed"] == 3]
+
+# Return ALL 4/4 passers, fill with 3/4 if less than 5
+final_short = four_gate[:]
+if len(final_short) < 5:
+    final_short.extend(three_gate[:5 - len(final_short)])
+
+# DISPLAY: "SHORT RESULTS: X passed 4/4, showing top Y"
+```
+
+---
+
+### Step 7: Display Final Summary Table
 
 ```markdown
 # MARKET OPPORTUNITY SCAN
@@ -89,6 +177,18 @@ scan_market_opportunities(
 **Date:** YYYY-MM-DD HH:MM ET
 **Market:** US Stocks (Price > $2, MCap > $1B)
 **Filter:** 4-Tier Inflection Point Detection + 4-Gate Validation
+
+---
+
+## 📊 SCAN STATISTICS
+
+| Direction | Raw Candidates | Scanned | 4/4 Gates | 3/4 Gates | Returned |
+|-----------|----------------|---------|-----------|-----------|----------|
+| LONG      | XXX            | XX      | X         | X         | 5        |
+| SHORT     | XXX            | XX      | X         | X         | 5        |
+
+**Pass Rate:** X.X% (4/4) | X.X% (3+/4)
+**Elapsed:** XXs
 
 ---
 
@@ -120,7 +220,7 @@ scan_market_opportunities(
 **To analyze any ticker with full trading plan, say: "scan [TICKER]"**
 ```
 
-### Step 3: STOP
+### Step 8: STOP
 
 **DO NOT** automatically start deep analysis. Wait for user to:
 - Ask for analysis of a specific ticker: "scan AAPL"
@@ -154,7 +254,7 @@ detect_insider_cluster(ticker, days=60)   # NEW: Clustered insider buying patter
 get_institutional_holders(ticker)         # 13F accumulation/distribution
 
 # SECTION C: McMillan Options Strategy + Smart Money
-analyze_options_mcmillan(ticker, direction="LONG")  # Full McMillan analysis
+analyze_options_mcmillan(ticker)  # Full McMillan analysis (direction-independent)
 detect_unusual_options_activity(ticker)   # NEW: Smart money options detection
 
 # SECTION D: Al Brooks Price Action (CENTRAL)
@@ -288,23 +388,86 @@ The scanner uses a 4-tier filter system to find inflection points:
 
 ### detect_catalyst_strength(ticker)
 
+**ENHANCED (Dec 2025)** - Now includes web search, 10b5-1 detection, recency scoring, and **VERIFICATION SYSTEM**:
+
 Returns unified catalyst assessment:
 ```json
 {
+  "catalyst_direction": "BULLISH | BEARISH | NEUTRAL",
   "catalyst_strength": "STRONG | MODERATE | WEAK | NONE",
   "catalyst_score": 0-100,
+  "bullish_score": 0-100,
+  "bearish_score": 0-100,
   "trade_allowed": true/false,
   "catalysts_detected": ["list of active catalysts"],
   "primary_catalyst": "most significant driver",
+  "warnings": [{"type": "VERIFICATION_BLOCKED", "message": "...", "action": "..."}],
+  "news_sentiment": {
+    "sentiment": "BULLISH | BEARISH | NEUTRAL",
+    "bullish_count": 4,
+    "bearish_count": 1,
+    "major_catalysts": [
+      {"title": "AMD Stock Surges on China Deal", "days_ago": 1, "is_recent": true, "sentiment": "BULLISH"}
+    ],
+    "web_search_performed": true
+  },
+  "verified_catalysts": [
+    {"type": "EARNINGS", "description": "Earnings on 2025-01-15", "confidence": "HIGH", "method": "Company IR calendar via API"},
+    {"type": "NEWS", "description": "AMD Stock Surges...", "confidence": "HIGH", "method": "Credible source (Reuters) within 1 days"}
+  ],
+  "unverified_catalysts": [
+    {"type": "NEWS", "title": "Unverified headline...", "warning": "OLD NEWS (5 days ago)", "action": "Verify from original source"}
+  ],
+  "verification_summary": {
+    "total_catalysts": 5,
+    "verified_count": 4,
+    "unverified_count": 1,
+    "high_confidence": 3,
+    "requires_manual": 1,
+    "verification_rate": 80.0
+  },
+  "requires_manual_verification": false,
   "details": {
     "earnings": {"date": "2025-01-15", "days_away": 12},
-    "insider": {"buys_30d": 3, "sells_30d": 0},
+    "insider": {"bullish_pts": 0, "bearish_pts": 15, "10b5_1_detected": true},
+    "insider_selling_context": {
+      "is_10b5_1": true,
+      "context": "10b5-1 plan found via web search",
+      "confidence": "HIGH",
+      "should_discount": true
+    },
     "options": {"iv_rank": 45.2},
-    "institutional": {"holder_count": 15},
-    "upgrades": {"bullish_count": 4}
+    "institutional": {"holder_count": 15}
+  },
+  "enhanced_analysis": {
+    "news_analyzed": 10,
+    "10b5_1_check_performed": true,
+    "warnings_count": 0
   }
 }
 ```
+
+**Key Enhancements:**
+- **Web Search**: Fetches news from Google News RSS with publication dates
+- **Recency Scoring**: Only news ≤3 days old counts; today's news = 2x weight
+- **10b5-1 Detection**: Discounts insider selling 75% if pre-planned sale detected
+- **Warnings**: Flags items requiring manual verification
+
+**🚨 VERIFICATION SYSTEM (Dec 2025) - REAL MONEY PROTECTION:**
+- **EVERY catalyst is verified** before being used for trading decisions
+- **trade_allowed = False** if critical catalysts (INSIDER, NEWS) are UNVERIFIED
+- **Verification checks**: source credibility, recency (≤3 days), SEC filings, multiple sources
+
+| Confidence | Meaning | Trade Action |
+|------------|---------|--------------|
+| **HIGH** | SEC filing, credible source (Reuters, Bloomberg, CNBC), API data | ✅ Trade allowed |
+| **MEDIUM** | Recent but unverified source | ⚠️ Trade with caution |
+| **LOW** | Old news (>3 days) or unknown source | ❌ Stale - DO NOT TRADE |
+| **UNVERIFIED** | Could not verify | 🚫 BLOCKED until verified |
+
+**Blocking Rules:**
+- If <50% of catalysts verified AND has critical unverified → **TRADE BLOCKED**
+- If ≥50% require manual verification → **requires_manual_verification = True**
 
 ### generate_trading_signal(ticker, direction, account_size)
 
@@ -422,11 +585,85 @@ Add/subtract from base probability:
 
 ## QUICK REFERENCE
 
+### Scanner Tools (Use in Order)
+
+| Tool | Purpose | When to Use |
+|------|---------|-------------|
+| `get_raw_scan_candidates(direction, market, limit)` | Raw TradingView list (NO validation) | FIRST - Get full candidate list |
+| `scan_long_candidates(candidates, top_n)` | LONG validation with 4-gate system | SECOND - Pass raw candidates here |
+| `scan_short_candidates(candidates, top_n)` | SHORT validation with 4-gate system | FOURTH - Pass raw candidates here |
+
+**⚠️ CRITICAL WORKFLOW - CALL 20 AT A TIME:**
+```python
+# Step 1: Get ALL raw LONG candidates
+raw_long = get_raw_scan_candidates(direction="LONG", market="america", limit=500)
+symbols = [c["symbol"] for c in raw_long["candidates"]]
+# Example: 47 symbols ["AAPL", "TSLA", "NVDA", ...]
+
+# Step 2: Split into chunks of 20 and call SEPARATELY
+chunk_size = 20
+all_results = []
+all_validated = []
+
+for i in range(0, len(symbols), chunk_size):
+    chunk = symbols[i:i+chunk_size]
+    result = scan_long_candidates(candidates=chunk, top_n=20)  # Get all from this chunk
+    all_results.extend(result["all_results"])      # Compact one-liners
+    all_validated.extend(result["candidates"])     # Full validated data
+
+# Step 3: Return ALL 4/4 passers, fill with 3/4 if less than 5
+four_gate = [x for x in all_validated if x["gates_passed"] == 4]
+three_gate = [x for x in all_validated if x["gates_passed"] == 3]
+four_gate.sort(key=lambda x: x["confidence"], reverse=True)
+three_gate.sort(key=lambda x: x["confidence"], reverse=True)
+
+# Return ALL 4/4 passers (could be 0, 1, 10, 100...)
+# If less than 5, fill with top 3/4 passers to reach minimum 5
+final = four_gate[:]  # ALL 4/4 passers
+if len(final) < 5:
+    remaining = 5 - len(final)
+    final.extend(three_gate[:remaining])
+
+# Step 4: Repeat for SHORT
+```
+
+**Example with 47 candidates:**
+```
+Call 1: symbols[0:20]   → 20 results → "AAPL: 4/4 [C:P F:P B:P Q:P]", ...
+Call 2: symbols[20:40]  → 20 results → "NVDA: 3/4 [C:P F:F B:P Q:P]", ...
+Call 3: symbols[40:47]  → 7 results  → "LSTR: 4/4 [C:P F:P B:P Q:P]", ...
+Combine all 47 results → Rank → Top 5
+```
+
+**Return value includes:**
+```json
+{
+  "all_results": [           // Compact one-liner for EVERY company
+    "AAPL: 4/4 [C:P F:P B:P Q:P]",
+    "AMD: 2/4 [C:P F:F B:F Q:P]",
+    ...
+  ],
+  "candidates": [...]        // Full data for 3+/4 gate passers
+}
+```
+
+**❌ WRONG (timeout risk, no intermediate results):**
+```python
+scan_long_candidates(candidates=all_224_symbols)  # Too many at once
+```
+
+**✅ CORRECT (20 at a time, get results after each call):**
+```python
+for chunk in chunks_of_20:
+    result = scan_long_candidates(candidates=chunk, top_n=20)
+    # See results immediately, combine at end
+```
+
 ### Tools by Role
 
 | Role | Tools |
 |------|-------|
-| **Role 1: Market Scan** | `scan_market_opportunities(top_n=5)` |
+| **Role 1: Market Scan** | `get_raw_scan_candidates()` → `scan_long_candidates()` → `scan_short_candidates()` |
 | **Role 2: Ticker Scan** | All analysis tools + `generate_trading_signal()` |
 
 ### Tools by Section (Role 2)
@@ -454,7 +691,15 @@ Add/subtract from base probability:
 
 ### Example 1: Market Scan Request
 **User:** "Scan the market for opportunities"
-**Agent:** Runs `scan_market_opportunities(top_n=5)`, displays table with gates, STOPS
+**Agent:** Follows 8-step workflow:
+1. `get_raw_scan_candidates(direction="LONG")` → get symbols
+2. `scan_long_candidates(candidates=chunk)` → 20 at a time, show each batch
+3. Show LONG top results (all 4/4 or top 5)
+4. `get_raw_scan_candidates(direction="SHORT")` → get symbols
+5. `scan_short_candidates(candidates=chunk)` → 20 at a time, show each batch
+6. Show SHORT top results (all 4/4 or top 5)
+7. Display final summary table
+8. STOP
 
 ### Example 2: Ticker Scan Request
 **User:** "Scan NVDA"
@@ -466,12 +711,12 @@ Add/subtract from base probability:
 
 ---
 
-**Role 1 Time:** ~30 seconds (list only)
+**Role 1 Time:** ~2-5 minutes (depends on candidate count, 20 at a time)
 **Role 2 Time:** ~8-12 minutes per stock (full analysis + signal)
 **Format:** Follow `SCANNER_REPORT_GENERATOR.md` for Role 2
 **Methodology:** Al Brooks (Price Action) + McMillan (Options Strategy) + 4-Gate Validation
 
 ---
 
-**Last Updated:** December 23, 2025
-**Version:** 2.0 - Enhanced with 6 new tools and 4-gate signal classification
+**Last Updated:** December 26, 2025
+**Version:** 2.2 - Fixed 8-step workflow sequence (LONG first, then SHORT, show each batch)

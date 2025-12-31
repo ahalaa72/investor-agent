@@ -16,6 +16,14 @@ Fast analysis with bullet points for data, detailed Al Brooks, McMillan Options,
 - **Async functions need asyncio.run():** get_cnn_fear_greed_index, find_similar_historical_setups, analyze_ml_enhanced
 - **Check market hours before intraday calls** (weekends/after-hours = skip)
 
+### 🚨 Catalyst Verification (Dec 2025) - REAL MONEY PROTECTION
+- **ALWAYS run `detect_catalyst_strength()`** in Phase 2 (MANDATORY)
+- **Check verification_rate ≥ 50%** before recommending trade
+- **If trade_allowed = False** → DO NOT RECOMMEND TRADE
+- **If requires_manual_verification = True** → Warn user to verify manually
+- **Old news (>3 days) = STALE** - Already priced in, DO NOT TRADE on it
+- **Report verified_catalysts and unverified_catalysts** in every analysis
+
 ---
 
 ## REPORT TEMPLATE
@@ -36,10 +44,15 @@ Fast analysis with bullet points for data, detailed Al Brooks, McMillan Options,
 - ROE: XX.X%, EPS: $X.XX [get_ticker_data]
 - **Score: XX/100** → XX.X pts
 
-### Phase 2: Catalysts (15.2%) - [BULLISH/BEARISH/NEUTRAL]
+### Phase 2: Catalysts (15.2%) - [BULLISH/BEARISH/NEUTRAL] 🚨 WITH VERIFICATION
+- **Verification Rate:** XX% [detect_catalyst_strength] [≥50% OK / <50% BLOCKED]
+- **Trade Allowed:** [TRUE/FALSE] [detect_catalyst_strength]
 - Last earnings: [Date] ([Beat/Miss] +/-XX%) [get_earnings_history]
 - Next earnings: [Date] [get_nasdaq_earnings_calendar]
-- Recent news: "[Headline]" [get_ticker_data]
+- Recent news: "[Headline]" (X days ago, [VERIFIED/UNVERIFIED]) [detect_catalyst_strength]
+- **Verified Catalysts:** X HIGH, X MEDIUM confidence
+- **Unverified Catalysts:** X (⚠️ VERIFY BEFORE TRADING)
+- **10b5-1 Check:** [N/A / Pre-planned / Discretionary selling]
 - **Score: XX/100** → XX.X pts
 
 ### Phase 3: McMillan Options Strategy (13.4%) - [BULLISH/BEARISH/NEUTRAL] [✓/✗]
@@ -927,7 +940,7 @@ TOTAL:         XX.X/100 ([HIGH/MODERATE/LOW] CONVICTION [LONG/SHORT])
 # PHASE 1-7: Data Collection (12 min) - BULLET POINTS ONLY
 get_ticker_data(), calculate_fundamental_scores_tool()
 get_earnings_history(), get_nasdaq_earnings_calendar()
-analyze_options_mcmillan(ticker, direction="LONG")  # ⭐ McMillan Options
+analyze_options_mcmillan(ticker)  # ⭐ McMillan Options (direction-independent)
 get_insider_trades(), get_institutional_holders()
 analyze_ml_enhanced()  # ⭐ Full analysis: Al Brooks + Order Blocks + Supply/Demand
 calculate_relative_strength_tool()
