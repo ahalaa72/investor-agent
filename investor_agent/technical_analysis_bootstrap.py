@@ -20,6 +20,12 @@ logger = logging.getLogger(__name__)
 # Module-level cache for price history (5 minute TTL)
 _price_history_cache: Dict[str, tuple] = {}
 _cache_ttl_seconds = 300  # 5 minutes
+_last_data_source: Dict[str, str] = {}  # Track last data source per ticker
+
+
+def _get_data_source(ticker: str) -> str:
+    """Get the last data source used for a ticker."""
+    return _last_data_source.get(ticker, "UNKNOWN")
 
 
 def _get_price_history(ticker: str, period: str = "3mo") -> pd.DataFrame:
@@ -30,59 +36,53 @@ def _get_price_history(ticker: str, period: str = "3mo") -> pd.DataFrame:
     # Check cache first
     cache_key = f"{ticker}_{period}"
     if cache_key in _price_history_cache:
-        df, timestamp = _price_history_cache[cache_key]
+        df, timestamp, source = _price_history_cache[cache_key]
         age_seconds = (datetime.now() - timestamp).total_seconds()
         if age_seconds < _cache_ttl_seconds:
-            logger.debug(f"💾 Price history cache HIT for {ticker} (age: {age_seconds:.1f}s)")
+            logger.debug(f"💾 Price history cache HIT for {ticker} from {source} (age: {age_seconds:.1f}s)")
+            _last_data_source[ticker] = source  # Track source from cache
             return df.copy()
 
-    # Map period to days
-    period_days = {
-        '1d': 1, '5d': 5, '1mo': 30, '3mo': 90, '6mo': 180,
-        '1y': 365, '2y': 730, '5y': 1825
+    # Map period to window size for Questrade (trading days)
+    period_windows = {
+        '1d': 5, '5d': 10, '1mo': 30, '3mo': 70, '6mo': 140,
+        '1y': 260, '2y': 520, '5y': 1300
     }
-    days = period_days.get(period, 90)
+    window = period_windows.get(period, 70)
 
-    # Try Questrade first
+    # Try Questrade first - use the working get_questrade_candles pattern
     try:
-        from .questrade import get_questrade_client
+        from .server import get_questrade_candles
 
-        qt_client = get_questrade_client()
-        symbol_info = qt_client.get_symbol_info(ticker)
+        candles_result = get_questrade_candles(ticker, "OneDay", window=window)
 
-        if symbol_info and symbol_info.get('symbols'):
-            end_time = datetime.now()
-            start_time = end_time - timedelta(days=days + 10)
+        if candles_result and candles_result.get('candles') and len(candles_result['candles']) >= 10:
+            df = pd.DataFrame(candles_result['candles'])
+            df = df.rename(columns={
+                'start': 'Date', 'open': 'Open', 'high': 'High',
+                'low': 'Low', 'close': 'Close', 'volume': 'Volume'
+            })
+            # Keep VWAP if available
+            if 'VWAP' in df.columns:
+                df = df.rename(columns={'VWAP': 'vwap'})
 
-            interval = "OneDay" if days > 30 else "OneHour"
-            start_str = start_time.strftime('%Y-%m-%dT%H:%M:%S-05:00')
-            end_str = end_time.strftime('%Y-%m-%dT%H:%M:%S-05:00')
+            # Convert with utc=True to handle timezone-aware strings properly
+            df['Date'] = pd.to_datetime(df['Date'], utc=True)
+            df.set_index('Date', inplace=True)
+            # Remove timezone info for consistent downstream processing
+            df.index = df.index.tz_convert(None)
 
-            candles = qt_client.get_candles(ticker, interval, start_str, end_str)
-
-            if candles and candles.get('candles'):
-                df = pd.DataFrame(candles['candles'])
-                df = df.rename(columns={
-                    'start': 'Date', 'open': 'Open', 'high': 'High',
-                    'low': 'Low', 'close': 'Close', 'volume': 'Volume'
-                })
-                # Convert with utc=True to handle timezone-aware strings properly
-                df['Date'] = pd.to_datetime(df['Date'], utc=True)
-                df.set_index('Date', inplace=True)
-                # Remove timezone info for consistent downstream processing
-                df.index = df.index.tz_convert(None)
-
-                if len(df) >= 10:
-                    logger.info(f"Using Questrade data for {ticker}")
-                    # Cache before returning
-                    _price_history_cache[cache_key] = (df.copy(), datetime.now())
-                    return df
+            logger.info(f"✅ Using QUESTRADE data for {ticker} ({len(df)} bars)")
+            # Cache with source info and track last source
+            _price_history_cache[cache_key] = (df.copy(), datetime.now(), "QUESTRADE")
+            _last_data_source[ticker] = "QUESTRADE"
+            return df
 
     except Exception as e:
-        logger.warning(f"Questrade unavailable for {ticker}: {e}")
+        logger.warning(f"⚠️ Questrade failed for {ticker}: {e}")
 
     # Fallback to yfinance
-    logger.info(f"Using yfinance for {ticker}")
+    logger.warning(f"⚠️ FALLBACK: Using yfinance for {ticker} (Questrade unavailable)")
     stock = yf.Ticker(ticker)
     df = stock.history(period=period)
 
@@ -90,27 +90,364 @@ def _get_price_history(ticker: str, period: str = "3mo") -> pd.DataFrame:
     if isinstance(df.index, pd.DatetimeIndex) and df.index.tz is not None:
         df.index = df.index.tz_localize(None)
 
-    # Cache before returning
+    # Cache before returning with source info (3-tuple to match cache retrieval)
     if not df.empty:
-        _price_history_cache[cache_key] = (df.copy(), datetime.now())
+        _price_history_cache[cache_key] = (df.copy(), datetime.now(), "YFINANCE")
+        _last_data_source[ticker] = "YFINANCE"
 
     return df
+
+
+# ============================================================================
+# DALIO ECONOMIC MACHINE - Helper Functions
+# Based on Ray Dalio's principle: Price = Total Spending / Quantity Sold
+# ============================================================================
+
+def _interpret_dalio_ratio(ratio: float) -> str:
+    """Interpret the Dalio Ratio value"""
+    if ratio > 1.05:
+        return "STRONG_BULLISH"
+    elif ratio > 1.02:
+        return "BULLISH"
+    elif ratio > 0.98:
+        return "NEUTRAL"
+    elif ratio > 0.95:
+        return "BEARISH"
+    else:
+        return "STRONG_BEARISH"
+
+
+def _classify_dv_momentum(momentum_pct: float) -> str:
+    """Classify dollar volume momentum"""
+    if momentum_pct > 100:
+        return "EXTREME_INFLOW"
+    elif momentum_pct > 50:
+        return "STRONG_INFLOW"
+    elif momentum_pct > 20:
+        return "INFLOW"
+    elif momentum_pct > -20:
+        return "NEUTRAL"
+    elif momentum_pct > -50:
+        return "OUTFLOW"
+    else:
+        return "STRONG_OUTFLOW"
+
+
+def _interpret_spending_efficiency(efficiency: float) -> str:
+    """Interpret spending efficiency ratio"""
+    if abs(efficiency) > 1.5:
+        return "LOW_LIQUIDITY"
+    elif abs(efficiency) < 0.3:
+        return "VERY_HIGH_ABSORPTION"
+    elif abs(efficiency) < 0.5:
+        return "HIGH_ABSORPTION"
+    elif abs(efficiency) <= 1.2:
+        return "NORMAL"
+    else:
+        return "ELEVATED"
+
+
+def _derive_efficiency_implication(efficiency: float, cdf: float) -> str:
+    """Derive implication from spending efficiency and dollar flow"""
+    if abs(efficiency) < 0.5 and cdf > 0:
+        return "ACCUMULATION"
+    elif abs(efficiency) < 0.5 and cdf < 0:
+        return "DISTRIBUTION"
+    elif abs(efficiency) > 1.5:
+        return "BREAKOUT_OR_BREAKDOWN"
+    else:
+        return "NORMAL_TRADING"
+
+
+def _calculate_dollar_volume_profile(df: pd.DataFrame, bins: int = 20) -> dict:
+    """
+    Calculate dollar volume profile (spending at each price level).
+    This shows where the MOST CAPITAL was deployed, not just shares.
+    """
+    try:
+        price_min = df['Low'].min()
+        price_max = df['High'].max()
+        price_range = price_max - price_min
+
+        if price_range <= 0:
+            return {"error": "Insufficient price range"}
+
+        bin_size = price_range / bins
+
+        # Calculate dollar volume for each bar
+        df_calc = df.copy()
+        df_calc['Typical_Price'] = (df_calc['High'] + df_calc['Low'] + df_calc['Close']) / 3
+        df_calc['Dollar_Volume'] = df_calc['Typical_Price'] * df_calc['Volume']
+
+        profile = {}
+        for i in range(bins):
+            price_low = price_min + (i * bin_size)
+            price_high = price_low + bin_size
+            price_mid = (price_low + price_high) / 2
+
+            # Estimate dollar volume at this level (bars that touched this price)
+            mask = (df_calc['Low'] <= price_mid) & (df_calc['High'] >= price_mid)
+            if mask.sum() > 0:
+                dv_at_level = df_calc.loc[mask, 'Dollar_Volume'].sum() / mask.sum()
+            else:
+                dv_at_level = 0
+
+            profile[round(price_mid, 2)] = int(dv_at_level)
+
+        # Find POC (Point of Control) - price with highest dollar volume
+        if not profile:
+            return {"error": "Could not calculate profile"}
+
+        poc_price = max(profile, key=profile.get)
+
+        # Calculate Value Area (70% of dollar volume)
+        total_dv = sum(profile.values())
+        sorted_levels = sorted(profile.items(), key=lambda x: x[1], reverse=True)
+
+        cumulative = 0
+        value_area_prices = []
+        for price, dv in sorted_levels:
+            cumulative += dv
+            value_area_prices.append(price)
+            if cumulative >= total_dv * 0.70:
+                break
+
+        va_high = max(value_area_prices) if value_area_prices else price_max
+        va_low = min(value_area_prices) if value_area_prices else price_min
+
+        # Identify high/low volume nodes
+        avg_dv = total_dv / bins if bins > 0 else 0
+        nodes = []
+        for price, dv in sorted(profile.items()):
+            if dv > avg_dv * 1.5:
+                nodes.append({"price": price, "dollar_volume": dv, "type": "HIGH_VOLUME"})
+            elif dv < avg_dv * 0.5 and dv > 0:
+                nodes.append({"price": price, "dollar_volume": dv, "type": "LOW_VOLUME"})
+
+        current_price = df['Close'].iloc[-1]
+
+        return {
+            "point_of_control": round(poc_price, 2),
+            "value_area_high": round(va_high, 2),
+            "value_area_low": round(va_low, 2),
+            "current_vs_poc": "ABOVE" if current_price > poc_price else "BELOW" if current_price < poc_price else "AT",
+            "total_dollar_volume": int(total_dv),
+            "dollar_nodes": nodes[:10]  # Top 10 notable nodes
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _detect_institutional_activity(
+    dv_momentum: float,
+    spending_efficiency: float,
+    cdf_20d: float,
+    avg_dv_20d: float,
+    high_dv_days: int
+) -> dict:
+    """
+    Detect institutional activity based on dollar volume patterns.
+    """
+    signals = []
+    confidence = 0
+
+    # Check 1: Dollar volume significantly above average
+    if dv_momentum > 50:
+        signals.append(f"Dollar volume {dv_momentum:.0f}% above 20d avg")
+        confidence += 30
+    elif dv_momentum > 20:
+        signals.append(f"Dollar volume {dv_momentum:.0f}% above 20d avg")
+        confidence += 15
+
+    # Check 2: High absorption (big money, small moves)
+    if abs(spending_efficiency) < 0.5:
+        signals.append("High absorption - large capital, small price moves")
+        confidence += 25
+    elif abs(spending_efficiency) < 0.8:
+        signals.append("Moderate absorption detected")
+        confidence += 10
+
+    # Check 3: Consistent directional flow
+    if avg_dv_20d > 0 and abs(cdf_20d) > avg_dv_20d * 0.3:
+        signals.append("Strong directional dollar commitment")
+        confidence += 25
+    elif avg_dv_20d > 0 and abs(cdf_20d) > avg_dv_20d * 0.15:
+        signals.append("Moderate directional dollar commitment")
+        confidence += 10
+
+    # Check 4: Multiple high-dollar-volume days
+    if high_dv_days >= 5:
+        signals.append(f"{high_dv_days} high-dollar-volume days in 20d")
+        confidence += 20
+    elif high_dv_days >= 3:
+        signals.append(f"{high_dv_days} high-dollar-volume days in 20d")
+        confidence += 10
+
+    # Determine confidence level
+    if confidence >= 75:
+        conf_level = "HIGH"
+    elif confidence >= 50:
+        conf_level = "MEDIUM"
+    else:
+        conf_level = "LOW"
+
+    return {
+        "detected": confidence >= 50,
+        "confidence": conf_level,
+        "confidence_score": confidence,
+        "signals": signals,
+        "likely_direction": "ACCUMULATION" if cdf_20d > 0 else "DISTRIBUTION",
+        "estimated_commitment": abs(int(cdf_20d))
+    }
+
+
+def _assess_trend_sustainability(
+    dalio_ratio: float,
+    dv_momentum: float,
+    spending_efficiency: float,
+    cdf_20d: float,
+    current_price: float,
+    poc_price: float
+) -> dict:
+    """
+    Assess trend sustainability using Dalio metrics.
+    Returns score 0-100 and grade A-F.
+    """
+    score = 0
+    factors = {}
+    risk_factors = []
+
+    # Factor 1: Dalio Ratio trend (25 points)
+    if dalio_ratio > 1.05:
+        score += 25
+        factors["dalio_ratio"] = "STRONG_POSITIVE"
+    elif dalio_ratio > 1.02:
+        score += 20
+        factors["dalio_ratio"] = "POSITIVE"
+    elif dalio_ratio > 0.98:
+        score += 12
+        factors["dalio_ratio"] = "NEUTRAL"
+    elif dalio_ratio > 0.95:
+        score += 5
+        factors["dalio_ratio"] = "NEGATIVE"
+        risk_factors.append("Dalio ratio bearish - buyers paying less")
+    else:
+        factors["dalio_ratio"] = "STRONG_NEGATIVE"
+        risk_factors.append("Dalio ratio strongly bearish")
+
+    # Factor 2: Dollar volume momentum (25 points)
+    if dv_momentum > 50:
+        score += 25
+        factors["dollar_volume_trend"] = "STRONG_POSITIVE"
+    elif dv_momentum > 20:
+        score += 20
+        factors["dollar_volume_trend"] = "POSITIVE"
+    elif dv_momentum > -20:
+        score += 12
+        factors["dollar_volume_trend"] = "NEUTRAL"
+    elif dv_momentum > -50:
+        score += 5
+        factors["dollar_volume_trend"] = "NEGATIVE"
+        risk_factors.append("Dollar volume declining")
+    else:
+        factors["dollar_volume_trend"] = "STRONG_NEGATIVE"
+        risk_factors.append("Dollar volume strongly declining")
+
+    # Factor 3: Spending efficiency (25 points)
+    abs_eff = abs(spending_efficiency) if spending_efficiency != 0 else 1.0
+    if 0.3 <= abs_eff <= 1.2:
+        score += 25
+        factors["efficiency_trend"] = "STABLE"
+    elif abs_eff < 0.3:
+        score += 20
+        factors["efficiency_trend"] = "HIGH_ABSORPTION"
+    elif abs_eff <= 1.5:
+        score += 15
+        factors["efficiency_trend"] = "SLIGHTLY_ELEVATED"
+    else:
+        score += 5
+        factors["efficiency_trend"] = "UNSTABLE"
+        risk_factors.append("Low liquidity - moves may not sustain")
+
+    # Factor 4: Price vs POC (25 points)
+    if poc_price > 0:
+        price_vs_poc = ((current_price - poc_price) / poc_price) * 100
+    else:
+        price_vs_poc = 0
+
+    if -5 <= price_vs_poc <= 10:
+        score += 25
+        factors["price_vs_poc"] = "FAVORABLE"
+    elif -10 <= price_vs_poc <= 15:
+        score += 15
+        factors["price_vs_poc"] = "ACCEPTABLE"
+    else:
+        score += 5
+        factors["price_vs_poc"] = "EXTENDED"
+        if price_vs_poc > 15:
+            risk_factors.append(f"Price {price_vs_poc:.1f}% above POC - extended")
+        else:
+            risk_factors.append(f"Price {abs(price_vs_poc):.1f}% below POC")
+
+    # Determine grade
+    if score >= 80:
+        grade = "A"
+    elif score >= 70:
+        grade = "B+"
+    elif score >= 60:
+        grade = "B"
+    elif score >= 50:
+        grade = "C"
+    elif score >= 40:
+        grade = "D"
+    else:
+        grade = "F"
+
+    # Determine assessment
+    if score >= 60:
+        assessment = "SUSTAINABLE"
+    elif score >= 40:
+        assessment = "AT_RISK"
+    else:
+        assessment = "UNSUSTAINABLE"
+
+    return {
+        "score": score,
+        "grade": grade,
+        "assessment": assessment,
+        "factors": factors,
+        "risk_factors": risk_factors
+    }
 
 
 def analyze_volume(ticker: str, period: str = "3mo", vwap_mode: str = "session") -> dict:
     """
     Comprehensive volume analysis - THE most important confirmation indicator.
-    
+
+    NOW INCLUDES: Ray Dalio's Economic Machine metrics for institutional-grade analysis.
+
     Args:
         ticker: Stock ticker symbol
         period: Historical period (1mo, 3mo, 6mo, 1y, 2y)
-        vwap_mode: 
+        vwap_mode:
             - "session": Each day's VWAP (TradingView default) - calculates VWAP per trading session
-            - "rolling": 20-day rolling VWAP 
+            - "rolling": 20-day rolling VWAP
             - "anchored": VWAP from start of period (what TradingView calls "Anchored VWAP")
-    
+
     Returns:
-        Dictionary containing volume metrics
+        Dictionary containing:
+        - Standard volume metrics (VWAP, OBV, MFI, CVD, Volume Profile)
+        - Multi-VWAP analysis (rolling, anchored positions)
+        - Liquidity zones (HVN/LVN analysis)
+        - **NEW: dalio_metrics** - Ray Dalio Economic Machine analysis:
+            - dalio_ratio: Current VWAP / Prior VWAP (>1 = bullish)
+            - dollar_volume: Total spending analysis
+            - spending_efficiency: Price change vs dollar volume change
+            - cumulative_dollar_flow: Net directional capital
+            - dollar_profile: Dollar-weighted volume profile
+            - institutional_activity: Smart money detection
+            - trend_sustainability: Score 0-100 with grade
+            - gate_2_contribution: For 4-gate validation integration
     """
     try:
         # Use Questrade-first approach
@@ -420,8 +757,242 @@ def analyze_volume(ticker: str, period: str = "3mo", vwap_mode: str = "session")
             "interpretation": zone_interpretation
         }
 
+        # ========== DALIO ECONOMIC MACHINE METRICS ==========
+        # Based on Ray Dalio's principle: Price = Total Spending / Quantity Sold
+        # Dollar Volume = Typical Price * Volume (Total Spending)
+        # VWAP = Dollar Volume / Volume (Average Price Paid)
+
+        # 1. Dollar Volume Calculations
+        df['Dollar_Volume'] = df['Typical_Price'] * df['Volume']
+
+        dv_today = float(df['Dollar_Volume'].iloc[-1])
+        dv_5d_avg = float(df['Dollar_Volume'].iloc[-5:].mean()) if len(df) >= 5 else dv_today
+        dv_20d_avg = float(df['Dollar_Volume'].iloc[-20:].mean()) if len(df) >= 20 else dv_5d_avg
+        dv_50d_avg = float(df['Dollar_Volume'].iloc[-50:].mean()) if len(df) >= 50 else dv_20d_avg
+
+        # Relative dollar volume
+        dv_relative_20d = dv_today / dv_20d_avg if dv_20d_avg > 0 else 1.0
+        dv_relative_50d = dv_today / dv_50d_avg if dv_50d_avg > 0 else 1.0
+
+        # Dollar volume percentile (90-day)
+        dv_90d = df['Dollar_Volume'].iloc[-90:] if len(df) >= 90 else df['Dollar_Volume']
+        dv_percentile = float((dv_90d < dv_today).sum() / len(dv_90d) * 100) if len(dv_90d) > 0 else 50.0
+
+        # 2. Dalio Ratio (Current VWAP / Prior VWAP)
+        # Session VWAP = Dollar Volume / Volume for each day
+        df['Session_VWAP'] = df['Dollar_Volume'] / df['Volume']
+
+        current_session_vwap = float(df['Session_VWAP'].iloc[-1])
+        prior_5d_vwap = float(df['Session_VWAP'].iloc[-6:-1].mean()) if len(df) >= 6 else current_session_vwap
+        prior_20d_vwap = float(df['Session_VWAP'].iloc[-21:-1].mean()) if len(df) >= 21 else prior_5d_vwap
+
+        dalio_ratio_5d = current_session_vwap / prior_5d_vwap if prior_5d_vwap > 0 else 1.0
+        dalio_ratio_20d = current_session_vwap / prior_20d_vwap if prior_20d_vwap > 0 else 1.0
+
+        # Dalio ratio trend (is it increasing or decreasing?)
+        if len(df) >= 10:
+            dalio_ratios = []
+            for i in range(-5, 0):
+                curr_vwap = df['Session_VWAP'].iloc[i]
+                prior_vwap = df['Session_VWAP'].iloc[i-5:i].mean() if abs(i-5) <= len(df) else curr_vwap
+                if prior_vwap > 0:
+                    dalio_ratios.append(curr_vwap / prior_vwap)
+            if len(dalio_ratios) >= 2:
+                dalio_trend = "INCREASING" if dalio_ratios[-1] > dalio_ratios[0] else "DECREASING" if dalio_ratios[-1] < dalio_ratios[0] else "FLAT"
+            else:
+                dalio_trend = "FLAT"
+        else:
+            dalio_trend = "INSUFFICIENT_DATA"
+
+        # 3. Dollar Volume Momentum
+        dv_momentum = ((dv_today - dv_20d_avg) / dv_20d_avg * 100) if dv_20d_avg > 0 else 0.0
+        dv_momentum_class = _classify_dv_momentum(dv_momentum)
+
+        # 4. Spending Efficiency Ratio
+        if len(df) >= 2:
+            price_change_pct = ((df['Close'].iloc[-1] - df['Close'].iloc[-2]) / df['Close'].iloc[-2] * 100) if df['Close'].iloc[-2] > 0 else 0.0
+            dv_change_pct = ((dv_today - float(df['Dollar_Volume'].iloc[-2])) / float(df['Dollar_Volume'].iloc[-2]) * 100) if df['Dollar_Volume'].iloc[-2] > 0 else 0.0
+            spending_efficiency = price_change_pct / dv_change_pct if dv_change_pct != 0 else 0.0
+        else:
+            price_change_pct = 0.0
+            dv_change_pct = 0.0
+            spending_efficiency = 0.0
+
+        efficiency_interpretation = _interpret_spending_efficiency(spending_efficiency)
+
+        # 5. Cumulative Dollar Flow - TWO METHODS
+
+        # METHOD 1: Simple Dollar Flow (Close vs Prior Close) - RAY DALIO ALIGNED
+        # This is what traders actually mean by "money flow" - did the stock go UP or DOWN today?
+        # Up day (close > prior close) = net buying, Down day = net selling
+        df['Prior_Close'] = df['Close'].shift(1)
+        df['Daily_Direction'] = np.where(df['Close'] > df['Prior_Close'], 1,
+                                         np.where(df['Close'] < df['Prior_Close'], -1, 0))
+        df['Simple_DV'] = df['Dollar_Volume'] * df['Daily_Direction']
+
+        simple_5d = float(df['Simple_DV'].iloc[-5:].sum()) if len(df) >= 5 else 0.0
+        simple_20d = float(df['Simple_DV'].iloc[-20:].sum()) if len(df) >= 20 else simple_5d
+        simple_direction = "ACCUMULATION" if simple_20d > 0 else "DISTRIBUTION"
+
+        # Calculate up/down day breakdown
+        last_20 = df.iloc[-20:] if len(df) >= 20 else df
+        up_days = (last_20['Daily_Direction'] > 0).sum()
+        down_days = (last_20['Daily_Direction'] < 0).sum()
+        flat_days = (last_20['Daily_Direction'] == 0).sum()
+        up_volume = float(last_20[last_20['Daily_Direction'] > 0]['Dollar_Volume'].sum())
+        down_volume = float(last_20[last_20['Daily_Direction'] < 0]['Dollar_Volume'].sum())
+        total_volume = up_volume + down_volume
+        up_pct = round(up_volume / total_volume * 100, 1) if total_volume > 0 else 0
+        down_pct = round(down_volume / total_volume * 100, 1) if total_volume > 0 else 0
+
+        # Build day-by-day breakdown for debugging
+        daily_breakdown = []
+        for idx in range(len(last_20)):
+            row = last_20.iloc[idx]
+            date_str = row.name.strftime('%Y-%m-%d') if hasattr(row.name, 'strftime') else str(row.name)
+            direction = "UP" if row['Daily_Direction'] > 0 else "DOWN" if row['Daily_Direction'] < 0 else "FLAT"
+            daily_breakdown.append({
+                "date": date_str,
+                "close": round(float(row['Close']), 2),
+                "prior_close": round(float(row['Prior_Close']), 2) if pd.notna(row['Prior_Close']) else None,
+                "pct_change": round((row['Close'] / row['Prior_Close'] - 1) * 100, 2) if pd.notna(row['Prior_Close']) and row['Prior_Close'] > 0 else None,
+                "volume": int(row['Volume']),
+                "dollar_volume": int(row['Dollar_Volume']),
+                "direction": direction,
+                "contribution": int(row['Simple_DV'])
+            })
+
+        # METHOD 2: Candle Dollar Flow (Close vs Open) - INTRADAY SENTIMENT
+        # This shows intraday sentiment: green candle = buyers won that day
+        df['Candle_Direction'] = np.where(df['Close'] >= df['Open'], 1, -1)
+        df['Candle_DV'] = df['Dollar_Volume'] * df['Candle_Direction']
+
+        candle_5d = float(df['Candle_DV'].iloc[-5:].sum()) if len(df) >= 5 else 0.0
+        candle_20d = float(df['Candle_DV'].iloc[-20:].sum()) if len(df) >= 20 else candle_5d
+        candle_direction = "BULLISH_CANDLES" if candle_20d > 0 else "BEARISH_CANDLES"
+
+        # Use SIMPLE dollar flow as the primary CDF (Dalio-aligned)
+        cdf_5d = simple_5d
+        cdf_20d = simple_20d
+        cdf_direction = simple_direction
+
+        # CDF acceleration (is flow speeding up or slowing down?)
+        if len(df) >= 10:
+            cdf_first_half = float(df['Simple_DV'].iloc[-20:-10].sum()) if len(df) >= 20 else 0.0
+            cdf_second_half = float(df['Simple_DV'].iloc[-10:].sum())
+            if cdf_first_half != 0:
+                cdf_acceleration = "INCREASING" if abs(cdf_second_half) > abs(cdf_first_half) * 1.2 else "DECREASING" if abs(cdf_second_half) < abs(cdf_first_half) * 0.8 else "STABLE"
+            else:
+                cdf_acceleration = "STABLE"
+        else:
+            cdf_acceleration = "INSUFFICIENT_DATA"
+
+        # Efficiency implication
+        efficiency_implication = _derive_efficiency_implication(spending_efficiency, cdf_20d)
+
+        # 6. Dollar Volume Profile
+        dollar_profile = _calculate_dollar_volume_profile(df)
+        dv_poc = dollar_profile.get("point_of_control", poc_price)
+
+        # 7. Institutional Activity Detection
+        # Count high DV days in last 20
+        if len(df) >= 20:
+            high_dv_threshold = dv_20d_avg * 1.5
+            high_dv_days = int((df['Dollar_Volume'].iloc[-20:] > high_dv_threshold).sum())
+        else:
+            high_dv_days = 0
+
+        institutional = _detect_institutional_activity(
+            dv_momentum, spending_efficiency, cdf_20d, dv_20d_avg, high_dv_days
+        )
+
+        # 8. Trend Sustainability Score
+        sustainability = _assess_trend_sustainability(
+            dalio_ratio_20d, dv_momentum, spending_efficiency, cdf_20d,
+            current_price, float(dv_poc)
+        )
+
+        # Compile Dalio Metrics
+        dalio_metrics = {
+            "principle": "Price = Total Spending / Quantity Sold (Ray Dalio)",
+            # Dalio Ratio
+            "dalio_ratio": {
+                "current": round(dalio_ratio_5d, 4),
+                "5d_avg": round(dalio_ratio_5d, 4),
+                "20d_avg": round(dalio_ratio_20d, 4),
+                "interpretation": _interpret_dalio_ratio(dalio_ratio_20d),
+                "trend": dalio_trend,
+                "note": ">1.0 = buyers paying more (bullish), <1.0 = buyers paying less (bearish)"
+            },
+            # Dollar Volume
+            "dollar_volume": {
+                "today": int(dv_today),
+                "5d_avg": int(dv_5d_avg),
+                "20d_avg": int(dv_20d_avg),
+                "50d_avg": int(dv_50d_avg),
+                "relative_to_20d": round(dv_relative_20d, 2),
+                "relative_to_50d": round(dv_relative_50d, 2),
+                "momentum_pct": round(dv_momentum, 1),
+                "momentum": dv_momentum_class,
+                "percentile_90d": round(dv_percentile, 1)
+            },
+            # Spending Efficiency
+            "spending_efficiency": {
+                "ratio": round(spending_efficiency, 4),
+                "interpretation": efficiency_interpretation,
+                "implication": efficiency_implication,
+                "price_change_pct": round(price_change_pct, 2),
+                "dv_change_pct": round(dv_change_pct, 2),
+                "note": "<0.5 = high absorption (accumulation/distribution), >1.5 = low liquidity"
+            },
+            # Cumulative Dollar Flow (Simple = Close vs Prior Close, Dalio-aligned)
+            "cumulative_dollar_flow": {
+                "5d": int(simple_5d),
+                "20d": int(simple_20d),
+                "20d_formatted": f"${simple_20d/1e9:,.2f}B" if abs(simple_20d) >= 1e9 else f"${simple_20d/1e6:,.1f}M",
+                "direction": simple_direction,
+                "acceleration": cdf_acceleration,
+                "method": "SIMPLE (Close vs Prior Close)",
+                "up_days": int(up_days),
+                "down_days": int(down_days),
+                "flat_days": int(flat_days),
+                "up_volume_pct": up_pct,
+                "down_volume_pct": down_pct,
+                "up_dollar_volume": int(up_volume),
+                "down_dollar_volume": int(down_volume),
+                "daily_breakdown": daily_breakdown,
+                "note": "Simple dollar flow: Up day (close > prior close) = +$, Down day = -$"
+            },
+            # Candle Dollar Flow (Close vs Open - intraday sentiment)
+            "candle_dollar_flow": {
+                "5d": int(candle_5d),
+                "20d": int(candle_20d),
+                "20d_formatted": f"${candle_20d/1e9:,.2f}B" if abs(candle_20d) >= 1e9 else f"${candle_20d/1e6:,.1f}M",
+                "direction": candle_direction,
+                "method": "CANDLE (Close vs Open)",
+                "note": "Intraday sentiment: Green candle = +$, Red candle = -$"
+            },
+            # Dollar Volume Profile
+            "dollar_profile": dollar_profile,
+            # Institutional Activity
+            "institutional_activity": institutional,
+            # Trend Sustainability
+            "trend_sustainability": sustainability,
+            # Gate 2 Integration (for 4-gate validation)
+            "gate_2_contribution": {
+                "dalio_ratio_bullish": dalio_ratio_20d > 1.0,
+                "dalio_ratio_bearish": dalio_ratio_20d < 1.0,
+                "dollar_flow_positive": simple_20d > 0,
+                "dollar_flow_negative": simple_20d < 0,
+                "sustainability_ok": sustainability["score"] >= 50,
+                "dollar_flow_method": "SIMPLE (Close vs Prior Close)",
+                "note": "Uses SIMPLE dollar flow (Dalio-aligned) for Gate 2 validation"
+            }
+        }
+
         return {
             "ticker": ticker,
+            "data_source": _get_data_source(ticker),
             "analysis_date": datetime.now().strftime("%Y-%m-%d"),
             "current_price": round(current_price, 2),
             "vwap": round(current_vwap, 2),
@@ -477,6 +1048,8 @@ def analyze_volume(ticker: str, period: str = "3mo", vwap_mode: str = "session")
             },
             # ========== NEW: Liquidity Zones Analysis ==========
             "liquidity_zones": liquidity_zones,
+            # ========== NEW: Dalio Economic Machine Metrics ==========
+            "dalio_metrics": dalio_metrics,
             "professional_note": vwap_note
         }
     except Exception as e:
@@ -1696,36 +2269,35 @@ def detect_volume_decline(df: pd.DataFrame, lookback: int = 10) -> dict:
     }
 
 
-def count_trend_days(df: pd.DataFrame, direction: str = "LONG") -> int:
+def count_trend_days(df: pd.DataFrame, direction: str = "LONG", lookback: int = 10) -> int:
     """
-    Count consecutive up/down days to detect trend extension.
+    Count trend days in a rolling window to detect trend extension.
 
-    For LONG positions: Count consecutive up days (close > close[-1])
-    For SHORT positions: Count consecutive down days (close < close[-1])
+    For LONG positions: Count up days (close > close[-1]) in last N days
+    For SHORT positions: Count down days (close < close[-1]) in last N days
+
+    IMPROVED: Uses rolling window instead of breaking on first opposite day.
+    This gives more realistic exhaustion readings (e.g., 7/10 up days = extended).
 
     Returns:
-        Number of consecutive trend days
+        Number of trend days in the lookback window
     """
     if df is None or len(df) < 2:
         return 0
 
-    closes = df['Close'].values
+    closes = df['Close'].tail(lookback + 1).values
     count = 0
 
     if direction.upper() == "LONG":
-        # Count consecutive up days from most recent
-        for i in range(len(closes) - 1, 0, -1):
+        # Count up days in the window
+        for i in range(1, len(closes)):
             if closes[i] > closes[i - 1]:
                 count += 1
-            else:
-                break
     else:  # SHORT
-        # Count consecutive down days from most recent
-        for i in range(len(closes) - 1, 0, -1):
+        # Count down days in the window
+        for i in range(1, len(closes)):
             if closes[i] < closes[i - 1]:
                 count += 1
-            else:
-                break
 
     return count
 
@@ -1815,6 +2387,9 @@ def calculate_exhaustion_score(
         long_score = 0
         long_components = {}
 
+        # Get current RSI for baseline scoring
+        rsi_current = rsi_result.get("rsi_current", 50)
+
         # CVD: Bearish divergence = LONG exhausted
         if cvd_result["signal"] == "BEARISH_DIVERGENCE":
             pts = strength_to_pts(cvd_result["strength"], 20)
@@ -1824,26 +2399,42 @@ def calculate_exhaustion_score(
             long_components["cvd_divergence"] = {"points": 0, "signal": "NONE"}
 
         # RSI: Bearish divergence = LONG exhausted
+        # IMPROVED: Also use RSI LEVEL as baseline when no divergence
         if rsi_result["signal"] == "BEARISH_DIVERGENCE":
             pts = strength_to_pts(rsi_result["strength"], 20)
             long_score += pts
-            long_components["rsi_divergence"] = {"points": pts, "signal": "BEARISH", "rsi": rsi_result.get("rsi_current")}
+            long_components["rsi_divergence"] = {"points": pts, "signal": "BEARISH", "rsi": rsi_current}
         else:
-            long_components["rsi_divergence"] = {"points": 0, "signal": "NONE", "rsi": rsi_result.get("rsi_current")}
+            # RSI BASELINE: High RSI indicates overbought (LONG exhaustion)
+            rsi_baseline_pts = 0
+            if rsi_current >= 80:
+                rsi_baseline_pts = 15  # Very overbought
+            elif rsi_current >= 70:
+                rsi_baseline_pts = 10  # Overbought
+            elif rsi_current >= 60:
+                rsi_baseline_pts = 5   # Extended
+            long_score += rsi_baseline_pts
+            long_components["rsi_divergence"] = {
+                "points": rsi_baseline_pts,
+                "signal": "LEVEL_BASED",
+                "rsi": rsi_current,
+                "note": f"RSI {rsi_current:.0f} - {'overbought' if rsi_current >= 70 else 'extended' if rsi_current >= 60 else 'neutral'}"
+            }
 
-        # Trend days: Count consecutive UP days for LONG exhaustion
-        up_trend_days = count_trend_days(df, "LONG")
+        # Trend days: Count UP days in rolling 10-day window for LONG exhaustion
+        up_trend_days = count_trend_days(df, "LONG", lookback=10)
         up_trend_pts = 0
-        if up_trend_days >= 8:
+        # Scoring: Out of 10 days, how many were up?
+        if up_trend_days >= 8:      # 80%+ up days
             up_trend_pts = 25
-        elif up_trend_days >= 6:
+        elif up_trend_days >= 7:    # 70% up days
             up_trend_pts = 18
-        elif up_trend_days >= 4:
-            up_trend_pts = 10
-        elif up_trend_days >= 2:
-            up_trend_pts = 4
+        elif up_trend_days >= 6:    # 60% up days
+            up_trend_pts = 12
+        elif up_trend_days >= 5:    # 50% up days
+            up_trend_pts = 6
         long_score += up_trend_pts
-        long_components["trend_days"] = {"points": up_trend_pts, "count": up_trend_days, "note": f"{up_trend_days} up days"}
+        long_components["trend_days"] = {"points": up_trend_pts, "count": up_trend_days, "note": f"{up_trend_days}/10 up days"}
 
         # VWAP Extension: Positive sigma = LONG extended
         long_vwap_pts = 0
@@ -1882,26 +2473,42 @@ def calculate_exhaustion_score(
             short_components["cvd_divergence"] = {"points": 0, "signal": "NONE"}
 
         # RSI: Bullish divergence = SHORT exhausted
+        # IMPROVED: Also use RSI LEVEL as baseline when no divergence
         if rsi_result["signal"] == "BULLISH_DIVERGENCE":
             pts = strength_to_pts(rsi_result["strength"], 20)
             short_score += pts
-            short_components["rsi_divergence"] = {"points": pts, "signal": "BULLISH", "rsi": rsi_result.get("rsi_current")}
+            short_components["rsi_divergence"] = {"points": pts, "signal": "BULLISH", "rsi": rsi_current}
         else:
-            short_components["rsi_divergence"] = {"points": 0, "signal": "NONE", "rsi": rsi_result.get("rsi_current")}
+            # RSI BASELINE: Low RSI indicates oversold (SHORT exhaustion)
+            rsi_baseline_pts = 0
+            if rsi_current <= 20:
+                rsi_baseline_pts = 15  # Very oversold
+            elif rsi_current <= 30:
+                rsi_baseline_pts = 10  # Oversold
+            elif rsi_current <= 40:
+                rsi_baseline_pts = 5   # Extended down
+            short_score += rsi_baseline_pts
+            short_components["rsi_divergence"] = {
+                "points": rsi_baseline_pts,
+                "signal": "LEVEL_BASED",
+                "rsi": rsi_current,
+                "note": f"RSI {rsi_current:.0f} - {'oversold' if rsi_current <= 30 else 'extended down' if rsi_current <= 40 else 'neutral'}"
+            }
 
-        # Trend days: Count consecutive DOWN days for SHORT exhaustion
-        down_trend_days = count_trend_days(df, "SHORT")
+        # Trend days: Count DOWN days in rolling 10-day window for SHORT exhaustion
+        down_trend_days = count_trend_days(df, "SHORT", lookback=10)
         down_trend_pts = 0
-        if down_trend_days >= 8:
+        # Scoring: Out of 10 days, how many were down?
+        if down_trend_days >= 8:    # 80%+ down days
             down_trend_pts = 25
-        elif down_trend_days >= 6:
+        elif down_trend_days >= 7:  # 70% down days
             down_trend_pts = 18
-        elif down_trend_days >= 4:
-            down_trend_pts = 10
-        elif down_trend_days >= 2:
-            down_trend_pts = 4
+        elif down_trend_days >= 6:  # 60% down days
+            down_trend_pts = 12
+        elif down_trend_days >= 5:  # 50% down days
+            down_trend_pts = 6
         short_score += down_trend_pts
-        short_components["trend_days"] = {"points": down_trend_pts, "count": down_trend_days, "note": f"{down_trend_days} down days"}
+        short_components["trend_days"] = {"points": down_trend_pts, "count": down_trend_days, "note": f"{down_trend_days}/10 down days"}
 
         # VWAP Extension: Negative sigma = SHORT extended
         short_vwap_pts = 0

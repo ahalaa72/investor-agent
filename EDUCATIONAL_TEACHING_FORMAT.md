@@ -291,6 +291,88 @@ else:
 
 ---
 
+### Section 7: DALIO → AL BROOKS PROBABILITY ADJUSTMENTS
+
+**Purpose:** Show how Ray Dalio's Economic Machine metrics directly impact Al Brooks probability.
+
+**Source Data:** `analyze_volume_tool().dalio_economic_machine`
+
+**Template:**
+```python
+# Extract Dalio metrics from volume analysis
+dalio = volume_data.get('dalio_economic_machine', {})
+dalio_ratio = dalio.get('dalio_ratio', {}).get('current', 1.0)
+dollar_flow = dalio.get('cumulative_dollar_flow', {}).get('20d', 0)
+sustainability = dalio.get('trend_sustainability', {}).get('score', 50)
+
+dalio_adjustments = []
+base_adjustment = 0
+
+# Dalio Ratio alignment (buyers paying premium/discount)
+if direction == 'LONG':
+    if dalio_ratio >= 1.02:
+        base_adjustment += 5
+        dalio_adjustments.append(f"+5% Dalio: Buyers paying {(dalio_ratio-1)*100:.1f}% premium")
+    elif dalio_ratio < 0.98:
+        base_adjustment -= 5
+        dalio_adjustments.append(f"-5% Dalio: Buyers paying {(1-dalio_ratio)*100:.1f}% discount (BEARISH)")
+elif direction == 'SHORT':
+    if dalio_ratio <= 0.98:
+        base_adjustment += 5
+        dalio_adjustments.append(f"+5% Dalio: Buyers paying {(1-dalio_ratio)*100:.1f}% discount")
+    elif dalio_ratio > 1.02:
+        base_adjustment -= 5
+        dalio_adjustments.append(f"-5% Dalio: Buyers paying {(dalio_ratio-1)*100:.1f}% premium (BULLISH)")
+
+# Dollar Flow alignment
+if direction == 'LONG' and dollar_flow > 0:
+    base_adjustment += 3
+    dalio_adjustments.append(f"+3% Dalio: Positive dollar flow (accumulation)")
+elif direction == 'LONG' and dollar_flow < 0:
+    base_adjustment -= 3
+    dalio_adjustments.append(f"-3% Dalio: Negative dollar flow (distribution)")
+elif direction == 'SHORT' and dollar_flow < 0:
+    base_adjustment += 3
+    dalio_adjustments.append(f"+3% Dalio: Negative dollar flow confirms SHORT")
+elif direction == 'SHORT' and dollar_flow > 0:
+    base_adjustment -= 3
+    dalio_adjustments.append(f"-3% Dalio: Positive dollar flow opposes SHORT")
+
+# Sustainability score
+if sustainability >= 70:
+    base_adjustment += 3
+    dalio_adjustments.append(f"+3% Dalio: High sustainability ({sustainability})")
+elif sustainability <= 30:
+    base_adjustment -= 3
+    dalio_adjustments.append(f"-3% Dalio: Low sustainability ({sustainability})")
+```
+
+**Max Potential Dalio Impact:** +11% to -11% on Al Brooks probability
+
+**Probability Breakdown Table Template:**
+```markdown
+| Factor | Adjustment | Reason |
+|--------|------------|--------|
+| Base Pattern Quality | +X% | {pattern_description} |
+| Always-In Aligned | +/-X% | {alignment_reason} |
+| RSI/Volume | +/-X% | {rsi_volume_reason} |
+| ML Prediction | +/-X% | {ml_reason} |
+| Trap Risk | -X% | {trap_reason} |
+| **Dalio Ratio** | +/-X% | {dalio_ratio_reason} |
+| **Dollar Flow** | +/-X% | {dollar_flow_reason} |
+| **Sustainability** | +/-X% | {sustainability_reason} |
+| **FINAL PROBABILITY** | **XX%** | Sum of all adjustments |
+```
+
+**Educational Explanation:**
+> **Why Dalio Impacts Al Brooks:**
+> Al Brooks focuses on price action (WHAT the market is doing).
+> Ray Dalio focuses on money flow (WHY it's happening).
+> When BOTH are aligned, probability increases significantly.
+> When they DIVERGE, price action may be a trap - reduce probability.
+
+---
+
 ## 📚 McMILLAN OPTIONS STRATEGY EDUCATION
 
 ### Template Structure (6 Sections)
@@ -789,23 +871,604 @@ strategy_education += (
 
 ---
 
+## 📚 RAY DALIO ECONOMIC MACHINE EDUCATION
+
+### Template Structure (6 Sections)
+
+```markdown
+📚 DALIO ECONOMIC MACHINE LESSON:
+
+**WHAT THE MONEY IS DOING:** [Dalio Ratio interpretation - spending vs volume]
+
+**DOLLAR FLOW ANALYSIS:** [Cumulative Dollar Flow direction - accumulation/distribution]
+
+**INSTITUTIONAL FOOTPRINT:** [Institutional activity detection - who's moving money]
+
+**TREND SUSTAINABILITY:** [Sustainability score + grade - can this move continue?]
+
+**SPENDING EFFICIENCY:** [How efficiently is money moving price? High absorption = accumulation]
+
+**TRADING IMPLICATION:** [Entry/exit timing based on Dalio alignment]
+```
+
+### Section 1: WHAT THE MONEY IS DOING (Dalio Ratio)
+
+**Purpose:** Explain Dalio's core principle: Price = Total Spending / Quantity Sold.
+
+**Source Data:** `analyze_volume_tool().dalio_metrics.dalio_ratio`
+
+**Template:**
+```python
+dalio_metrics = volume_data["dalio_metrics"]
+dalio_ratio = dalio_metrics["dalio_ratio"]  # Current VWAP / Prior VWAP
+
+what_money_doing = f"📚 DALIO ECONOMIC MACHINE LESSON:\n\n"
+what_money_doing += f"**WHAT THE MONEY IS DOING:**\n\n"
+what_money_doing += f"**Dalio Ratio:** {dalio_ratio:.4f}\n\n"
+
+# Explain Dalio's core formula
+what_money_doing += (
+    f"**Ray Dalio's Core Insight:** Price = Total Spending / Quantity Sold.\n"
+    f"Applied to stocks: **VWAP = Dollar Volume / Share Volume**.\n\n"
+    f"The Dalio Ratio compares today's VWAP to yesterday's VWAP:\n"
+    f"- **Ratio > 1.0:** Buyers are paying MORE per share = **BULLISH** (demand > supply)\n"
+    f"- **Ratio = 1.0:** Buyers are paying the SAME = **NEUTRAL** (equilibrium)\n"
+    f"- **Ratio < 1.0:** Buyers are paying LESS per share = **BEARISH** (supply > demand)\n\n"
+)
+
+# Interpret current ratio
+if dalio_ratio > 1.05:
+    what_money_doing += (
+        f"✅ **STRONG ACCUMULATION** (Ratio {dalio_ratio:.4f} >> 1.0)\n\n"
+        f"**What's happening:** Buyers are paying significantly MORE than yesterday. "
+        f"This indicates **strong demand** - likely institutional accumulation.\n\n"
+        f"**Dalio's Teaching:** 'When spending increases faster than production, prices rise.' "
+        f"Here, the 'spending' (dollar volume) is outpacing the 'production' (shares traded).\n\n"
+        f"**Implication:** Money is flowing INTO this stock. Trend has fuel."
+    )
+elif dalio_ratio >= 1.0:
+    what_money_doing += (
+        f"⚠️ **MILD ACCUMULATION** (Ratio {dalio_ratio:.4f} ~= 1.0)\n\n"
+        f"**What's happening:** Buyers are paying slightly more than yesterday. "
+        f"Demand is marginally exceeding supply.\n\n"
+        f"**Implication:** Trend is intact but not accelerating. Watch for strengthening or weakening."
+    )
+elif dalio_ratio >= 0.95:
+    what_money_doing += (
+        f"⚠️ **EQUILIBRIUM** (Ratio {dalio_ratio:.4f} near 1.0)\n\n"
+        f"**What's happening:** Buyers and sellers are in balance. "
+        f"Neither side has clear control.\n\n"
+        f"**Implication:** Transition zone. Could break either direction. Wait for clarity."
+    )
+else:
+    what_money_doing += (
+        f"🚨 **DISTRIBUTION** (Ratio {dalio_ratio:.4f} << 1.0)\n\n"
+        f"**What's happening:** Buyers are paying significantly LESS than yesterday. "
+        f"This indicates **weak demand** - likely institutional distribution.\n\n"
+        f"**Dalio's Teaching:** 'When spending decreases, prices fall.' "
+        f"Here, the 'spending' is falling relative to shares traded.\n\n"
+        f"**Implication:** Money is flowing OUT of this stock. Trend is losing fuel."
+    )
+```
+
+### Section 2: DOLLAR FLOW ANALYSIS (Cumulative Dollar Flow)
+
+**Purpose:** Track the cumulative direction of money flow over time.
+
+**Source Data:** `analyze_volume_tool().dalio_metrics.cumulative_dollar_flow`
+
+**Template:**
+```python
+cdf = dalio_metrics["cumulative_dollar_flow"]
+flow_direction = dalio_metrics["dollar_flow_direction"]  # "ACCUMULATION" or "DISTRIBUTION"
+
+dollar_flow_education = (
+    f"**DOLLAR FLOW ANALYSIS:**\n\n"
+    f"**Cumulative Dollar Flow (CDF):** ${cdf/1e6:.2f}M\n"
+    f"**Direction:** {flow_direction}\n\n"
+)
+
+# Explain CDF concept
+dollar_flow_education += (
+    f"**What is CDF?** It's the running total of directional dollar volume:\n"
+    f"- On UP bars: ADD the dollar volume (buyers pushed price up)\n"
+    f"- On DOWN bars: SUBTRACT the dollar volume (sellers pushed price down)\n\n"
+    f"This shows us the **NET money flow** over time.\n\n"
+)
+
+if cdf > 0:
+    if cdf > 50e6:  # $50M+
+        dollar_flow_education += (
+            f"✅ **STRONG ACCUMULATION** (+${cdf/1e6:.2f}M net inflow)\n\n"
+            f"**What's happening:** Over this period, **${cdf/1e6:.2f}M MORE** flowed into "
+            f"the stock than out. This is **significant institutional buying**.\n\n"
+            f"**Dalio's Teaching:** 'Credit (money inflow) drives economic expansion.' "
+            f"In stocks, net dollar inflow drives price appreciation.\n\n"
+            f"**Implication:** Strong hands are accumulating. Trend has institutional support."
+        )
+    else:
+        dollar_flow_education += (
+            f"⚠️ **MILD ACCUMULATION** (+${cdf/1e6:.2f}M net inflow)\n\n"
+            f"**What's happening:** Slight net money inflow. Buyers have a small edge.\n\n"
+            f"**Implication:** Mild bullish bias, but not strong conviction yet."
+        )
+elif cdf < 0:
+    if cdf < -50e6:  # -$50M+
+        dollar_flow_education += (
+            f"🚨 **STRONG DISTRIBUTION** (${cdf/1e6:.2f}M net outflow)\n\n"
+            f"**What's happening:** Over this period, **${abs(cdf)/1e6:.2f}M MORE** flowed out "
+            f"of the stock than in. This is **significant institutional selling**.\n\n"
+            f"**Dalio's Teaching:** 'Deleveraging (money outflow) drives economic contraction.' "
+            f"In stocks, net dollar outflow drives price decline.\n\n"
+            f"**Implication:** Strong hands are distributing. Exit or avoid."
+        )
+    else:
+        dollar_flow_education += (
+            f"⚠️ **MILD DISTRIBUTION** (${cdf/1e6:.2f}M net outflow)\n\n"
+            f"**What's happening:** Slight net money outflow. Sellers have a small edge.\n\n"
+            f"**Implication:** Mild bearish bias, monitor for acceleration."
+        )
+else:
+    dollar_flow_education += (
+        f"⚖️ **NEUTRAL FLOW** (${cdf/1e6:.2f}M)\n\n"
+        f"**What's happening:** Money in = Money out. Perfect equilibrium.\n\n"
+        f"**Implication:** No clear direction. Wait for breakout."
+    )
+```
+
+### Section 3: INSTITUTIONAL FOOTPRINT
+
+**Purpose:** Detect institutional activity through dollar flow patterns.
+
+**Source Data:** `analyze_volume_tool().dalio_metrics.institutional_activity`
+
+**Template:**
+```python
+institutional = dalio_metrics.get("institutional_activity", "UNKNOWN")
+avg_daily_flow = dalio_metrics.get("avg_daily_dollar_flow", 0)
+
+footprint_education = (
+    f"**INSTITUTIONAL FOOTPRINT:**\n\n"
+    f"**Activity Level:** {institutional}\n"
+    f"**Avg Daily Dollar Flow:** ${avg_daily_flow/1e6:.2f}M\n\n"
+)
+
+# Explain institutional detection
+footprint_education += (
+    f"**How do we detect institutions?**\n"
+    f"- Large daily dollar flows (>$10M average)\n"
+    f"- Consistent direction over multiple days\n"
+    f"- High sustainability scores\n\n"
+    f"Institutions can't buy/sell in one day - they accumulate/distribute over weeks.\n\n"
+)
+
+if institutional == "HIGH_ACCUMULATION":
+    footprint_education += (
+        f"✅ **INSTITUTIONAL ACCUMULATION DETECTED**\n\n"
+        f"**What it means:** Large, consistent dollar inflows over multiple days. "
+        f"This is the footprint of institutional buying - they're building a position.\n\n"
+        f"**Dalio's Teaching:** 'Follow the big money.' Institutions have better research "
+        f"and longer time horizons. When they accumulate, pay attention.\n\n"
+        f"**Implication:** Consider this a bullish tailwind. Ride with the institutions."
+    )
+elif institutional == "HIGH_DISTRIBUTION":
+    footprint_education += (
+        f"🚨 **INSTITUTIONAL DISTRIBUTION DETECTED**\n\n"
+        f"**What it means:** Large, consistent dollar outflows over multiple days. "
+        f"This is the footprint of institutional selling - they're exiting.\n\n"
+        f"**Dalio's Teaching:** 'When the big players leave, the party is ending.' "
+        f"Institutions exiting often precedes major price declines.\n\n"
+        f"**Implication:** Consider exiting or avoiding. Don't fight the flow."
+    )
+else:
+    footprint_education += (
+        f"⚠️ **NO CLEAR INSTITUTIONAL SIGNAL**\n\n"
+        f"**What it means:** Dollar flows are mixed or small. No clear institutional footprint.\n\n"
+        f"**Implication:** This is retail-driven action. Less predictable."
+    )
+```
+
+### Section 4: TREND SUSTAINABILITY
+
+**Purpose:** Assess whether the current trend can continue.
+
+**Source Data:** `analyze_volume_tool().dalio_metrics.sustainability_score` + `sustainability_grade`
+
+**Template:**
+```python
+sustainability = dalio_metrics["sustainability_score"]  # 0-100
+grade = dalio_metrics["sustainability_grade"]  # A-F
+
+sustainability_education = (
+    f"**TREND SUSTAINABILITY:**\n\n"
+    f"**Sustainability Score:** {sustainability}/100\n"
+    f"**Grade:** {grade}\n\n"
+)
+
+# Explain sustainability
+sustainability_education += (
+    f"**What is Sustainability?** It measures whether the current trend has "
+    f"the underlying support to continue:\n"
+    f"- Money flow alignment\n"
+    f"- Volume quality\n"
+    f"- Momentum consistency\n\n"
+    f"Like a car's fuel gauge - tells you how far you can go.\n\n"
+)
+
+# Grade interpretation
+if grade in ["A", "B"]:
+    sustainability_education += (
+        f"✅ **HIGHLY SUSTAINABLE** (Grade {grade}, Score {sustainability})\n\n"
+        f"**What it means:** This trend has strong underlying support:\n"
+        f"- Money flow, volume, and momentum are aligned\n"
+        f"- Institutions are likely supporting the move\n"
+        f"- Low probability of sudden reversal\n\n"
+        f"**Dalio's Teaching:** 'Sustainable trends have credit (money) backing them.' "
+        f"This trend has the fuel to continue.\n\n"
+        f"**Implication:** High confidence to hold or enter. Let profits run."
+    )
+elif grade == "C":
+    sustainability_education += (
+        f"⚠️ **MODERATELY SUSTAINABLE** (Grade {grade}, Score {sustainability})\n\n"
+        f"**What it means:** This trend is intact but showing some weakness:\n"
+        f"- Some components are weakening\n"
+        f"- Momentum may be fading\n"
+        f"- Watch for deterioration\n\n"
+        f"**Implication:** Hold existing positions with tighter stops. Don't add."
+    )
+else:  # D or F
+    sustainability_education += (
+        f"🚨 **UNSUSTAINABLE** (Grade {grade}, Score {sustainability})\n\n"
+        f"**What it means:** This trend is likely to reverse soon:\n"
+        f"- Money flow diverging from price\n"
+        f"- Momentum exhausted\n"
+        f"- Multiple warning signs\n\n"
+        f"**Dalio's Teaching:** 'Unsustainable trends always correct.' "
+        f"Don't fight the inevitable mean reversion.\n\n"
+        f"**Implication:** Consider exiting. Don't initiate new positions."
+    )
+```
+
+### Section 5: SPENDING EFFICIENCY
+
+**Purpose:** Measure how efficiently money is moving price.
+
+**Source Data:** Derived from Dalio metrics
+
+**Template:**
+```python
+# Calculate spending efficiency: Price Move / Dollar Volume
+price_change_pct = dalio_metrics.get("price_change_pct", 0)
+dollar_volume = dalio_metrics.get("dollar_volume", 1)
+
+# Efficiency = how much price moves per dollar spent
+# Higher = more efficient (less resistance)
+efficiency = abs(price_change_pct) / (dollar_volume / 1e6) if dollar_volume > 0 else 0
+
+spending_education = (
+    f"**SPENDING EFFICIENCY:**\n\n"
+    f"**Price Change:** {price_change_pct:+.2f}%\n"
+    f"**Dollar Volume:** ${dollar_volume/1e6:.2f}M\n"
+    f"**Efficiency:** {efficiency:.4f}% per $M\n\n"
+)
+
+# Explain efficiency
+spending_education += (
+    f"**What is Spending Efficiency?** How much price moves per dollar of volume.\n"
+    f"- **High Efficiency:** Small volume moves price a lot = low resistance\n"
+    f"- **Low Efficiency:** Large volume moves price little = high resistance\n\n"
+    f"This tells us about market **absorption** - is the market absorbing money easily?\n\n"
+)
+
+if efficiency > 0.1:
+    spending_education += (
+        f"✅ **HIGH EFFICIENCY** ({efficiency:.4f}% per $M)\n\n"
+        f"**What it means:** Price is moving easily with relatively low volume. "
+        f"There is little resistance to the current move.\n\n"
+        f"**Implication:** The move has room to run. Low friction environment."
+    )
+elif efficiency > 0.01:
+    spending_education += (
+        f"⚠️ **NORMAL EFFICIENCY** ({efficiency:.4f}% per $M)\n\n"
+        f"**What it means:** Typical relationship between volume and price movement.\n\n"
+        f"**Implication:** Standard market conditions. Use other indicators for direction."
+    )
+else:
+    spending_education += (
+        f"🚨 **LOW EFFICIENCY** ({efficiency:.4f}% per $M)\n\n"
+        f"**What it means:** Large volume is required to move price. "
+        f"There is significant resistance to the current move.\n\n"
+        f"**Implication:** The market is absorbing a lot of buying/selling without moving. "
+        f"This often precedes a reversal - the other side is absorbing all the pressure."
+    )
+```
+
+### Section 6: TRADING IMPLICATION
+
+**Purpose:** Give specific action based on Dalio alignment.
+
+**Source Data:** All Dalio metrics combined
+
+**Template:**
+```python
+dalio_ratio = dalio_metrics["dalio_ratio"]
+flow_direction = dalio_metrics["dollar_flow_direction"]
+sustainability = dalio_metrics["sustainability_score"]
+grade = dalio_metrics["sustainability_grade"]
+
+trading_education = f"**TRADING IMPLICATION:**\n\n"
+
+# Determine overall Dalio signal
+dalio_bullish = dalio_ratio >= 1.0 and flow_direction == "ACCUMULATION" and sustainability >= 50
+dalio_bearish = dalio_ratio < 1.0 and flow_direction == "DISTRIBUTION" and sustainability >= 50
+dalio_neutral = not dalio_bullish and not dalio_bearish
+
+if dalio_bullish:
+    trading_education += (
+        f"✅ **DALIO ALIGNED BULLISH**\n\n"
+        f"All three Dalio components support a LONG position:\n"
+        f"- Dalio Ratio: {dalio_ratio:.4f} (≥1.0 = buyers paying more)\n"
+        f"- Dollar Flow: {flow_direction} (money flowing IN)\n"
+        f"- Sustainability: {sustainability}/100, Grade {grade} (trend can continue)\n\n"
+        f"**Entry Timing:** This is a FAVORABLE environment for LONG entries.\n"
+        f"- Buy pullbacks to support (EMA20, VWAP)\n"
+        f"- Add to winners when Dalio metrics strengthen\n"
+        f"- Hold through noise - money flow supports your position\n\n"
+        f"**Exit Trigger:** Close if:\n"
+        f"- Dalio Ratio drops below 1.0 for 2+ days\n"
+        f"- Dollar Flow flips to DISTRIBUTION\n"
+        f"- Sustainability drops below 40"
+    )
+elif dalio_bearish:
+    trading_education += (
+        f"🚨 **DALIO ALIGNED BEARISH**\n\n"
+        f"All three Dalio components support a SHORT position:\n"
+        f"- Dalio Ratio: {dalio_ratio:.4f} (<1.0 = buyers paying less)\n"
+        f"- Dollar Flow: {flow_direction} (money flowing OUT)\n"
+        f"- Sustainability: {sustainability}/100, Grade {grade} (down trend can continue)\n\n"
+        f"**Entry Timing:** This is a FAVORABLE environment for SHORT entries.\n"
+        f"- Sell rallies to resistance (EMA20, VWAP)\n"
+        f"- Add to shorts when Dalio metrics worsen\n"
+        f"- Hold through bounces - money flow supports your position\n\n"
+        f"**Exit Trigger:** Cover if:\n"
+        f"- Dalio Ratio rises above 1.0 for 2+ days\n"
+        f"- Dollar Flow flips to ACCUMULATION\n"
+        f"- Sustainability drops below 40"
+    )
+else:
+    trading_education += (
+        f"⚠️ **DALIO MIXED/NEUTRAL**\n\n"
+        f"Dalio components are not aligned:\n"
+        f"- Dalio Ratio: {dalio_ratio:.4f}\n"
+        f"- Dollar Flow: {flow_direction}\n"
+        f"- Sustainability: {sustainability}/100, Grade {grade}\n\n"
+        f"**Entry Timing:** This is NOT a clear environment.\n"
+        f"- Wait for alignment before entering\n"
+        f"- If already in position, tighten stops\n"
+        f"- Reduce position size\n\n"
+        f"**What to watch:** Wait for:\n"
+        f"- Dalio Ratio to break decisively above/below 1.0\n"
+        f"- Dollar Flow to show clear direction\n"
+        f"- Sustainability to exceed 60"
+    )
+
+trading_education += (
+    f"\n\n📚 **Reference:** Ray Dalio, 'How the Economic Machine Works' - "
+    f"'Transactions are the fundamental building blocks of the economy.'"
+)
+```
+
+---
+
+## 📊 OPTIMAL OPTIONS STRATEGY EDUCATION (Risk-Managed)
+
+### Template Structure
+
+**Purpose:** Teach IV-based strategy selection with defined risk profiles.
+
+**Source Data:** `analyze_options_mcmillan()` for IV environment
+
+### Strategy Selection Matrix (McMillan)
+
+```markdown
+### 📊 OPTIMAL OPTIONS STRATEGY
+
+**Market Conditions:**
+- IV Rank: {X}% ({LOW <30 / MEDIUM 30-60 / HIGH >60})
+- IV Percentile: {X}%
+- P/C Ratio: {X} ({sentiment})
+
+**Strategy Selection Matrix:**
+
+| IV Environment | Direction | Optimal Strategy | Max Risk | Why |
+|----------------|-----------|------------------|----------|-----|
+| LOW IV (<30%) | BULLISH | Long Call or Bull Call Spread | Premium paid | Buy cheap options |
+| LOW IV (<30%) | BEARISH | Long Put or Bear Put Spread | Premium paid | Buy cheap options |
+| HIGH IV (>60%) | BULLISH | Bull Put Spread (credit) | Spread width - credit | Sell expensive premium |
+| HIGH IV (>60%) | BEARISH | Bear Call Spread (credit) | Spread width - credit | Sell expensive premium |
+| MEDIUM (30-60%) | BULLISH | Bull Call Debit Spread | Premium paid | Moderate cost |
+| MEDIUM (30-60%) | BEARISH | Bear Put Debit Spread | Premium paid | Moderate cost |
+| ANY | NEUTRAL | Iron Condor | Spread width - credit | Profit from range |
+```
+
+### Strategy Selection Logic
+
+```python
+def select_optimal_strategy(iv_rank, direction, risk_tolerance="conservative"):
+    """
+    McMillan's strategy selection based on IV environment.
+    Conservative = always defined risk (spreads)
+    """
+    if iv_rank < 30:  # LOW IV - BUY premium
+        if direction == "LONG":
+            if risk_tolerance == "conservative":
+                return "Bull Call Debit Spread"  # Defined risk
+            return "Long Call"  # Unlimited profit, defined risk
+        else:  # SHORT
+            if risk_tolerance == "conservative":
+                return "Bear Put Debit Spread"  # Defined risk
+            return "Long Put"  # Unlimited profit, defined risk
+
+    elif iv_rank > 60:  # HIGH IV - SELL premium
+        if direction == "LONG":
+            return "Bull Put Credit Spread"  # Sell puts, defined risk
+        else:  # SHORT
+            return "Bear Call Credit Spread"  # Sell calls, defined risk
+
+    else:  # MEDIUM IV - Neutral strategies or directional with hedge
+        if direction == "LONG":
+            return "Bull Call Debit Spread"  # Moderate premium cost
+        else:
+            return "Bear Put Debit Spread"  # Moderate premium cost
+```
+
+### Recommended Strategy Template
+
+```markdown
+**🎯 RECOMMENDED STRATEGY:**
+
+**Strategy:** {Strategy Name}
+**Why This Strategy:**
+- IV Environment: {LOW/MEDIUM/HIGH} → {BUY/SELL} premium
+- Direction: {LONG/SHORT} → {bullish/bearish} strategy
+- Risk Profile: **DEFINED** risk (no naked exposure)
+
+**Setup:**
+| Leg | Action | Strike | Expiry | Premium |
+|-----|--------|--------|--------|---------|
+| 1 | {BUY/SELL} | ${X} {CALL/PUT} | {date} | ${X} |
+| 2 | {BUY/SELL} | ${X} {CALL/PUT} | {date} | ${X} |
+
+**Risk/Reward:**
+| Metric | Value |
+|--------|-------|
+| **Max Risk** | ${X} (defined) |
+| **Max Profit** | ${X} |
+| **Break-Even** | ${X} |
+| **Risk/Reward** | 1:{X} |
+| **Probability of Profit** | {X}% (based on delta) |
+
+**Position Sizing (1% Account Risk):**
+- Account Size: $10,000 (example)
+- Max Risk per Trade: $100
+- Max Contracts: {X} contracts
+- Capital Required: ${X}
+
+**Exit Rules:**
+1. **Profit Target:** Close at 50% of max profit
+2. **Stop Loss:** Close if loss exceeds 100% of credit received (for credit spreads)
+3. **Time Stop:** Close at 21 DTE (for monthly options)
+4. **Adjustment:** Roll if underlying moves beyond short strike
+```
+
+### Educational Explanation
+
+> **Why Defined Risk is Critical:**
+> - **Naked options** have unlimited risk (can lose more than you invest)
+> - **Spreads** cap your maximum loss at spread width minus premium
+> - **McMillan's Rule:** "Never risk more than 1-2% of account on a single trade"
+>
+> **IV Environment Dictates Strategy:**
+> - **HIGH IV:** Options are EXPENSIVE → Be a SELLER (collect premium)
+> - **LOW IV:** Options are CHEAP → Be a BUYER (pay premium)
+> - **MEDIUM IV:** Either works → Focus on direction
+>
+> **Reference:** McMillan, "Options as a Strategic Investment" Ch 28
+
+---
+
 ## COMPLETE EDUCATIONAL PARAGRAPH TEMPLATE
 
-### Al Brooks (6 sections) + McMillan Options (6 sections) = 12 Total Sections
+### Al Brooks (7 sections) + McMillan Options (7 sections) + Ray Dalio (6 sections) = 20 Total Sections
 
 **Implementation Locations:**
-1. **COMPREHENSIVE_REPORT_GENERATOR.md** - Section 3 (Price Action) + Section 6 (McMillan Options)
-2. **CONCISE_REPORT_GENERATOR.md** - Phase 8 (Al Brooks) + Phase 3 (McMillan Options)
-3. **SCANNER_REPORT_GENERATOR.md** - Section D (Al Brooks) + Section C (McMillan Options) per stock
-4. **PORTFOLIO_INSTRUCTIONS.md** - ✅ Already implemented (simplified version)
+1. **COMPREHENSIVE_REPORT_GENERATOR.md** - Section 3 (Price Action) + Section 6 (McMillan Options) + Section X (Dalio)
+2. **CONCISE_REPORT_GENERATOR.md** - Phase 8 (Al Brooks) + Phase 3 (McMillan Options) + Phase X (Dalio)
+3. **SCANNER_REPORT_GENERATOR.md** - Section D (Al Brooks) + Section C (McMillan Options) + Section E (Dalio) per stock
+4. **PORTFOLIO_INSTRUCTIONS.md** - ✅ Already implemented (all three methodologies)
 
 ---
 
 **TOTAL:** 52 Active MCP Tools | 10 NEW | 5 ENHANCED | 11 ASYNC | 4 RETIRED
 
+**Methodology:** Al Brooks (Price Action) + McMillan (Options Strategy) + **Ray Dalio (Economic Machine)** + **Optimal Options Strategy (Risk-Managed)**
+
+**New Sections Added:**
+- **Dalio → Al Brooks Probability Adjustments** - How Dalio metrics impact Brooks probability (+/-11%)
+- **Optimal Options Strategy** - IV-based strategy selection with defined risk profiles
+
 **Next Steps:**
 1. ✅ Complete McMillan Options sections 3-6
-2. Update COMPREHENSIVE_REPORT_GENERATOR.md with embedded educational paragraphs
-3. Update CONCISE_REPORT_GENERATOR.md with full educational paragraphs
-4. Update SCANNER_REPORT_GENERATOR.md with educational paragraphs per stock
-5. Test with real tickers to ensure teaching quality
+2. ✅ Complete Ray Dalio Economic Machine sections 1-6
+3. ✅ Add Dalio → Al Brooks Probability Adjustments
+4. ✅ Add Optimal Options Strategy section
+5. Update all report generators with embedded educational paragraphs
+6. Test with real tickers to ensure teaching quality
+
+---
+
+## OPTIONS WISDOM (Institutional Trading Rules)
+
+**Source:** McMillan "Options as a Strategic Investment" + TastyTrade Research
+**Full Reference:** `Institutional Options Trading-Complete Methodology for Algorithmic Systems.md`
+
+### The 8 Institutional Rules
+
+| # | Rule | Teaching Point |
+|---|------|---------------|
+| **1** | **IV Drives Strategy** | HIGH IV (>50%) → SELL premium (Credit Spreads, Iron Condors). LOW IV (<30%) → BUY premium (Debit Spreads, Long Calls/Puts). NEVER buy expensive options or sell cheap ones. |
+| **2** | **45 DTE Entry** | Enter at 45 days to expiration. Theta decay accelerates after 45 DTE but gamma risk is still manageable. Before = slow theta. After 21 DTE = explosive gamma. |
+| **3** | **50% Profit Target** | Close winners at 50% of max profit. TastyTrade research: 50% + 45 DTE = 88% win rate. Holding for 100% exposes you to reversal risk for diminishing returns. |
+| **4** | **NO Stop Losses** | On credit spreads, stops REDUCE profitability (TastyTrade research). Options aren't stocks - they expire. Instead: manage at 21 DTE (roll or close). |
+| **5** | **21 DTE Exit** | At 21 DTE, gamma risk explodes. Delta changes rapidly, small moves = big P&L swings. Close, roll to next month, or accept expiration outcome. |
+| **6** | **Half-Kelly Sizing** | Use Half-Kelly criterion: Kelly% ÷ 2. Reduces volatility, increases account longevity. Max 5% of account per trade (hard limit). |
+| **7** | **Earnings Filter** | Skip options if earnings < 30 days away. IV crush after earnings destroys both buyers AND sellers. Exception: intentional earnings plays (straddles). |
+| **8** | **Liquidity Rules** | Spread ≤5% of mid price, OI ≥100 contracts, Volume ≥50 daily. Wide spreads = hidden cost. Low OI = can't exit when needed. |
+
+### IV Environment Teaching
+
+```
+HIGH IV (>50% rank):
+  "Options are EXPENSIVE right now. The market is pricing in big moves.
+   As a seller, you collect inflated premium. As a buyer, you're overpaying.
+   STRATEGY: Sell premium (Credit Spreads, Iron Condors, Covered Calls)."
+
+MEDIUM IV (30-50% rank):
+  "Options are fairly priced. No clear edge from IV alone.
+   Focus on your directional conviction instead of volatility.
+   STRATEGY: Use direction-based strategies (Debit Spreads if bullish/bearish)."
+
+LOW IV (<30% rank):
+  "Options are CHEAP right now. The market expects calm waters.
+   As a buyer, you get leverage at a discount. As a seller, you're not paid enough.
+   STRATEGY: Buy premium (Long Calls/Puts, Debit Spreads, Straddles)."
+```
+
+### Exit Rules Summary
+
+| Condition | Action | Why |
+|-----------|--------|-----|
+| **50% profit reached** | CLOSE (take the win) | 88% win rate, avoid reversal risk |
+| **21 DTE reached** | ROLL or CLOSE | Gamma risk becomes unmanageable |
+| **Direction flips** | CLOSE immediately | Brooks Always-In changed, thesis broken |
+| **Max loss hit** | Hold to expiration | No stops on credit spreads per research |
+| **Earnings < 7 days** | CLOSE | IV crush destroys positions |
+
+### Trading Plan Rules
+
+**GENERATE full stock + options trading plan ONLY for:**
+- ✅ STRONG_BUY (4/4 gates, score ≥80)
+- ✅ BUY (3/4 gates, score ≥65)
+- ✅ SELL (3/4 gates, score ≥65)
+- ✅ STRONG_SELL (4/4 gates, score ≥80)
+
+**DO NOT generate trading plan for:**
+- ❌ WATCH (2/4 gates, score 50-64) - No conviction, wait for better setup
+- ❌ NO_TRADE (<2/4 gates, score <50) - Gates failed, skip entirely
+
+**Rationale:** Trading plans for low-conviction signals encourage overtrading. Only commit capital to high-conviction setups that pass validation gates.
+
+---
+
+**Last Updated:** January 8, 2026
+**Version:** 2.2 - Added OPTIONS WISDOM + Trading Plan Rules

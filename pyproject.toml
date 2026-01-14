@@ -21,6 +21,8 @@ dependencies = [
     "yfinance[nospam]>=0.2.66",
     "numpy>=2.0.0",
     "scipy>=1.14.0",
+    "sqlalchemy>=2.0.0",
+    "pyodbc>=5.0.0",
 ]
 authors = [
     { name = "Ferdous", email = "ferdous@hey.com" }

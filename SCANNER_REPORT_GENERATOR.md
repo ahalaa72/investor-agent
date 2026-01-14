@@ -2,9 +2,9 @@
 
 Scan markets for top LONG and SHORT candidates with detailed analysis per stock.
 
-**Structure:** 5 Sections per Stock (Overview + Catalyst + McMillan Options + Al Brooks + **Trading Signal**) | **Time:** 50-70 minutes | **Stocks:** Top 3 LONG + Top 3 SHORT
+**Structure:** 6 Sections per Stock (Overview + Catalyst + McMillan Options + Al Brooks + **Dalio Economic Machine** + Trading Signal) | **Time:** 50-70 minutes | **Stocks:** Top 3 LONG + Top 3 SHORT
 
-**Methodology:** Al Brooks (Price Action) + McMillan (Options Strategy) + **4-Gate Signal Classification**
+**Methodology:** Al Brooks (Price Action) + McMillan (Options Strategy) + Ray Dalio (Economic Machine) + **4-Gate Signal Classification**
 
 ---
 
@@ -36,6 +36,44 @@ Every trade MUST have an identifiable catalyst. Without a catalyst, there's no r
 
 ---
 
+## ♻️ DB CACHING OPTIMIZATION (January 2026)
+
+Scanner now caches predictions in the database. **Repeated tickers skip re-analysis.**
+
+### How It Works
+
+| Step | Action |
+|------|--------|
+| 1 | Query DB for predictions from last 7 days |
+| 2 | Skip `generate_trading_signal()` for cached tickers |
+| 3 | Mark with ♻️ REPEATED in results |
+| 4 | Only NEW tickers run full 4-gate validation |
+
+### Performance Impact
+
+| Scenario | Time Before | Time After |
+|----------|-------------|------------|
+| 160 candidates, 0 in DB | ~35 min | ~35 min |
+| 160 candidates, 80 in DB | ~35 min | **~18 min** |
+| 160 candidates, 160 in DB | ~35 min | **~1 min** |
+
+### New Output Fields
+
+| Field | Description |
+|-------|-------------|
+| `db_matches` | Predictions found in DB from last 7 days |
+| `repeated` | Repeated tickers included (♻️ marked) |
+| `new_analyzed` | NEW tickers that ran full analysis |
+| `is_repeated` | Boolean flag on candidate object |
+| `stored_at` | ISO timestamp when originally stored |
+
+### Result Markers
+
+- `🔍 Checking NVDA...` = NEW candidate, running full analysis
+- `♻️ REPEATED: AAPL (from DB)` = Cached, using stored result
+
+---
+
 ## 🚦 4-GATE SIGNAL CLASSIFICATION
 
 **ALL 4 GATES MUST PASS for STRONG_BUY/SELL. Missing ANY gate = Downgrade.**
@@ -43,7 +81,7 @@ Every trade MUST have an identifiable catalyst. Without a catalyst, there's no r
 | Gate | Requirement | Tool |
 |------|-------------|------|
 | **1. CATALYST** | MUST have identifiable catalyst | `detect_catalyst_strength` |
-| **2. FRESHNESS** | Trend Days ≤3, Exhaustion <50, CVD aligned | Scanner metrics |
+| **2. FRESHNESS + DALIO** | 5/6 checks pass (CVD, Exhaustion, Fresh, Dalio Ratio, Dollar Flow, Sustainability) | `analyze_volume_tool` |
 | **3. BROOKS** | Always-In supports direction, Trap Risk LOW, Prob ≥55% | `analyze_ml_enhanced` |
 | **4. QUALITY** | F-Score ≥5, Z-Score >1.81, No red flags | `calculate_quality_score` |
 
@@ -103,12 +141,13 @@ Every trade MUST have an identifiable catalyst. Without a catalyst, there's no r
 
 ## 📊 SCAN STATISTICS
 
-| Direction | Raw Candidates | Validated | 4/4 Gates | 3/4 Gates | Returned |
-|-----------|----------------|-----------|-----------|-----------|----------|
-| LONG      | XXX            | XX        | X         | X         | 3        |
-| SHORT     | XXX            | XX        | X         | X         | 3        |
+| Direction | Raw | DB Matches | Repeated ♻️ | New Analyzed | 4/4 Gates | 3/4 Gates | Returned |
+|-----------|-----|------------|-------------|--------------|-----------|-----------|----------|
+| LONG      | XXX | XX         | X           | XX           | X         | X         | 3        |
+| SHORT     | XXX | XX         | X           | XX           | X         | X         | 3        |
 
 **Pass Rate:** X.X% (4/4) | X.X% (3+/4)
+**DB Cache:** X repeated tickers skipped (saved ~Xs)
 **Elapsed:** XXs | **Relaxed:** [YES/NO - filled with 3/4 if needed]
 
 ---
@@ -495,6 +534,59 @@ IV Rank XX% = **[HIGH / NORMAL / LOW]**
 
 ---
 
+#### 🎯 OPTIMAL OPTIONS STRATEGY (Risk-Managed Setup)
+
+**Purpose:** SPECIFIC actionable trade with DEFINED RISK. All strategies use spreads.
+
+**📊 STRATEGY SELECTION:**
+
+| IV Environment | BULLISH | BEARISH |
+|----------------|---------|---------|
+| **LOW (<30%)** | Bull Call Spread | Bear Put Spread |
+| **HIGH (>50%)** | Bull Put Credit Spread | Bear Call Credit Spread |
+
+**Current Selection:** IV [XX%] + Direction [LONG/SHORT] = **[STRATEGY]**
+
+**🎯 TRADE SETUP:**
+
+| Leg | Action | Strike | Expiry | Premium |
+|-----|--------|--------|--------|---------|
+| 1 | [BUY/SELL] | $XXX [C/P] | [Date] | $X.XX |
+| 2 | [BUY/SELL] | $XXX [C/P] | [Date] | $X.XX |
+| **Net** | [DEBIT/CREDIT] | - | - | **$X.XX** |
+
+**📊 RISK/REWARD:**
+
+| Metric | Value |
+|--------|-------|
+| **Max Risk** | $XXX (defined) |
+| **Max Profit** | $XXX |
+| **Break-Even** | $XXX.XX |
+| **R/R Ratio** | 1:X.X |
+| **Prob of Profit** | XX% |
+
+**📊 POSITION SIZING (1% Rule):**
+
+| Account | Max Risk | Contracts |
+|---------|----------|-----------|
+| $10K | $100 | X |
+| $25K | $250 | X |
+| $50K | $500 | X |
+
+**EXIT RULES:**
+- ✅ **Profit Target:** 50% of max profit
+- ❌ **Stop Loss:** 100% of max loss (or 2x credit)
+- ⏰ **Time Stop:** 21 DTE
+- 🔄 **Direction Change:** Exit if Al Brooks flips
+
+**Trade Checklist:**
+- [ ] IV environment matches strategy
+- [ ] Direction confirmed (Al Brooks + Dalio)
+- [ ] Risk <1% of account
+- [ ] No earnings within 7 days of expiry
+
+---
+
 ### SECTION D: AL BROOKS PRICE ACTION ANALYSIS
 
 **🚨 GATE 2: FRESHNESS CHECK** - Fresh Breakout Required
@@ -840,7 +932,119 @@ Probability OK:       [YES / NO] (≥55% required)
 
 ---
 
-### SECTION E: TRADING SIGNAL ⭐ NEW [generate_trading_signal]
+### SECTION E: DALIO ECONOMIC MACHINE ⭐ NEW [analyze_volume_tool]
+
+**🚨 GATE 2 ENHANCEMENT: Dalio Economic Machine Metrics**
+
+**Source:** `analyze_volume_tool(ticker).dalio_metrics`
+
+#### Dalio Metrics Summary
+```
+Dalio Ratio:       X.XXXX ([BULLISH >1.0 / NEUTRAL ~1.0 / BEARISH <1.0])
+Dollar Flow:       $XX.XXM ([ACCUMULATION if + / DISTRIBUTION if -])
+Sustainability:    XX/100, Grade [A-F]
+GATE 2 STATUS:     [✅ PASS (5/6) / ❌ FAIL (<5/6)]
+```
+
+#### 6-Check Gate 2 Validation
+
+| # | Check | Value | LONG Req | Status |
+|---|-------|-------|----------|--------|
+| 1 | CVD Aligned | [RISING/FALLING] | RISING/FLAT | [✅/❌] |
+| 2 | Not Exhausted | XX/100 | <50 | [✅/❌] |
+| 3 | Fresh Direction | [LONG/SHORT] | LONG | [✅/❌] |
+| 4 | **Dalio Ratio** | X.XXXX | ≥1.0 | [✅/❌] |
+| 5 | **Dollar Flow** | $XX.XXM | >0 | [✅/❌] |
+| 6 | **Sustainability** | XX/100 | ≥50 | [✅/❌] |
+
+**Checks Passing:** X/6 (Need 5/6)
+
+---
+
+#### 📚 DALIO ECONOMIC MACHINE LESSON (Teach Me!)
+
+**Purpose:** Understand WHERE money is flowing and WHETHER the trend can sustain. Based on Ray Dalio's principle: **Price = Total Spending / Quantity Sold**.
+
+---
+
+**1. WHAT THE MONEY IS DOING (Dalio Ratio)**
+
+**Dalio Ratio:** X.XXXX
+
+[If Ratio > 1.05]:
+✅ **STRONG ACCUMULATION** - Buyers paying significantly MORE than yesterday.
+- **Meaning:** Demand > Supply. Institutions accumulating.
+- **Dalio:** "When spending increases faster than production, prices rise."
+
+[If Ratio 1.0-1.05]:
+⚠️ **MILD ACCUMULATION** - Slight upward pressure. Hold but watch.
+
+[If Ratio 0.95-1.0]:
+⚠️ **EQUILIBRIUM** - Neither side controls. Wait for breakout.
+
+[If Ratio < 0.95]:
+🚨 **DISTRIBUTION** - Buyers paying LESS. Supply > Demand. Exit or avoid.
+
+---
+
+**2. DOLLAR FLOW ANALYSIS**
+
+**Cumulative Dollar Flow:** $XX.XXM | **Direction:** [ACCUMULATION/DISTRIBUTION]
+
+[If CDF > $50M]:
+✅ **STRONG INSTITUTIONAL BUYING** - Big money flowing IN.
+- **Dalio:** "Credit (money inflow) drives economic expansion."
+- **Implication:** Strong hands accumulating. Trend has fuel.
+
+[If CDF < -$50M]:
+🚨 **STRONG INSTITUTIONAL SELLING** - Big money flowing OUT.
+- **Dalio:** "Deleveraging (money outflow) drives contraction."
+- **Implication:** Strong hands distributing. Consider exit.
+
+---
+
+**3. TREND SUSTAINABILITY**
+
+**Sustainability Score:** XX/100 | **Grade:** [A/B/C/D/F]
+
+[If Grade A-B (≥60)]:
+✅ **HIGHLY SUSTAINABLE** - Money flow, volume, momentum aligned.
+- **Action:** High confidence to hold/enter. Let profits run.
+
+[If Grade C (40-59)]:
+⚠️ **MODERATING** - Some components weakening.
+- **Action:** Hold with tighter stops. Don't add.
+
+[If Grade D-F (<40)]:
+🚨 **UNSUSTAINABLE** - Trend likely to reverse.
+- **Dalio:** "Unsustainable trends always correct."
+- **Action:** Consider exiting. Don't initiate.
+
+---
+
+**4. DALIO TRADING IMPLICATION**
+
+[If Dalio Ratio >1.0 + Positive CDF + Sustainability ≥50 + Direction LONG]:
+✅ **DALIO ALIGNED BULLISH** - All 3 Dalio components support LONG.
+- **Entry:** Favorable environment for LONG entries
+- **Exit Trigger:** Dalio Ratio <1.0, CDF turns negative, Sustainability <40
+
+[If Dalio Ratio <1.0 + Negative CDF + Sustainability ≥50 + Direction SHORT]:
+✅ **DALIO ALIGNED BEARISH** - All 3 Dalio components support SHORT.
+- **Entry:** Favorable environment for SHORT entries
+- **Exit Trigger:** Dalio Ratio >1.0, CDF turns positive, Sustainability <40
+
+[If Mixed]:
+⚠️ **DALIO MIXED** - Components not aligned.
+- **Action:** Wait for alignment before entering. Reduce size if in position.
+
+**Dalio Score: XX/100** | [If ≥60]: ALIGNED | [If 40-59]: MIXED | [If <40]: EXIT SIGNAL
+
+**Dalio Reference:** "How the Economic Machine Works" - Ray Dalio
+
+---
+
+### SECTION F: TRADING SIGNAL ⭐ [generate_trading_signal]
 
 **📊 FINAL SIGNAL CLASSIFICATION**
 
@@ -1304,7 +1508,150 @@ Stocks automatically rejected:
 
 **Time:** 60-90 minutes for full 6-stock scan report with 4-gate validation
 **Output:** ~400-500 lines per stock, ~2500+ lines total
-**Sections:** 5 per stock (A: Overview + B: Catalyst + C: Options + D: Brooks + E: Signal)
-**Methodology:** Al Brooks (Price Action) + McMillan (Options Strategy) + 4-Gate Validation
+**Sections:** 6 per stock (A: Overview + B: Catalyst + C: Options + D: Brooks + E: Dalio + F: Signal)
+**Methodology:** Al Brooks (Price Action) + McMillan (Options Strategy) + Ray Dalio (Economic Machine) + 4-Gate Validation
+
+---
+
+**Last Updated:** January 8, 2026
+**Version:** 3.2 - Added OPTIONS WISDOM + Trading Plan Rules
 **New Tools:** 6 enhanced tools (detect_catalyst_strength, generate_trading_signal, etc.)
 **Critical:** CATALYST IS MANDATORY - No catalyst = No trade
+
+---
+
+## OPTIONS WISDOM (Institutional Trading Rules)
+
+**Source:** McMillan "Options as a Strategic Investment" + TastyTrade Research
+**Full Reference:** `Institutional Options Trading-Complete Methodology for Algorithmic Systems.md`
+
+### Key Principles
+
+| Rule | Principle | Rationale |
+|------|-----------|-----------|
+| **1** | **IV Drives Strategy** | HIGH IV → SELL premium; LOW IV → BUY premium |
+| **2** | **45 DTE Entry** | Optimal theta decay with manageable gamma |
+| **3** | **50% Profit Target** | Close at 50% max profit = 88% win rate |
+| **4** | **NO Stop Losses** | On credit spreads - manage at 21 DTE instead |
+| **5** | **Earnings Filter** | Skip if earnings < 30 days (IV crush risk) |
+| **6** | **Liquidity Rules** | Spread ≤5%, OI ≥100, Volume ≥50 |
+
+### Strategy Matrix (Quick Reference)
+
+| IV Rank | BULLISH | BEARISH |
+|---------|---------|---------|
+| HIGH (>50%) | Bull Put Credit Spread (16Δ short) | Bear Call Credit Spread (16Δ short) |
+| LOW (<30%) | Bull Call Debit Spread | Bear Put Debit Spread |
+
+### Trading Plan Generation Rules
+
+**GENERATE full stock + options trading plan ONLY for:**
+- ✅ STRONG_BUY (4/4 gates, score ≥80)
+- ✅ BUY (3/4 gates, score ≥65)
+- ✅ SELL (3/4 gates, score ≥65)
+- ✅ STRONG_SELL (4/4 gates, score ≥80)
+
+**DO NOT generate trading plan for:**
+- ❌ WATCH (2/4 gates, score 50-64) - No conviction, wait
+- ❌ NO_TRADE (<2/4 gates, score <50) - Gates failed, skip
+
+**Rationale:** Trading plans for low-conviction signals encourage overtrading. Only commit capital when validation gates pass.
+
+---
+
+## 🔴 MANDATORY: STORE PREDICTIONS IN DATABASE
+
+**CRITICAL:** After generating the scanner report, you MUST store predictions for ALL candidates with BUY/SELL signals.
+
+### When to Store
+
+Store prediction for EACH candidate that has:
+- Signal: STRONG_BUY, BUY, STRONG_SELL, SELL
+- Skip WATCH and NO_TRADE candidates (no actionable prediction)
+
+### Storage Command (Per Candidate)
+
+After completing Section F (Trading Signal) for each candidate, IMMEDIATELY call:
+
+```python
+# For LONG #1
+store_trading_prediction(
+    ticker="XXXX",
+    direction="LONG",
+    report_type="scanner",
+    trading_signal=<full output from generate_trading_signal() for this ticker>
+)
+
+# For LONG #2
+store_trading_prediction(
+    ticker="YYYY",
+    direction="LONG",
+    report_type="scanner",
+    trading_signal=<full output from generate_trading_signal() for this ticker>
+)
+
+# ... repeat for each BUY/SELL candidate
+```
+
+### What Gets Stored Per Candidate
+
+| Category | Fields |
+|----------|--------|
+| **Core** | ticker, direction, signal_type, entry_price, stop_loss, targets |
+| **Gate 1 (Catalyst)** | catalyst_direction, catalyst_strength, catalyst_score, primary_catalyst, trade_allowed |
+| **Gate 2 (Freshness)** | cvd_trend, exhaustion_score, fresh_direction |
+| **Dalio Metrics** | dalio_ratio, dalio_interpretation, cumulative_dollar_flow, sustainability_score |
+| **Gate 3 (Brooks)** | always_in_direction, pattern, trap_risk, brooks_probability |
+| **Gate 4 (Quality)** | f_score, z_score, quality_grade, quality_score |
+| **Options** | iv_rank, iv_percentile, put_call_ratio, recommended_strategy |
+| **Historical** | historical_setups_found, historical_success_rate, avg_achievement |
+| **Score** | composite_score, gates_passed |
+
+### Scanner Report Workflow
+
+```python
+# Step 1: Run scanner
+scan_result = scan_market_opportunities(market="america", top_n=3)
+
+# Step 2: For each candidate, generate full analysis
+for candidate in scan_result['long_candidates'] + scan_result['short_candidates']:
+    ticker = candidate['symbol']
+    direction = "LONG" if candidate in scan_result['long_candidates'] else "SHORT"
+
+    # Generate full trading signal
+    signal = generate_trading_signal(ticker, direction=direction)
+
+    # Step 3: MANDATORY - Store if actionable signal
+    if signal['signal'] in ['STRONG_BUY', 'BUY', 'STRONG_SELL', 'SELL']:
+        store_trading_prediction(
+            ticker=ticker,
+            direction=direction,
+            report_type="scanner",
+            trading_signal=signal
+        )
+```
+
+### Scanner Report Completion Checklist
+
+- [ ] Scanner run completed (3 LONG + 3 SHORT candidates)
+- [ ] Each candidate has full Section A-F analysis
+- [ ] `generate_trading_signal()` called for each candidate
+- [ ] `store_trading_prediction()` called for each BUY/SELL signal
+- [ ] All prediction IDs logged in summary
+- [ ] Report saved to `/Users/AhmedE/Ahmed/SCANNER_YYYY-MM-DD.md`
+
+### Summary Table with Prediction IDs
+
+Add this to your SCAN SUMMARY section:
+
+```markdown
+## Stored Predictions
+
+| Ticker | Direction | Signal | Prediction ID | Entry |
+|--------|-----------|--------|---------------|-------|
+| NVDA | LONG | STRONG_BUY | abc-123-def | $145.50 |
+| AAPL | LONG | BUY | xyz-456-uvw | $198.25 |
+| TSLA | SHORT | SELL | pqr-789-stu | $242.10 |
+```
+
+**DO NOT skip prediction storage. This enables the self-learning feedback system across all scanner picks.**

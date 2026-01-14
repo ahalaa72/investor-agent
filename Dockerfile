@@ -9,6 +9,15 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     curl \
     git \
+    gnupg2 \
+    unixodbc-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Microsoft ODBC Driver 18 for SQL Server
+RUN curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg \
+    && echo "deb [arch=amd64,armhf,arm64 signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/debian/12/prod bookworm main" > /etc/apt/sources.list.d/mssql-release.list \
+    && apt-get update \
+    && ACCEPT_EULA=Y apt-get install -y msodbcsql18 \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv package manager
@@ -35,7 +44,9 @@ RUN /root/.local/bin/uv pip install --system \
     "scikit-learn>=1.3.0" \
     "statsmodels>=0.14.0" \
     "cryptography>=42.0.0" \
-    "tradingview-screener>=1.0.0"
+    "tradingview-screener>=1.0.0" \
+    "sqlalchemy>=2.0.0" \
+    "pyodbc>=5.0.0"
 
 # Copy only the investor_agent package (the source code we need)
 COPY investor_agent ./investor_agent

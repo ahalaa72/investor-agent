@@ -6,7 +6,8 @@ Generate institutional-grade reports integrating all investor-agent tools with A
 
 **Key Methodologies:**
 - **Al Brooks** - Price Action (Trading Price Action series)
-- **McMillan** - Options Strategy (Options as a Strategic Investment, 5th Ed.) ⭐ NEW
+- **McMillan** - Options Strategy (Options as a Strategic Investment, 5th Ed.)
+- **Ray Dalio** - Economic Machine (How the Economic Machine Works) ⭐ NEW
 
 ---
 
@@ -169,6 +170,55 @@ When a tool fails:
 
 **Bottom Line:**
 [1-2 sentence compelling summary with clear action - e.g., "High-conviction LONG setup with 89/100 score, 95% Brooks probability, and 68% historical validation. Best entry on pullback to $XXX (50% position) with $XXX stop."]
+
+---
+
+### 1B. DIRECTION VALIDATION ⚠️ (Data Consensus Check)
+
+**Purpose:** Validates that the trading direction is supported by INDEPENDENT data sources. If scanner suggested one direction but data suggests another, you'll see a warning here.
+
+**Scanner Origin:** [LONG/SHORT] candidate (if from scanner, otherwise "Direct Analysis")
+**Data Consensus:** [LONG/SHORT/NO_CONSENSUS] from independent tool votes
+
+**📊 DIRECTION VOTES TABLE:**
+
+| Tool | Vote | Reason |
+|------|------|--------|
+| Catalyst | [BULLISH/BEARISH/NEUTRAL] | [Primary catalyst detected] |
+| CVD | [BULLISH/BEARISH] | [Trend direction from volume delta] |
+| Exhaustion | [LONG/SHORT] | [Fresh direction detected] |
+| Brooks Always-In | [LONG/SHORT/NEUTRAL] | [Price action direction] |
+| Dalio Ratio | [BULLISH/BEARISH] | [>1.0 = BULLISH, <1.0 = BEARISH] |
+| Dollar Flow | [BULLISH/BEARISH] | [Positive = BULLISH, Negative = BEARISH] |
+
+**Consensus Count:** X LONG votes, Y SHORT votes
+
+[If NO conflict - votes align with direction]:
+✅ **DIRECTION CONFIRMED**
+All independent data sources support the [LONG/SHORT] direction. Proceed with full confidence.
+
+[If CONFLICT detected - votes oppose direction]:
+🚨 **DIRECTION CONFLICT DETECTED**
+
+Scanner/Report suggested **[DIRECTION]** but data votes suggest **[OPPOSITE]**.
+
+**What this means:**
+- The stock passed [DIRECTION] validation gates (fundamentals, technicals, quality)
+- BUT the underlying data (CVD, Dalio, Brooks) points to [OPPOSITE]
+- This creates UNCERTAINTY and higher risk
+
+**Recommended Action:**
+1. ⚠️ **Reduce position size by 50%** - Mixed signals = smaller bet
+2. ⏳ **Wait for alignment** - Let data confirm direction before entry
+3. 🎯 **Use tighter stops** - Protect against reversal risk
+4. 📊 **Re-analyze in 2-3 days** - Direction may clarify
+
+**Why conflicts happen:**
+- Scanner uses gate-based validation (pass/fail)
+- Data consensus uses vote-based direction (majority rules)
+- A stock can pass LONG gates while having SHORT data votes
+
+**Tools:** `generate_trading_signal()` → `direction_votes`, `data_direction`
 
 ---
 
@@ -675,6 +725,24 @@ Al Brooks teaches us that **context is everything** - a pattern's probability ch
 ❌ **Weak Bars:** Small bars, dojis, long tails = -10% (weak momentum)
 ❌ **Divergences:** Price higher but RSI/MACD lower = -10-15% (bearish divergence)
 
+**🆕 DALIO ECONOMIC MACHINE ADJUSTMENTS (Ray Dalio):**
+
+*"Price = Total Spending / Quantity Sold"* - Understanding money flow tells you what the REAL buyers are doing.
+
+✅ **Dalio Ratio ≥1.02 (LONG):** = +5% (buyers paying premium = strong demand)
+✅ **Dalio Ratio ≤0.98 (SHORT):** = +5% (buyers paying discount = weak demand)
+✅ **Positive Dollar Flow (LONG):** = +3% (net accumulation = institutions buying)
+✅ **Negative Dollar Flow (SHORT):** = +3% (net distribution = institutions selling)
+✅ **High Sustainability ≥70:** = +3% (trend is sustainable = stay in trade)
+
+❌ **Dalio Ratio <0.98 (LONG):** = -5% (buyers paying less = weakening demand)
+❌ **Dalio Ratio >1.02 (SHORT):** = -5% (buyers paying premium = not weak enough)
+❌ **Negative Dollar Flow (LONG):** = -3% (distribution opposes LONG)
+❌ **Positive Dollar Flow (SHORT):** = -3% (accumulation opposes SHORT)
+❌ **Low Sustainability ≤30:** = -3% (trend reversing = exit)
+
+**Total Dalio Impact:** Up to +11% or -11% probability adjustment
+
 **CALCULATION:**
 
 Base Pattern (e.g., High 2): 60%
@@ -682,9 +750,14 @@ Base Pattern (e.g., High 2): 60%
 + High Volume: +10%
 + Failed Bear Breakout: +15%
 + Clean Pattern: +5%
++ Dalio Ratio 1.03 (buyers paying 3% premium): +5%
++ Positive Dollar Flow ($500M accumulation): +3%
++ High Sustainability (75): +3%
 - Late in Move (X bars up): -10%
 
-**= FINAL BROOKS PROBABILITY: 95%**
+**= FINAL BROOKS PROBABILITY: 106% → capped at 80%**
+
+*Note: Probability capped at 30-80% range per Al Brooks methodology*
 
 **CONVICTION ASSESSMENT:**
 
@@ -1714,6 +1787,131 @@ McMillan's framework teaches us: **"Match your strategy to market conditions, no
 
 ---
 
+### 6B. 🎯 OPTIMAL OPTIONS STRATEGY (Risk-Managed Trade Setup)
+
+**Purpose:** Provides a SPECIFIC, actionable options trade with defined risk. All strategies use SPREADS for defined risk (no naked options).
+
+#### Strategy Selection (McMillan Matrix Applied)
+
+**Market Conditions:** `[analyze_options_mcmillan]`
+- **IV Rank:** XX% → [HIGH (>50%) = SELL premium / LOW (<30%) = BUY premium]
+- **Direction:** [LONG/SHORT] from Al Brooks + Dalio analysis
+- **Risk Tolerance:** CONSERVATIVE (always defined risk)
+
+**📊 STRATEGY SELECTION MATRIX:**
+
+| IV Environment | BULLISH Direction | BEARISH Direction |
+|----------------|-------------------|-------------------|
+| **LOW IV (<30%)** | ✅ **Bull Call Debit Spread** | ✅ **Bear Put Debit Spread** |
+| **MEDIUM IV (30-50%)** | Bull Call Debit Spread | Bear Put Debit Spread |
+| **HIGH IV (>50%)** | ✅ **Bull Put Credit Spread** | ✅ **Bear Call Credit Spread** |
+
+**Current Selection:** IV [XX%] + Direction [LONG/SHORT] = **[SELECTED STRATEGY]**
+
+---
+
+#### 🎯 RECOMMENDED TRADE SETUP
+
+**Strategy:** [Bull Call Spread / Bear Put Spread / Bull Put Credit Spread / Bear Call Credit Spread]
+
+**Why This Strategy:**
+1. **IV Environment:** [LOW/HIGH] → [BUY/SELL] premium is optimal
+2. **Direction:** [LONG/SHORT] → [bullish/bearish] strategy aligns
+3. **Risk Profile:** DEFINED RISK (max loss = spread width - credit OR debit paid)
+
+**📊 TRADE STRUCTURE:**
+
+| Leg | Action | Strike | Expiry | Delta | Premium |
+|-----|--------|--------|--------|-------|---------|
+| **Leg 1** | [BUY/SELL] | $XXX [CALL/PUT] | [Date] | X.XX | $X.XX |
+| **Leg 2** | [BUY/SELL] | $XXX [CALL/PUT] | [Date] | X.XX | $X.XX |
+| **Net** | [DEBIT/CREDIT] | - | - | - | **$X.XX** |
+
+**📊 RISK/REWARD ANALYSIS:**
+
+| Metric | Value | Calculation |
+|--------|-------|-------------|
+| **Max Risk** | **$XXX** | [Debit paid OR Spread width - credit] |
+| **Max Profit** | **$XXX** | [Spread width - debit OR credit received] |
+| **Break-Even** | **$XXX.XX** | [Strike +/- net debit/credit] |
+| **Risk/Reward** | **1:X.X** | Max Profit / Max Risk |
+| **Probability of Profit** | **XX%** | Based on short strike delta |
+
+**📊 POSITION SIZING (1% Account Risk Rule):**
+
+| Account Size | Max Risk (1%) | Max Contracts | Capital Required |
+|--------------|---------------|---------------|------------------|
+| $10,000 | $100 | X contracts | $XXX |
+| $25,000 | $250 | X contracts | $XXX |
+| $50,000 | $500 | X contracts | $XXX |
+| $100,000 | $1,000 | X contracts | $XXX |
+
+**Formula:** Max Contracts = (Account × 1%) / (Max Risk per Spread)
+
+---
+
+#### Exit Rules (Discipline = Profit)
+
+**📊 EXIT STRATEGY:**
+
+| Exit Condition | Action | Reason |
+|----------------|--------|--------|
+| **Profit Target** | Close at 50% max profit | Lock in gains, don't get greedy |
+| **Stop Loss** | Close at 100% of max loss | [For credits: 2x credit received] |
+| **Time Stop** | Close at 21 DTE | Gamma risk increases exponentially |
+| **Direction Change** | Close immediately | Al Brooks flips Always-In |
+| **IV Crush** | Close after catalyst | Vol drops = spread value changes |
+
+**Adjustment Rules:**
+- **If underlying moves against you:** DO NOT add to losing position
+- **If underlying near short strike:** Consider rolling out in time
+- **If IV spikes unexpectedly:** Debit spreads benefit, credit spreads hurt
+
+---
+
+#### Greeks Management
+
+**📊 POSITION GREEKS:**
+
+| Greek | Current Value | Target Range | Action if Outside |
+|-------|---------------|--------------|-------------------|
+| **Delta** | +/- X.XX | -0.30 to +0.30 | Reduce position or hedge |
+| **Theta** | +/- $X.XX | Positive for credits | Monitor daily |
+| **Vega** | +/- $X.XX | Match IV outlook | Long vega in low IV |
+| **Gamma** | X.XXXX | < 0.05 | Close near expiry |
+
+**Greeks Interpretation:**
+- **Delta:** Your directional exposure - keep small to limit directional risk
+- **Theta:** Time decay - positive theta means you profit each day
+- **Vega:** IV sensitivity - long vega profits from vol expansion
+- **Gamma:** Delta change rate - high gamma near expiry = dangerous
+
+---
+
+#### Trade Checklist (Before Execution)
+
+**✅ PRE-TRADE CHECKLIST:**
+
+- [ ] IV Rank checked → [LOW/HIGH] environment identified
+- [ ] Direction confirmed → Al Brooks + Dalio aligned
+- [ ] Spread width defined → Max risk calculated
+- [ ] Position size calculated → 1% account risk rule applied
+- [ ] Expiry selected → 30-45 DTE for optimal theta
+- [ ] Exit rules written → Profit target + stop loss defined
+- [ ] No earnings within expiry → Binary risk avoided (unless intentional)
+
+**⚠️ DO NOT TRADE IF:**
+- [ ] IV Rank and direction suggest conflicting strategies
+- [ ] Position size exceeds 1% account risk
+- [ ] Earnings within 7 days of expiry (gamma risk)
+- [ ] Direction conflict detected (Section 1B warning)
+
+---
+
+**Tools:** `analyze_options_mcmillan()`, `get_options()`, `get_questrade_option_quotes()`
+
+---
+
 ### 7. CATALYST VERIFICATION (Phase 2 - 13.4%) 🚨 WITH VERIFICATION SYSTEM
 
 **Note:** Catalyst weight reduced from 15.2% to 13.4% to accommodate McMillan Options Strategy (17.9%)
@@ -2222,6 +2420,39 @@ find_similar_historical_setups(
 
 **Liquidity Verdict:** [SUPPORTS/OPPOSES] [LONG/SHORT] - [1-2 sentence interpretation]
 
+---
+
+**Dalio Economic Machine Analysis:** [analyze_volume_tool.dalio_metrics] ⭐ NEW
+
+| Metric | Value | Interpretation |
+|--------|-------|----------------|
+| **Dalio Ratio** | X.XXXX | [BULLISH >1.0 = buyers paying more / BEARISH <1.0 = buyers paying less] |
+| **Dollar Flow** | $XX.XXM | [ACCUMULATION (positive) / DISTRIBUTION (negative)] |
+| **Sustainability** | XX/100, Grade [A-F] | [SUSTAINABLE ≥60 / MODERATING 40-59 / UNSUSTAINABLE <40] |
+| **Institutional Activity** | [HIGH/MODERATE/LOW] | [Accumulation/Distribution/Neutral] |
+
+**Gate 2 Enhanced (6 Checks):**
+
+| # | Check | Value | Status |
+|---|-------|-------|--------|
+| 1 | CVD Aligned | [RISING/FALLING] | [✅/❌] |
+| 2 | Not Exhausted | XX/100 | [✅ <50 / ❌ ≥50] |
+| 3 | Fresh Direction | [LONG/SHORT] | [✅/❌] |
+| 4 | Dalio Ratio | X.XXXX | [✅ ≥1.0 / ❌ <1.0] |
+| 5 | Dollar Flow | $XX.XXM | [✅ Positive / ❌ Negative] |
+| 6 | Sustainability | XX/100 | [✅ ≥50 / ❌ <50] |
+
+**Checks Passing:** X/6 (Need 5/6 for Gate 2 PASS)
+
+**Dalio Teaching Points:**
+- **Dalio Ratio >1.0:** "When spending increases faster than production, prices rise." - Buyers paying more = bullish demand.
+- **Positive Dollar Flow:** Net accumulation = institutions building positions = trend has fuel.
+- **Sustainability ≥60:** Trend has aligned money flow + volume + momentum = can continue.
+
+**Dalio Verdict:** [ALIGNED/MIXED/DIVERGENT] - [1-2 sentence interpretation]
+
+---
+
 **Volatility:**
 - ATR: $X.XX (X.X%)
 - ATR-based stop: 2.5x ATR = $X.XX below entry
@@ -2246,7 +2477,8 @@ Before publishing:
 - [ ] Price Action Chart included (Section 3)
 - [ ] Supply/Demand Zones included (Section 3)
 - [ ] Order Blocks included (Section 3)
-- [ ] Volumetric Liquidity Analysis included (Section 13) ⭐ NEW
+- [ ] Volumetric Liquidity Analysis included (Section 13)
+- [ ] Dalio Economic Machine Analysis included (Section 13) ⭐ NEW
 - [ ] McMillan Options Tables included (Section 6)
 - [ ] Position Sizing Ladder included (Section 12)
 - [ ] Block Order Flow included (Section 5)
@@ -2281,7 +2513,89 @@ Before publishing:
 - [ ] Clear separation: Analysis → Confirmation → Score
 - [ ] Options analysis independent of Brooks probability
 
+**Prediction Tracking:** ⭐ NEW
+- [ ] Called `store_trading_prediction()` after report generation
+- [ ] Passed full `trading_signal` output to store function
+- [ ] Confirmed prediction ID returned
+
+---
+
+## MANDATORY: STORE PREDICTION ⭐ NEW
+
+**After generating the report, you MUST store the prediction for tracking:**
+
+```python
+# 1. Generate the trading signal (used throughout report)
+signal = generate_trading_signal(ticker="TICKER", direction="LONG")
+
+# 2. MANDATORY: Store for performance tracking
+result = store_trading_prediction(
+    ticker="TICKER",
+    direction="LONG",
+    report_type="comprehensive",
+    trading_signal=signal
+)
+
+# 3. Confirm storage
+print(f"✅ Prediction stored: {result['prediction_id']}")
+print(f"   Ticker: {result['ticker']} | Direction: {result['direction']}")
+print(f"   Entry: ${result['entry_price']}")
+```
+
+**Why This Matters:**
+- Tracks which analysis components are most accurate
+- Generates weekly efficiency reports after 5+ predictions
+- Identifies improvement areas automatically
+- Validates the 4-gate system performance
+
+---
+
+## OPTIONS WISDOM (Institutional Trading Rules)
+
+**Source:** McMillan "Options as a Strategic Investment" + TastyTrade Research
+**Full Reference:** `Institutional Options Trading-Complete Methodology for Algorithmic Systems.md`
+
+### Core Principles
+
+| Rule | Principle | Rationale |
+|------|-----------|-----------|
+| **1** | **IV Drives Strategy** | HIGH IV → SELL premium; LOW IV → BUY premium |
+| **2** | **45 DTE Entry** | Optimal theta decay with manageable gamma |
+| **3** | **50% Profit Target** | Close at 50% max profit = 88% win rate |
+| **4** | **NO Stop Losses** | On credit spreads - manage at 21 DTE instead |
+| **5** | **21 DTE Exit** | Gamma risk explodes - roll or close |
+| **6** | **Half-Kelly Sizing** | Kelly/2 reduces volatility, increases longevity |
+| **7** | **Earnings Filter** | Skip if earnings < 30 days (IV crush risk) |
+| **8** | **Liquidity Rules** | Spread ≤5%, OI ≥100, Volume ≥50 |
+
+### Strategy Matrix (Quick Reference)
+
+| IV Rank | BULLISH | BEARISH |
+|---------|---------|---------|
+| HIGH (>50%) | Bull Put Credit Spread (16Δ short) | Bear Call Credit Spread (16Δ short) |
+| MEDIUM (30-50%) | Bull Call Debit Spread | Bear Put Debit Spread |
+| LOW (<30%) | Long Call (ATM) | Long Put (ATM) |
+
+### Trading Plan Generation Rules
+
+**GENERATE full stock + options trading plan ONLY for:**
+- ✅ STRONG_BUY (4/4 gates, score ≥80)
+- ✅ BUY (3/4 gates, score ≥65)
+- ✅ SELL (3/4 gates, score ≥65)
+- ✅ STRONG_SELL (4/4 gates, score ≥80)
+
+**DO NOT generate trading plan for:**
+- ❌ WATCH (2/4 gates, score 50-64) - No conviction, wait
+- ❌ NO_TRADE (<2/4 gates, score <50) - Gates failed, skip
+
+**Rationale:** Trading plans for low-conviction signals encourage overtrading. Only commit capital to high-conviction setups that pass validation gates.
+
+---
+
+**Last Updated:** January 8, 2026
+**Version:** 3.1 - Added OPTIONS WISDOM + Trading Plan Rules
+
 ---
 
 **Time:** 100 minutes for institutional-grade report with embedded visuals
-**Methodology:** Al Brooks (Price Action) + McMillan (Options Strategy) + López de Prado (ML)
+**Methodology:** Al Brooks (Price Action) + McMillan (Options Strategy) + Ray Dalio (Economic Machine) + López de Prado (ML)

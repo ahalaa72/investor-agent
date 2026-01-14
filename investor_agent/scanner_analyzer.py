@@ -657,6 +657,55 @@ class AlBrooksAnalyzer:
                 base -= 3
                 adjustments.append("-3% Weak volume")
 
+            # Dalio Economic Machine adjustments (Ray Dalio's Price = Total Spending / Quantity)
+            dalio = volume_data.get('dalio_economic_machine', {})
+            if dalio and not dalio.get('error'):
+                # Extract Dalio metrics from nested structure
+                dalio_ratio_data = dalio.get('dalio_ratio', {})
+                dalio_ratio = dalio_ratio_data.get('current', 1.0) if isinstance(dalio_ratio_data, dict) else dalio_ratio_data
+
+                cdf_data = dalio.get('cumulative_dollar_flow', {})
+                dollar_flow = cdf_data.get('20d', 0) if isinstance(cdf_data, dict) else cdf_data
+
+                sustain_data = dalio.get('trend_sustainability', {})
+                sustainability = sustain_data.get('score', 50) if isinstance(sustain_data, dict) else sustain_data
+
+                # Dalio Ratio alignment (buyers paying premium/discount)
+                if direction == 'long' and dalio_ratio >= 1.02:
+                    base += 5
+                    adjustments.append(f"+5% Dalio: Buyers paying {(dalio_ratio-1)*100:.1f}% premium")
+                elif direction == 'long' and dalio_ratio < 0.98:
+                    base -= 5
+                    adjustments.append(f"-5% Dalio: Buyers paying {(1-dalio_ratio)*100:.1f}% discount")
+                elif direction == 'short' and dalio_ratio <= 0.98:
+                    base += 5
+                    adjustments.append(f"+5% Dalio: Buyers paying {(1-dalio_ratio)*100:.1f}% discount")
+                elif direction == 'short' and dalio_ratio > 1.02:
+                    base -= 5
+                    adjustments.append(f"-5% Dalio: Buyers paying {(dalio_ratio-1)*100:.1f}% premium")
+
+                # Dollar Flow alignment
+                if direction == 'long' and dollar_flow > 0:
+                    base += 3
+                    adjustments.append(f"+3% Dalio: Positive dollar flow (accumulation)")
+                elif direction == 'long' and dollar_flow < 0:
+                    base -= 3
+                    adjustments.append(f"-3% Dalio: Negative dollar flow (distribution)")
+                elif direction == 'short' and dollar_flow < 0:
+                    base += 3
+                    adjustments.append(f"+3% Dalio: Negative dollar flow confirms SHORT")
+                elif direction == 'short' and dollar_flow > 0:
+                    base -= 3
+                    adjustments.append(f"-3% Dalio: Positive dollar flow opposes SHORT")
+
+                # Sustainability score
+                if sustainability >= 70:
+                    base += 3
+                    adjustments.append(f"+3% Dalio: High sustainability ({sustainability})")
+                elif sustainability <= 30:
+                    base -= 3
+                    adjustments.append(f"-3% Dalio: Low sustainability ({sustainability})")
+
         # Technical indicators
         analysis = technical_data.get('analysis', {})
         rsi = _parse_numeric(analysis.get('rsi', {}).get('value', 50), 50)
@@ -1874,6 +1923,31 @@ def format_analysis_report(analysis: dict) -> str:
         lines.append(f"   Exhaustion: {exhaustion_emoji} {exhaustion}/100")
         if trend_days != 'N/A':
             lines.append(f"   Trend Days: {trend_days}")
+
+        # Dalio Economic Machine (NEW - part of enhanced Gate 2)
+        dalio_ratio = freshness.get('dalio_ratio', None)
+        dollar_flow = freshness.get('dollar_flow', None)
+        sustainability = freshness.get('sustainability', None)
+        dalio_checks = freshness.get('dalio_checks_passing', None)
+
+        if dalio_ratio is not None:
+            lines.append(f"\n💰 DALIO ECONOMIC MACHINE:")
+            ratio_emoji = "✅" if dalio_ratio >= 1.0 else "⚠️" if dalio_ratio >= 0.95 else "❌"
+            ratio_signal = "BULLISH" if dalio_ratio >= 1.0 else "NEUTRAL" if dalio_ratio >= 0.95 else "BEARISH"
+            lines.append(f"   Dalio Ratio: {ratio_emoji} {dalio_ratio:.4f} ({ratio_signal})")
+
+            if dollar_flow is not None:
+                flow_emoji = "✅" if dollar_flow > 0 else "❌"
+                flow_signal = "ACCUMULATION" if dollar_flow > 0 else "DISTRIBUTION"
+                lines.append(f"   Dollar Flow: {flow_emoji} ${dollar_flow/1e6:.2f}M ({flow_signal})")
+
+            if sustainability is not None:
+                sus_emoji = "✅" if sustainability >= 50 else "⚠️" if sustainability >= 40 else "❌"
+                lines.append(f"   Sustainability: {sus_emoji} {sustainability}/100")
+
+            if dalio_checks is not None:
+                checks_emoji = "✅" if dalio_checks >= 5 else "⚠️" if dalio_checks == 4 else "❌"
+                lines.append(f"   Gate 2 (6 checks): {checks_emoji} {dalio_checks}/6 passing")
 
     # Technical Analysis Summary
     tech = analysis.get('technical', {})

@@ -97,6 +97,102 @@ BROWSER_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 }
 
+# =============================================================================
+# INSTITUTIONAL OPTIONS TRADING PARAMETERS
+# Reference: McMillan "Options as a Strategic Investment" + TastyTrade Research
+# =============================================================================
+
+INSTITUTIONAL_OPTIONS_PARAMS = {
+    # Entry Criteria
+    'min_iv_percentile': 50,           # Ideal > 70% for selling premium
+    'target_dte': 45,                  # Optimal entry: 40-50 DTE
+    'short_strike_delta': 16,          # 16-delta for credit strategies (15-20 range)
+    'max_spread_pct': 5.0,             # Reject if bid-ask spread > 5%
+    'preferred_spread_pct': 2.0,       # Prefer ≤ 2% spread
+    'min_open_interest': 100,          # Minimum OI (prefer > 1,000)
+    'preferred_open_interest': 1000,   # Preferred OI for full position
+    'min_volume': 50,                  # Minimum daily volume
+    'min_underlying_volume': 500000,   # Minimum underlying shares traded
+
+    # Position Sizing
+    'defined_risk_pct': 0.03,          # 3% of account per defined-risk trade
+    'undefined_risk_pct': 0.02,        # 2% of account per undefined-risk trade
+    'max_buying_power_usage': 0.60,    # 60% max BP usage
+    'cash_reserve': 0.40,              # 40% cash reserve for adjustments
+    'kelly_fraction': 0.50,            # Half-Kelly for conservative sizing
+
+    # Exit Management (NO STOP LOSSES per TastyTrade research)
+    'profit_target_pct': 0.50,         # Close at 50% of max profit
+    'roll_dte_threshold': 21,          # Roll or close at 21 DTE
+    'delta_adjustment_threshold': 0.35, # Adjust if position delta > 0.35
+    'loss_review_threshold': 0.50,     # Review at 50% of max loss
+
+    # Portfolio Limits (per $100K)
+    'max_single_underlying': 0.10,     # 10% per ticker
+    'max_sector_exposure': 0.20,       # 20% per sector
+    'max_correlated_exposure': 0.40,   # 40% for correlated positions (r>0.7)
+    'max_single_expiration': 0.35,     # 35% per expiration cycle
+    'beta_weighted_delta_limit': 200,  # Per $100K
+
+    # Risk Metrics
+    'var_confidence': 0.95,            # 95% VaR confidence
+    'stress_test_move': 0.20,          # 20% move + 50% IV spike
+    'min_pop_for_entry': 0.65,         # 65% minimum probability of profit
+
+    # Earnings Filter
+    'min_days_to_earnings': 30,        # SKIP options if earnings < 30 days
+}
+
+# Liquidity Tier 1 - Penny-wide spreads, 10,000+ OI per strike (FULL SIZE)
+TIER_1_UNDERLYINGS = frozenset([
+    'SPY', 'QQQ', 'IWM',               # ETFs
+    'AAPL', 'MSFT', 'NVDA', 'TSLA',    # Mega-cap tech
+    'AMZN', 'GOOGL', 'GOOG', 'META',   # FAANG
+    'AMD', 'NFLX', 'DIS', 'BA',        # High-volume stocks
+    'JPM', 'BAC', 'WFC', 'GS',         # Financials
+    'XOM', 'CVX',                       # Energy
+])
+
+# Liquidity Tier 2 - S&P 500 with weeklies (STANDARD SIZE)
+# Will be populated dynamically from S&P 500 constituents with weekly options
+
+# IV-Based Strategy Selection Matrix (from institutional document)
+IV_STRATEGY_MATRIX = {
+    'HIGH_IV_70_100': {
+        'neutral': ['Straddle (Short)', 'Strangle (Short)', 'Iron Butterfly'],
+        'long': ['Bull Put Spread (Credit)', 'Jade Lizard', 'Short Put'],
+        'short': ['Bear Call Spread (Credit)', 'Short Call Spread', 'Covered Put'],
+        'rationale': 'Aggressive premium selling - IV at extremes will crush'
+    },
+    'HIGH_IV_50_70': {
+        'neutral': ['Iron Condor', 'Iron Butterfly', 'Credit Spread'],
+        'long': ['Bull Put Spread (Credit)', 'Cash-Secured Put'],
+        'short': ['Bear Call Spread (Credit)', 'Covered Call'],
+        'rationale': 'Defined-risk selling - capture elevated premium with protection'
+    },
+    'NORMAL_IV_30_50': {
+        'neutral': ['Iron Condor (Conservative)', 'Calendar Spread'],
+        'long': ['Bull Call Spread (Debit)', 'Diagonal Spread'],
+        'short': ['Bear Put Spread (Debit)', 'Put Calendar'],
+        'rationale': 'Cautious - only conservative credit spreads or calendars'
+    },
+    'LOW_IV_0_30': {
+        'neutral': ['Calendar Spread', 'Long Straddle', 'Long Strangle'],
+        'long': ['Long Call', 'Bull Call Spread (Debit)', 'LEAPS'],
+        'short': ['Long Put', 'Bear Put Spread (Debit)', 'Put Backspread'],
+        'rationale': 'Premium buying - options are cheap, expect IV expansion'
+    }
+}
+
+# Theta Decay Table (% of option value lost per day)
+THETA_DECAY_TABLE = {
+    (60, 45): 0.005,    # 60-45 DTE: ~0.5%/day - Optimal entry zone
+    (45, 30): 0.010,    # 45-30 DTE: ~1%/day - Primary theta capture
+    (30, 21): 0.015,    # 30-21 DTE: ~1.5%/day - Decision point (roll or close)
+    (21, 7):  0.035,    # 21-7 DTE: ~3-4%/day - High gamma risk, exit zone
+    (7, 0):   0.075,    # 7-0 DTE: ~5-10%/day - Binary zone, avoid
+}
+
 # Unified retry decorator for API calls (yfinance and HTTP)
 def api_retry(func):
     return retry(
@@ -343,11 +439,25 @@ def get_options_chain(ticker: str, expiry: str, option_type: Literal["C", "P"] |
 
 
 
-def to_clean_csv(df: pd.DataFrame) -> str:
-    """Clean DataFrame by removing empty columns and convert to CSV string."""
-    # Chain operations more efficiently
-    mask = (df.notna().any() & (df != '').any() &
-            ((df != 0).any() | (df.dtypes == 'object')))
+# Essential columns that should never be removed even if all zeros
+ESSENTIAL_OPTIONS_COLUMNS = {'openInterest', 'bid', 'ask', 'volume', 'change', 'percentChange'}
+
+
+def to_clean_csv(df: pd.DataFrame, preserve_columns: set | None = None) -> str:
+    """Clean DataFrame by removing empty columns and convert to CSV string.
+
+    Args:
+        df: DataFrame to convert
+        preserve_columns: Set of column names to preserve even if all values are 0/empty
+    """
+    preserve = preserve_columns or set()
+
+    # Create mask for columns to keep
+    # Keep if: (has non-NA AND non-empty AND (non-zero OR is object type)) OR is in preserve list
+    mask = (
+        (df.notna().any() & (df != '').any() & ((df != 0).any() | (df.dtypes == 'object'))) |
+        df.columns.isin(preserve)
+    )
     return df.loc[:, mask].fillna('').to_csv(index=False)
 
 def format_date_string(date_str: str) -> str | None:
@@ -801,10 +911,25 @@ def detect_vwap_bounce(
     # Calculate VWAP (Volume Weighted Average Price)
     # VWAP = Σ(Price × Volume) / Σ(Volume)
     typical_price = prices  # Using close prices
-    vwap = (typical_price * volumes).rolling(window=window).sum() / volumes.rolling(window=window).sum()
+    vol_sum = volumes.rolling(window=window).sum()
+    # Avoid division by zero
+    vol_sum = vol_sum.replace(0, np.nan)
+    vwap = (typical_price * volumes).rolling(window=window).sum() / vol_sum
 
     current_price = prices.iloc[-1]
     current_vwap = vwap.iloc[-1]
+
+    # Check for valid VWAP - if NaN, return DATA_UNAVAILABLE signal
+    if pd.isna(current_vwap) or current_vwap <= 0:
+        return {
+            'signal': 'DATA_UNAVAILABLE',
+            'vwap_level': 0.0,
+            'distance_pct': 0.0,
+            'bounce_days_ago': 0,
+            'volume_confirmed': False,
+            'strength': 'NONE',
+            'error': 'VWAP calculation returned NaN - check volume data'
+        }
 
     # Current distance from VWAP
     distance_pct = ((current_price / current_vwap) - 1) * 100
@@ -819,6 +944,11 @@ def detect_vwap_bounce(
     for i in range(1, min(6, len(prices))):
         past_price = prices.iloc[-i]
         past_vwap = vwap.iloc[-i]
+
+        # Skip if past VWAP is NaN
+        if pd.isna(past_vwap) or past_vwap <= 0:
+            continue
+
         past_distance_pct = ((past_price / past_vwap) - 1) * 100
 
         # SUPPORT BOUNCE: Price was at/below VWAP, now above
@@ -865,8 +995,8 @@ def detect_vwap_bounce(
 
     return {
         'signal': bounce_signal,
-        'vwap_level': current_vwap,
-        'distance_pct': distance_pct,
+        'vwap_level': float(current_vwap),
+        'distance_pct': float(distance_pct),
         'bounce_days_ago': bounce_days_ago,
         'volume_confirmed': volume_confirmed,
         'strength': strength
@@ -908,10 +1038,23 @@ def detect_vwap_cross(
 
     # Calculate VWAP
     typical_price = prices
-    vwap = (typical_price * volumes).rolling(window=window).sum() / volumes.rolling(window=window).sum()
+    vol_sum = volumes.rolling(window=window).sum()
+    # Avoid division by zero
+    vol_sum = vol_sum.replace(0, np.nan)
+    vwap = (typical_price * volumes).rolling(window=window).sum() / vol_sum
 
     current_price = prices.iloc[-1]
     current_vwap = vwap.iloc[-1]
+
+    # Check for valid VWAP - if NaN, return DATA_UNAVAILABLE signal
+    if pd.isna(current_vwap) or current_vwap <= 0:
+        return {
+            'signal': 'DATA_UNAVAILABLE',
+            'vwap_level': 0.0,
+            'distance_pct': 0.0,
+            'cross_days_ago': 0,
+            'error': 'VWAP calculation returned NaN - check volume data'
+        }
 
     # Current distance from VWAP
     distance_pct = ((current_price / current_vwap) - 1) * 100
@@ -925,6 +1068,10 @@ def detect_vwap_cross(
         prev_vwap = vwap.iloc[-i-1]
         curr_price = prices.iloc[-i]
         curr_vwap = vwap.iloc[-i]
+
+        # Skip if VWAP is NaN
+        if pd.isna(prev_vwap) or pd.isna(curr_vwap):
+            continue
 
         # BULLISH CROSS: Was below, now above
         if prev_price <= prev_vwap and curr_price > curr_vwap:
@@ -944,8 +1091,8 @@ def detect_vwap_cross(
 
     return {
         'signal': cross_signal,
-        'vwap_level': current_vwap,
-        'distance_pct': distance_pct,
+        'vwap_level': float(current_vwap),
+        'distance_pct': float(distance_pct),
         'cross_days_ago': cross_days_ago
     }
 
@@ -1977,10 +2124,716 @@ def get_options(
 
         df = df.sort_values(['openInterest', 'volume'], ascending=[False, False])
         df_subset = df.head(num_options)
-        return to_clean_csv(df_subset)
+        return to_clean_csv(df_subset, preserve_columns=ESSENTIAL_OPTIONS_COLUMNS)
 
     except Exception as e:
         raise ValueError(f"Failed to retrieve options data: {str(e)}")
+
+
+# =============================================================================
+# INSTITUTIONAL OPTIONS HELPER FUNCTIONS
+# =============================================================================
+
+def _get_earnings_proximity(ticker: str) -> dict:
+    """
+    Get days to next earnings for options trading filter.
+
+    RULE: Skip options if earnings < 30 days (IV crush risk).
+
+    Uses multiple data sources with fallback:
+    1. yf_call with retry logic (calendar)
+    2. yfinance earnings_dates property
+    3. NASDAQ earnings calendar fallback
+
+    Returns:
+        dict with days_to_earnings, earnings_date, options_allowed
+    """
+    from datetime import datetime, timedelta
+
+    try:
+        # Try to get earnings dates using yf_call (has retry logic)
+        earnings_dates = None
+
+        # Method 1: yf_call for calendar (with retry)
+        try:
+            calendar = yf_call(ticker, "calendar")
+            if calendar is not None:
+                # Handle DataFrame format
+                if hasattr(calendar, 'empty') and not calendar.empty:
+                    if 'Earnings Date' in calendar.index:
+                        earnings_dates = calendar.loc['Earnings Date']
+                    elif hasattr(calendar, 'columns') and 'Earnings Date' in calendar.columns:
+                        earnings_dates = calendar['Earnings Date']
+                # Handle dict format (newer yfinance versions)
+                elif isinstance(calendar, dict) and 'Earnings Date' in calendar:
+                    earnings_dates = calendar['Earnings Date']
+        except Exception as e:
+            logger.debug(f"Calendar method failed for {ticker}: {e}")
+
+        # Method 2: Try earnings_dates property
+        if earnings_dates is None:
+            try:
+                ed = yf_call(ticker, "earnings_dates")
+                if ed is not None and hasattr(ed, 'empty') and not ed.empty:
+                    future_dates = ed[ed.index > datetime.now()]
+                    if not future_dates.empty:
+                        earnings_dates = [future_dates.index[0]]
+            except Exception as e:
+                logger.debug(f"earnings_dates property failed for {ticker}: {e}")
+
+        # Method 3: Fallback to NASDAQ earnings calendar (async function)
+        if earnings_dates is None:
+            import asyncio
+            try:
+                # Check next 30 days of NASDAQ calendar
+                today_dt = datetime.now()
+                for days_ahead in [0, 7, 14, 21, 28]:
+                    check_date = (today_dt + timedelta(days=days_ahead)).strftime('%Y-%m-%d')
+                    # get_nasdaq_earnings_calendar is async, need to run it
+                    try:
+                        nasdaq_cal = asyncio.run(get_nasdaq_earnings_calendar(date=check_date, limit=200))
+                    except RuntimeError:
+                        # Already in async context, try get_event_loop
+                        loop = asyncio.get_event_loop()
+                        nasdaq_cal = loop.run_until_complete(get_nasdaq_earnings_calendar(date=check_date, limit=200))
+
+                    # nasdaq_cal is CSV string directly (not a dict)
+                    if nasdaq_cal and isinstance(nasdaq_cal, str) and ticker.upper() in nasdaq_cal.upper():
+                        # Parse CSV data for ticker
+                        for line in nasdaq_cal.split('\n')[1:]:  # Skip header
+                            if ticker.upper() in line.upper():
+                                # Found ticker in NASDAQ calendar
+                                earnings_dates = [check_date]
+                                logger.info(f"Found {ticker} earnings on {check_date} via NASDAQ calendar")
+                                break
+                    if earnings_dates:
+                        break
+            except Exception as e:
+                logger.debug(f"NASDAQ calendar fallback failed for {ticker}: {e}")
+
+        # Calculate days to earnings
+        today = datetime.now()
+        min_days_to_earnings = INSTITUTIONAL_OPTIONS_PARAMS['min_days_to_earnings']
+
+        if earnings_dates is not None:
+            # Handle both Series and list
+            if hasattr(earnings_dates, 'tolist'):
+                dates_list = earnings_dates.tolist()
+            elif hasattr(earnings_dates, 'values'):
+                dates_list = list(earnings_dates.values)
+            else:
+                dates_list = list(earnings_dates) if earnings_dates else []
+
+            # Find next earnings date
+            next_earnings = None
+            for d in dates_list:
+                try:
+                    if isinstance(d, str):
+                        dt = datetime.strptime(d[:10], '%Y-%m-%d')
+                    elif hasattr(d, 'to_pydatetime'):
+                        dt = d.to_pydatetime()
+                    elif isinstance(d, datetime):
+                        dt = d
+                    elif hasattr(d, 'year') and hasattr(d, 'month') and hasattr(d, 'day'):
+                        # Handle datetime.date objects (from yfinance calendar dict)
+                        dt = datetime(d.year, d.month, d.day)
+                    else:
+                        continue
+
+                    # Ensure dt is timezone-naive for comparison
+                    if hasattr(dt, 'tzinfo') and dt.tzinfo is not None:
+                        dt = dt.replace(tzinfo=None)
+
+                    # Compare dates only (earnings TODAY should be included!)
+                    today_date = today.replace(hour=0, minute=0, second=0, microsecond=0)
+                    if dt >= today_date:
+                        if next_earnings is None or dt < next_earnings:
+                            next_earnings = dt
+                except Exception:
+                    continue
+
+            if next_earnings:
+                days_to_earnings = (next_earnings - today).days
+                options_allowed = days_to_earnings >= min_days_to_earnings
+
+                return {
+                    "days_to_earnings": days_to_earnings,
+                    "earnings_date": next_earnings.strftime('%Y-%m-%d'),
+                    "options_allowed": options_allowed,
+                    "warning": None if options_allowed else f"⚠️ EARNINGS in {days_to_earnings} days - SKIP OPTIONS (IV crush risk)"
+                }
+
+        # No earnings data found - assume allowed
+        return {
+            "days_to_earnings": None,
+            "earnings_date": None,
+            "options_allowed": True,
+            "warning": "No earnings date found - proceed with caution"
+        }
+
+    except Exception as e:
+        logger.warning(f"Error getting earnings for {ticker}: {e}")
+        return {
+            "days_to_earnings": None,
+            "earnings_date": None,
+            "options_allowed": True,
+            "warning": f"Could not determine earnings date: {str(e)}"
+        }
+
+
+def _calculate_liquidity_tier(ticker: str, avg_volume: float = None) -> dict:
+    """
+    Classify ticker into liquidity tiers for options trading.
+
+    Tier 1: TIER_1_UNDERLYINGS - penny-wide spreads, 10,000+ OI (FULL SIZE)
+    Tier 2: S&P 500 with weeklies, high volume (STANDARD SIZE)
+    Tier 3: Other liquid stocks (REDUCED SIZE with warning)
+    Non-Liquid: Skip options entirely
+
+    Returns:
+        dict with tier, size_multiplier, warnings
+    """
+    ticker_upper = ticker.upper()
+
+    # Check Tier 1
+    if ticker_upper in TIER_1_UNDERLYINGS:
+        return {
+            "tier": "TIER_1",
+            "tier_name": "Institutional Grade",
+            "size_multiplier": 1.0,
+            "description": "Penny-wide spreads, 10,000+ OI per strike",
+            "warnings": []
+        }
+
+    # Get underlying volume if not provided
+    if avg_volume is None:
+        try:
+            t = yf.Ticker(ticker)
+            info = t.info
+            avg_volume = info.get('averageVolume', 0) or info.get('averageDailyVolume10Day', 0)
+        except Exception:
+            avg_volume = 0
+
+    min_volume = INSTITUTIONAL_OPTIONS_PARAMS['min_underlying_volume']
+
+    # Check Tier 2 (high volume stocks)
+    if avg_volume >= min_volume * 2:  # 1M+ shares/day
+        return {
+            "tier": "TIER_2",
+            "tier_name": "High Liquidity",
+            "size_multiplier": 0.75,
+            "description": "S&P 500 level liquidity with weeklies",
+            "warnings": ["Reduce position size by 25% vs Tier 1"]
+        }
+
+    # Check Tier 3 (moderate volume)
+    if avg_volume >= min_volume:  # 500K+ shares/day
+        return {
+            "tier": "TIER_3",
+            "tier_name": "Moderate Liquidity",
+            "size_multiplier": 0.50,
+            "description": "Tradeable but with wider spreads",
+            "warnings": [
+                "⚠️ Reduce position size by 50% vs Tier 1",
+                "⚠️ Expect 100-150% spread slippage on multi-leg trades",
+                "⚠️ Use limit orders only"
+            ]
+        }
+
+    # Non-liquid
+    return {
+        "tier": "NON_LIQUID",
+        "tier_name": "Illiquid",
+        "size_multiplier": 0.0,
+        "description": "Options not recommended",
+        "warnings": [
+            "🚫 SKIP OPTIONS - Underlying volume too low",
+            f"Volume {avg_volume:,.0f} < minimum {min_volume:,.0f}",
+            "Wide spreads will eat profits"
+        ]
+    }
+
+
+def _get_oi_with_yf_fallback(
+    questrade_oi: int,
+    ticker: str,
+    strike: float,
+    expiry: str,
+    option_type: str = "call"
+) -> int:
+    """
+    Get Open Interest with yfinance fallback when Questrade returns 0.
+
+    Questrade API often doesn't include openInterest in the response.
+    This function falls back to yfinance to get accurate OI data.
+
+    Args:
+        questrade_oi: OI value from Questrade (may be 0)
+        ticker: Stock symbol
+        strike: Option strike price
+        expiry: Expiration date string (YYYY-MM-DD format)
+        option_type: "call" or "put"
+
+    Returns:
+        Open interest value (from Questrade if valid, otherwise from yfinance)
+    """
+    # If Questrade provided valid OI, use it
+    if questrade_oi > 0:
+        return questrade_oi
+
+    # Fallback to yfinance
+    try:
+        import yfinance as yf
+        t = yf.Ticker(ticker)
+        chain = t.option_chain(expiry)
+
+        if option_type == "call":
+            options_df = chain.calls
+        else:
+            options_df = chain.puts
+
+        # Find the closest strike (may not be exact due to floating point)
+        strike_diff = (options_df['strike'] - strike).abs()
+        closest_idx = strike_diff.idxmin()
+        closest_row = options_df.loc[closest_idx]
+
+        # Only use if strike matches within $0.50
+        if abs(closest_row['strike'] - strike) <= 0.50:
+            oi = int(closest_row.get('openInterest', 0) or 0)
+            if oi > 0:
+                logger.debug(f"OI fallback to yfinance for {ticker} {strike} {expiry}: {oi}")
+                return oi
+    except Exception as e:
+        logger.debug(f"yfinance OI fallback failed for {ticker}: {e}")
+
+    return questrade_oi  # Return original (0) if fallback fails
+
+
+def _calculate_liquidity_score(
+    bid_ask_spread_pct: float,
+    open_interest: int,
+    daily_volume: int,
+    underlying_volume: int,
+    bid_size: int = 10,
+    ask_size: int = 10,
+    liquidity_tier: str = None
+) -> dict:
+    """
+    Calculate composite liquidity score using institutional weights.
+
+    Weights (from institutional document):
+    - Bid-ask spread %: 35%
+    - Open interest: 25%
+    - Daily volume: 20%
+    - Underlying volume: 10%
+    - Size at bid/ask: 10%
+
+    Args:
+        liquidity_tier: TIER_1, TIER_2, TIER_3, or TIER_4. If TIER_1 and data unavailable
+                       (off-market hours), uses underlying volume as proxy instead of rejecting.
+
+    Returns:
+        dict with score (0-100), grade, warnings
+    """
+    params = INSTITUTIONAL_OPTIONS_PARAMS
+    score = 0
+    warnings = []
+    factors = []
+    is_tier_1 = liquidity_tier == "TIER_1"
+
+    # Detect off-market hours scenario: OI=0 AND spread looks defaulted
+    # This happens when running reports at 6am before options markets open
+    off_market_data = (open_interest == 0 and daily_volume == 0 and bid_ask_spread_pct >= 5.0)
+
+    if off_market_data and is_tier_1:
+        warnings.append("ℹ️ Options data unavailable (likely off-market hours) - using TIER_1 proxy")
+
+    # 1. Bid-Ask Spread (35% weight) - Lower is better
+    # CHECK OFF-MARKET TIER_1 FIRST - when data is clearly unavailable
+    if off_market_data and is_tier_1:
+        # TIER_1 off-market: assume penny-wide spreads typical of institutional-grade options
+        spread_score = 30
+        factors.append(f"Spread unavailable (off-market), TIER_1 proxy: +{spread_score:.0f}")
+    elif bid_ask_spread_pct <= params['preferred_spread_pct']:
+        spread_score = 35
+        factors.append(f"Spread {bid_ask_spread_pct:.1f}% ≤ {params['preferred_spread_pct']}%: +35")
+    elif bid_ask_spread_pct <= params['max_spread_pct']:
+        spread_score = 35 * (1 - (bid_ask_spread_pct - params['preferred_spread_pct']) /
+                           (params['max_spread_pct'] - params['preferred_spread_pct']))
+        factors.append(f"Spread {bid_ask_spread_pct:.1f}%: +{spread_score:.0f}")
+    else:
+        spread_score = 0
+        warnings.append(f"🚫 REJECT: Spread {bid_ask_spread_pct:.1f}% > {params['max_spread_pct']}% max")
+        factors.append(f"Spread {bid_ask_spread_pct:.1f}% too wide: +0")
+    score += spread_score
+
+    # 2. Open Interest (25% weight)
+    # CHECK OFF-MARKET TIER_1 FIRST - when data is clearly unavailable
+    if off_market_data and is_tier_1:
+        # TIER_1 off-market: use underlying volume as proxy
+        # High underlying volume (>10M) indicates actively traded stock with liquid options
+        if underlying_volume >= 10_000_000:
+            oi_score = 22  # High confidence proxy
+            factors.append(f"OI unavailable (off-market), TIER_1 + high vol proxy: +{oi_score:.0f}")
+        elif underlying_volume >= 1_000_000:
+            oi_score = 18  # Medium confidence proxy
+            factors.append(f"OI unavailable (off-market), TIER_1 proxy: +{oi_score:.0f}")
+        else:
+            oi_score = 10  # Low confidence - verify during market hours
+            factors.append(f"OI unavailable (off-market), TIER_1 low vol: +{oi_score:.0f}")
+            warnings.append("⚠️ Verify liquidity during market hours")
+    elif open_interest >= params['preferred_open_interest']:
+        oi_score = 25
+        factors.append(f"OI {open_interest:,}: +{oi_score:.0f}")
+    elif open_interest >= params['min_open_interest']:
+        oi_score = 25 * (open_interest - params['min_open_interest']) / \
+                   (params['preferred_open_interest'] - params['min_open_interest'])
+        warnings.append(f"⚠️ Low OI ({open_interest}) - reduce size")
+        factors.append(f"OI {open_interest:,}: +{oi_score:.0f}")
+    else:
+        oi_score = 0
+        warnings.append(f"🚫 REJECT: OI {open_interest} < {params['min_open_interest']} min")
+        factors.append(f"OI {open_interest}: +{oi_score:.0f}")
+
+    # 3. Daily Volume (20% weight)
+    if daily_volume >= params['min_volume'] * 10:  # 500+ volume
+        vol_score = 20
+        factors.append(f"Volume {daily_volume:,}: +{vol_score:.0f}")
+    elif daily_volume >= params['min_volume']:
+        vol_score = 20 * (daily_volume / (params['min_volume'] * 10))
+        factors.append(f"Volume {daily_volume:,}: +{vol_score:.0f}")
+    elif off_market_data and is_tier_1:
+        # TIER_1 off-market: assume typical volume based on underlying activity
+        vol_score = 15  # Conservative proxy
+        factors.append(f"Volume unavailable (off-market), TIER_1 proxy: +{vol_score:.0f}")
+    else:
+        vol_score = 0 if open_interest < params['min_open_interest'] * 5 else 10  # OI can substitute
+        if daily_volume < params['min_volume'] and open_interest < params['min_open_interest'] * 5:
+            warnings.append(f"⚠️ Low volume ({daily_volume}) and OI")
+        factors.append(f"Volume {daily_volume:,}: +{vol_score:.0f}")
+
+    # 4. Underlying Volume (10% weight)
+    if underlying_volume >= params['min_underlying_volume'] * 2:
+        under_score = 10
+    elif underlying_volume >= params['min_underlying_volume']:
+        under_score = 10 * (underlying_volume / (params['min_underlying_volume'] * 2))
+    else:
+        under_score = 0
+        warnings.append(f"⚠️ Low underlying volume ({underlying_volume:,})")
+    score += under_score
+    factors.append(f"Underlying Vol {underlying_volume:,}: +{under_score:.0f}")
+
+    # 5. Size at Bid/Ask (10% weight)
+    min_size = 5  # Minimum contracts each side
+    if bid_size >= min_size and ask_size >= min_size:
+        size_score = 10
+    elif bid_size >= min_size or ask_size >= min_size:
+        size_score = 5
+    else:
+        size_score = 0
+        warnings.append(f"⚠️ Thin book: bid size {bid_size}, ask size {ask_size}")
+    score += size_score
+    factors.append(f"Book depth: +{size_score:.0f}")
+
+    # Determine grade
+    if score >= 80:
+        grade = "A"
+        grade_desc = "Excellent liquidity"
+    elif score >= 60:
+        grade = "B"
+        grade_desc = "Good liquidity"
+    elif score >= 40:
+        grade = "C"
+        grade_desc = "Fair liquidity - use caution"
+    else:
+        grade = "F"
+        grade_desc = "Poor liquidity - SKIP"
+        if "REJECT" not in str(warnings):
+            warnings.append("🚫 REJECT: Liquidity score < 40")
+
+    return {
+        "score": round(score, 1),
+        "grade": grade,
+        "grade_description": grade_desc,
+        "factors": factors,
+        "warnings": warnings,
+        "tradeable": score >= 40 and "🚫 REJECT" not in str(warnings)
+    }
+
+
+def _find_target_expiry(expirations: list, target_dte: int = None) -> dict:
+    """
+    Find optimal expiration targeting ~45 DTE.
+
+    RULE: 45 DTE entry with 50% profit management = 88% win rate
+
+    Args:
+        expirations: List of expiration dates (YYYY-MM-DD strings)
+        target_dte: Target days to expiration (default: 45)
+
+    Returns:
+        dict with optimal_expiry, dte, theta_zone
+    """
+    from datetime import datetime, timedelta
+
+    if target_dte is None:
+        target_dte = INSTITUTIONAL_OPTIONS_PARAMS['target_dte']
+
+    today = datetime.now()
+    target_date = today + timedelta(days=target_dte)
+
+    if not expirations:
+        return {
+            "optimal_expiry": None,
+            "dte": None,
+            "theta_zone": "UNKNOWN",
+            "warning": "No expirations available"
+        }
+
+    # Find closest expiry to target
+    best_expiry = None
+    best_dte = None
+    min_diff = float('inf')
+
+    for exp in expirations:
+        try:
+            exp_date = datetime.strptime(exp[:10], '%Y-%m-%d')
+            dte = (exp_date - today).days
+            diff = abs(dte - target_dte)
+
+            # Prefer slightly longer than shorter (safer)
+            if diff < min_diff or (diff == min_diff and dte > target_dte):
+                min_diff = diff
+                best_expiry = exp[:10]
+                best_dte = dte
+        except Exception:
+            continue
+
+    # Determine theta zone
+    theta_zone = "UNKNOWN"
+    zone_warning = None
+    for (high, low), decay in THETA_DECAY_TABLE.items():
+        if low <= best_dte <= high:
+            if high == 60:
+                theta_zone = "OPTIMAL_ENTRY"
+            elif high == 45:
+                theta_zone = "PRIMARY_CAPTURE"
+            elif high == 30:
+                theta_zone = "DECISION_POINT"
+                zone_warning = "⚠️ Near 21 DTE - plan to roll or close"
+            elif high == 21:
+                theta_zone = "HIGH_GAMMA_RISK"
+                zone_warning = "🚨 Exit zone - high gamma risk"
+            else:
+                theta_zone = "BINARY_ZONE"
+                zone_warning = "🚫 AVOID - binary expiration risk"
+            break
+
+    return {
+        "optimal_expiry": best_expiry,
+        "dte": best_dte,
+        "target_dte": target_dte,
+        "theta_zone": theta_zone,
+        "daily_decay_rate": THETA_DECAY_TABLE.get(
+            next(((h, l) for (h, l) in THETA_DECAY_TABLE.keys() if l <= best_dte <= h), (45, 30)),
+            0.01
+        ),
+        "warning": zone_warning
+    }
+
+
+def _find_delta_strike(
+    calls_df: pd.DataFrame,
+    puts_df: pd.DataFrame,
+    current_price: float,
+    direction: str,
+    target_delta: float = None
+) -> dict:
+    """
+    Find strike at target delta for institutional options strategies.
+
+    RULE: 16-delta for short strikes in credit strategies
+
+    Args:
+        calls_df: Calls dataframe with delta column
+        puts_df: Puts dataframe with delta column
+        current_price: Current stock price
+        direction: LONG or SHORT
+        target_delta: Target delta (default: 16)
+
+    Returns:
+        dict with strike, actual_delta, premium
+    """
+    if target_delta is None:
+        target_delta = INSTITUTIONAL_OPTIONS_PARAMS['short_strike_delta'] / 100  # Convert to decimal
+
+    # For LONG direction: sell put at -16 delta (OTM put)
+    # For SHORT direction: sell call at +16 delta (OTM call)
+
+    result = {
+        "short_strike": None,
+        "short_delta": None,
+        "short_premium": None,
+        "long_strike": None,  # For spreads (wing)
+        "long_delta": None,
+        "long_premium": None,
+        "method": "delta_targeting"
+    }
+
+    try:
+        if direction == "LONG":
+            # Sell OTM put - find put with delta closest to -0.16
+            if not puts_df.empty and 'delta' in puts_df.columns:
+                puts_df_sorted = puts_df.copy()
+                puts_df_sorted['delta_diff'] = abs(abs(puts_df_sorted['delta']) - target_delta)
+                best_put = puts_df_sorted.nsmallest(1, 'delta_diff').iloc[0]
+
+                result["short_strike"] = float(best_put['strike'])
+                result["short_delta"] = float(best_put.get('delta', 0))
+                result["short_premium"] = float(best_put.get('bid', 0) or best_put.get('lastPrice', 0))
+
+                # Wing strike (5 points lower for spread)
+                wing_strike = result["short_strike"] - 5
+                wing_row = puts_df[puts_df['strike'] == wing_strike]
+                if not wing_row.empty:
+                    result["long_strike"] = float(wing_strike)
+                    result["long_delta"] = float(wing_row.iloc[0].get('delta', 0))
+                    result["long_premium"] = float(wing_row.iloc[0].get('ask', 0) or wing_row.iloc[0].get('lastPrice', 0))
+            else:
+                # Fallback: estimate OTM put strike from price
+                otm_pct = 0.05  # 5% OTM for ~16 delta
+                result["short_strike"] = round(current_price * (1 - otm_pct) / 5) * 5  # Round to $5
+                result["method"] = "price_estimation"
+
+        elif direction == "SHORT":
+            # Sell OTM call - find call with delta closest to +0.16
+            if not calls_df.empty and 'delta' in calls_df.columns:
+                calls_df_sorted = calls_df.copy()
+                calls_df_sorted['delta_diff'] = abs(calls_df_sorted['delta'] - target_delta)
+                best_call = calls_df_sorted.nsmallest(1, 'delta_diff').iloc[0]
+
+                result["short_strike"] = float(best_call['strike'])
+                result["short_delta"] = float(best_call.get('delta', 0))
+                result["short_premium"] = float(best_call.get('bid', 0) or best_call.get('lastPrice', 0))
+
+                # Wing strike (5 points higher for spread)
+                wing_strike = result["short_strike"] + 5
+                wing_row = calls_df[calls_df['strike'] == wing_strike]
+                if not wing_row.empty:
+                    result["long_strike"] = float(wing_strike)
+                    result["long_delta"] = float(wing_row.iloc[0].get('delta', 0))
+                    result["long_premium"] = float(wing_row.iloc[0].get('ask', 0) or wing_row.iloc[0].get('lastPrice', 0))
+            else:
+                # Fallback: estimate OTM call strike from price
+                otm_pct = 0.05  # 5% OTM for ~16 delta
+                result["short_strike"] = round(current_price * (1 + otm_pct) / 5) * 5
+                result["method"] = "price_estimation"
+
+    except Exception as e:
+        logger.warning(f"Error finding delta strike: {e}")
+        result["warning"] = str(e)
+
+    return result
+
+
+def _calculate_expected_move(current_price: float, iv: float, dte: int) -> dict:
+    """
+    Calculate expected move from IV.
+
+    Formula: Expected Move = Price × IV × √(DTE/365)
+    Alternative: ATM Straddle Price × 0.85
+
+    Returns:
+        dict with expected_move_dollars, expected_move_pct, range
+    """
+    import math
+
+    # Convert IV to decimal if percentage
+    if iv > 1.5:
+        iv = iv / 100
+
+    time_factor = math.sqrt(dte / 365)
+    expected_move = current_price * iv * time_factor
+    expected_move_pct = iv * time_factor * 100
+
+    return {
+        "expected_move_dollars": round(expected_move, 2),
+        "expected_move_pct": round(expected_move_pct, 2),
+        "upper_range": round(current_price + expected_move, 2),
+        "lower_range": round(current_price - expected_move, 2),
+        "iv_used": round(iv * 100, 1),
+        "dte": dte,
+        "formula": f"${current_price:.2f} × {iv*100:.1f}% × √({dte}/365) = ${expected_move:.2f}"
+    }
+
+
+def _calculate_options_position_size(
+    account_size: float,
+    max_risk: float,
+    spread_width: float = None,
+    premium_received: float = None,
+    is_defined_risk: bool = True,
+    contracts_per_lot: int = 1
+) -> dict:
+    """
+    Calculate position size using institutional methodology.
+
+    Defined-risk: Position Size = (Account × 2-3%) / Max Loss per Contract
+    Undefined-risk: Max 1-5% of buying power per trade
+
+    Uses Half-Kelly for conservative sizing.
+
+    Args:
+        account_size: Total account value
+        max_risk: Maximum risk per contract (spread width - premium for spreads)
+        spread_width: Width of spread in dollars (for spreads)
+        premium_received: Premium collected (for credit strategies)
+        is_defined_risk: True for spreads, False for naked
+        contracts_per_lot: Contracts per standard lot
+
+    Returns:
+        dict with contracts, total_risk, risk_pct
+    """
+    params = INSTITUTIONAL_OPTIONS_PARAMS
+
+    if is_defined_risk:
+        risk_pct = params['defined_risk_pct']
+        max_position_risk = account_size * risk_pct
+
+        if spread_width and premium_received:
+            max_loss_per_contract = (spread_width - premium_received) * 100  # Per 100 shares
+        elif max_risk:
+            max_loss_per_contract = max_risk * 100
+        else:
+            max_loss_per_contract = 500  # Default $500 max loss
+
+        if max_loss_per_contract > 0:
+            contracts = int(max_position_risk / max_loss_per_contract)
+        else:
+            contracts = 1
+
+    else:
+        # Undefined risk - use buying power limit
+        risk_pct = params['undefined_risk_pct']
+        # For naked options, BP requirement is typically 20% of underlying
+        # Use more conservative sizing
+        contracts = max(1, int(account_size * risk_pct / 2000))  # Assume ~$2000 BP per contract
+
+    # Apply Half-Kelly
+    contracts = max(1, int(contracts * params['kelly_fraction']))
+
+    # Calculate total risk
+    total_risk = contracts * max_loss_per_contract if is_defined_risk else contracts * 2000
+    risk_pct_actual = total_risk / account_size * 100
+
+    return {
+        "contracts": contracts,
+        "total_risk": round(total_risk, 2),
+        "risk_pct": round(risk_pct_actual, 2),
+        "max_risk_per_contract": round(max_loss_per_contract if is_defined_risk else 2000, 2),
+        "sizing_method": "Half-Kelly" if params['kelly_fraction'] == 0.5 else f"{params['kelly_fraction']*100:.0f}% Kelly",
+        "is_defined_risk": is_defined_risk
+    }
 
 
 @mcp.tool()
@@ -2114,10 +2967,40 @@ def analyze_options_mcmillan(
                                             pass  # Skip individual option quote errors
 
                                 if calls_data or puts_data:
-                                    calls_df = pd.DataFrame(calls_data) if calls_data else pd.DataFrame()
-                                    puts_df = pd.DataFrame(puts_data) if puts_data else pd.DataFrame()
-                                    options_source = "questrade"
-                                    logger.info(f"Using Questrade options data for {ticker}")
+                                    temp_calls_df = pd.DataFrame(calls_data) if calls_data else pd.DataFrame()
+                                    temp_puts_df = pd.DataFrame(puts_data) if puts_data else pd.DataFrame()
+
+                                    # CRITICAL: Validate Questrade strikes are reasonable
+                                    # (Questrade sometimes returns unadjusted/stale split data)
+                                    all_strikes = []
+                                    if not temp_calls_df.empty:
+                                        all_strikes.extend(temp_calls_df['strike'].tolist())
+                                    if not temp_puts_df.empty:
+                                        all_strikes.extend(temp_puts_df['strike'].tolist())
+
+                                    if all_strikes:
+                                        min_strike = min(all_strikes)
+                                        max_strike = max(all_strikes)
+
+                                        # Check if ATM strikes exist (within 20% of current price)
+                                        atm_strikes = [s for s in all_strikes if 0.8 * current_price <= s <= 1.2 * current_price]
+
+                                        if not atm_strikes:
+                                            # No reasonable ATM strikes - Questrade data is stale
+                                            logger.warning(
+                                                f"Questrade options data appears stale for {ticker}: "
+                                                f"strikes {min_strike:.2f}-{max_strike:.2f} vs price {current_price:.2f}. "
+                                                f"Falling back to yfinance."
+                                            )
+                                            # Don't set calls_df/puts_df - let it fall through to yfinance
+                                        else:
+                                            # Questrade data is valid
+                                            calls_df = temp_calls_df
+                                            puts_df = temp_puts_df
+                                            options_source = "questrade"
+                                            logger.info(f"Using Questrade options data for {ticker} (validated strikes near {current_price:.2f})")
+                                    else:
+                                        logger.warning(f"No strike data from Questrade for {ticker}")
                                 break
         except Exception as qt_err:
             logger.warning(f"Questrade options unavailable for {ticker}: {qt_err}")
@@ -2206,6 +3089,156 @@ def analyze_options_mcmillan(
             uoa_analysis=uoa_analysis
         )
 
+        # ============================================================
+        # 8. INSTITUTIONAL OPTIONS ENHANCEMENTS (NEW)
+        # ============================================================
+
+        # 8a. Earnings Proximity Check - Skip if < 30 days
+        earnings_check = _get_earnings_proximity(ticker)
+
+        # 8b. Liquidity Tier Classification
+        avg_volume = info.get('averageVolume', 0) or info.get('averageDailyVolume10Day', 0)
+        liquidity_tier = _calculate_liquidity_tier(ticker, avg_volume)
+
+        # 8c. Liquidity Score (calculate from ATM options)
+        atm_liquidity = {"score": 50, "grade": "C", "tradeable": True, "warnings": []}
+        try:
+            if not calls_df.empty:
+                # Find ATM strike
+                atm_idx = (calls_df['strike'] - current_price).abs().idxmin()
+                atm_call = calls_df.loc[atm_idx]
+                atm_strike = float(atm_call.get('strike', 0) or 0)
+
+                # Calculate bid-ask spread % with yfinance fallback
+                bid = atm_call.get('bid', 0) or 0
+                ask = atm_call.get('ask', 0) or 0
+
+                # Fallback to yfinance if Questrade bid/ask is 0 (market closed, etc)
+                if (bid == 0 or ask == 0) and options_source == "questrade":
+                    try:
+                        # Use global yf (imported at top of file)
+                        t_yf = yf.Ticker(ticker)
+                        # Get nearest expiry
+                        target_date = datetime.now() + timedelta(days=holding_period_days)
+                        if t_yf.options:
+                            nearest_yf_exp = min(t_yf.options, key=lambda x: abs(
+                                (datetime.strptime(x, '%Y-%m-%d') - target_date).days
+                            ))
+                            yf_chain = t_yf.option_chain(nearest_yf_exp)
+                            yf_calls = yf_chain.calls
+                            # Find ATM strike
+                            atm_yf_row = yf_calls.iloc[(yf_calls['strike'] - atm_strike).abs().idxmin()]
+                            yf_bid = float(atm_yf_row.get('bid', 0) or 0)
+                            yf_ask = float(atm_yf_row.get('ask', 0) or 0)
+                            if yf_bid > 0 and yf_ask > 0:
+                                bid = yf_bid
+                                ask = yf_ask
+                                logger.debug(f"Bid/ask fallback to yfinance for {ticker}: bid={bid}, ask={ask}")
+                    except Exception as e:
+                        logger.debug(f"yfinance bid/ask fallback failed: {e}")
+
+                # Calculate spread using midpoint (more robust than bid-only)
+                if bid > 0 and ask > 0:
+                    midpoint = (bid + ask) / 2
+                    spread_pct = ((ask - bid) / midpoint * 100)
+                elif ask > 0:
+                    # Only ask available - estimate spread as 2x the ask-to-lastPrice gap
+                    last_price = atm_call.get('lastPrice', 0) or 0
+                    if last_price > 0:
+                        spread_pct = abs(ask - last_price) / last_price * 100 * 2
+                    else:
+                        spread_pct = 5.0  # Conservative default when no data
+                else:
+                    spread_pct = 5.0  # Conservative default when no data
+
+                # Determine target expiry for OI fallback lookup
+                target_date = datetime.now() + timedelta(days=holding_period_days)
+                target_expiry_str = None
+                if expirations:
+                    target_expiry_str = min(expirations, key=lambda x: abs(
+                        (datetime.strptime(x[:10], '%Y-%m-%d') - target_date).days
+                    ))[:10]
+
+                # Get OI with yfinance fallback if OI is 0 (any source)
+                raw_oi = int(atm_call.get('openInterest', 0) or 0)
+                if raw_oi == 0 and target_expiry_str:
+                    # Primary fallback: yfinance option chain
+                    raw_oi = _get_oi_with_yf_fallback(
+                        questrade_oi=raw_oi,
+                        ticker=ticker,
+                        strike=atm_strike,
+                        expiry=target_expiry_str,
+                        option_type="call"
+                    )
+
+                    # Secondary fallback: use get_options() which is known to return correct OI
+                    if raw_oi == 0:
+                        try:
+                            options_result = get_options(
+                                ticker_symbol=ticker,
+                                start_date=target_expiry_str,
+                                end_date=target_expiry_str,
+                                option_type="C",
+                                strike_lower=atm_strike - 1,
+                                strike_upper=atm_strike + 1,
+                                num_options=5
+                            )
+                            if "data" in options_result:
+                                import csv
+                                from io import StringIO
+                                reader = csv.DictReader(StringIO(options_result["data"]))
+                                for row in reader:
+                                    try:
+                                        row_strike = float(row.get('strike', 0))
+                                        if abs(row_strike - atm_strike) <= 1.0:
+                                            oi_val = int(row.get('openInterest', 0) or 0)
+                                            if oi_val > raw_oi:
+                                                raw_oi = oi_val
+                                                logger.info(f"OI fallback via get_options for {ticker}: {raw_oi}")
+                                    except (ValueError, TypeError):
+                                        pass
+                        except Exception as oi_fallback_err:
+                            logger.debug(f"get_options OI fallback failed: {oi_fallback_err}")
+
+                atm_liquidity = _calculate_liquidity_score(
+                    bid_ask_spread_pct=spread_pct,
+                    open_interest=raw_oi,
+                    daily_volume=int(atm_call.get('volume', 0) or 0),
+                    underlying_volume=int(avg_volume),
+                    bid_size=5,  # Default if not available
+                    ask_size=5,
+                    liquidity_tier=liquidity_tier.get('tier')  # Pass tier for off-market handling
+                )
+        except Exception as liq_err:
+            logger.warning(f"Liquidity score calculation error: {liq_err}")
+
+        # 8d. Optimal 45 DTE Expiry
+        optimal_expiry = _find_target_expiry(expirations, target_dte=45)
+
+        # 8e. Expected Move Calculation
+        current_iv = iv_analysis.get('current_iv', 30) / 100  # Convert to decimal
+        expected_move = _calculate_expected_move(
+            current_price=current_price,
+            iv=current_iv,
+            dte=optimal_expiry.get('dte', 45) or 45
+        )
+
+        # 8f. Determine if options trading allowed
+        options_allowed = (
+            earnings_check.get('options_allowed', True) and
+            liquidity_tier.get('tier') != 'NON_LIQUID' and
+            atm_liquidity.get('tradeable', True)
+        )
+
+        # Collect all warnings
+        all_warnings = []
+        if earnings_check.get('warning'):
+            all_warnings.append(earnings_check['warning'])
+        all_warnings.extend(liquidity_tier.get('warnings', []))
+        all_warnings.extend(atm_liquidity.get('warnings', []))
+        if optimal_expiry.get('warning'):
+            all_warnings.append(optimal_expiry['warning'])
+
         return {
             "ticker": ticker,
             "current_price": current_price,
@@ -2227,22 +3260,401 @@ def analyze_options_mcmillan(
             # Options Quality Score
             "options_quality": options_quality,
 
-            # Quick Summary
+            # ============================================================
+            # INSTITUTIONAL OPTIONS DATA (NEW)
+            # ============================================================
+            "institutional": {
+                # Earnings Filter
+                "earnings_check": earnings_check,
+                "days_to_earnings": earnings_check.get('days_to_earnings'),
+
+                # Liquidity Assessment
+                "liquidity_tier": liquidity_tier,
+                "liquidity_score": atm_liquidity,
+
+                # Optimal Entry
+                "optimal_expiry": optimal_expiry,
+                "target_dte": 45,
+                "recommended_dte": optimal_expiry.get('dte'),
+
+                # Expected Move
+                "expected_move": expected_move,
+
+                # Trade Allowed Flag
+                "options_allowed": options_allowed,
+                "skip_reason": all_warnings[0] if all_warnings and not options_allowed else None,
+
+                # All Warnings
+                "warnings": all_warnings,
+
+                # Position Sizing Multiplier
+                "size_multiplier": liquidity_tier.get('size_multiplier', 1.0),
+            },
+
+            # Quick Summary (Enhanced)
             "summary": {
                 "iv_environment": iv_analysis['iv_environment'],
                 "iv_rank": iv_analysis['iv_rank'],
                 "sentiment": pc_ratio_analysis['sentiment'],
                 "smart_money_signal": uoa_analysis['smart_money_signal'],
                 "options_quality_score": options_quality['score'],
-                "primary_suggestion": strategy_suggestions['high_iv_strategies'][0] if iv_analysis['iv_rank'] >= 50 else strategy_suggestions['low_iv_strategies'][0]
+                "primary_suggestion": strategy_suggestions['high_iv_strategies'][0] if iv_analysis['iv_rank'] >= 50 else strategy_suggestions['low_iv_strategies'][0],
+                # NEW: Institutional summary
+                "options_allowed": options_allowed,
+                "liquidity_tier": liquidity_tier.get('tier'),
+                "liquidity_grade": atm_liquidity.get('grade'),
+                "days_to_earnings": earnings_check.get('days_to_earnings'),
+                "optimal_dte": optimal_expiry.get('dte'),
+                "expected_move_pct": expected_move.get('expected_move_pct'),
+                "warnings_count": len(all_warnings),
             },
 
-            "methodology": "McMillan - Options as a Strategic Investment (5th Ed.)"
+            "methodology": "McMillan - Options as a Strategic Investment (5th Ed.) + Institutional Parameters"
         }
 
     except Exception as e:
         logger.error(f"Error in analyze_options_mcmillan for {ticker}: {e}")
         raise ValueError(f"McMillan options analysis failed: {str(e)}")
+
+
+@mcp.tool()
+def generate_options_trade_plan(
+    ticker: str,
+    direction: str,
+    account_size: float = 10000,
+    target_dte: int = 45
+) -> dict[str, Any]:
+    """
+    Generate complete institutional options trade plan.
+
+    Creates a professional options trade plan following McMillan methodology:
+    - Strategy selection based on IV environment + direction
+    - 45 DTE targeting with 50% profit management (88% win rate)
+    - 16-delta short strikes for credit strategies
+    - Position sizing using Half-Kelly criterion
+    - Complete exit rules (NO stop losses per TastyTrade research)
+
+    CRITICAL RULES:
+    - SKIP if earnings < 30 days (IV crush risk)
+    - Liquidity warnings for non-Tier 1 underlyings
+    - Greeks-based position limits
+
+    Args:
+        ticker: Stock symbol
+        direction: LONG or SHORT
+        account_size: Account value for position sizing (default $10,000)
+        target_dte: Target days to expiration (default 45)
+
+    Returns:
+        Complete options trade plan with:
+        - options_allowed: Whether options are recommended
+        - stock_plan: Stock trading plan (entry, stop, targets)
+        - options_plan: Options strategy with specific legs
+        - position_sizing: Contracts based on account
+        - exit_rules: 50% profit, 21 DTE roll, NO stops
+        - warnings: All liquidity/earnings warnings
+    """
+    from datetime import datetime, timedelta
+
+    ticker = validate_ticker(ticker)
+    direction = direction.upper()
+    if direction not in ('LONG', 'SHORT'):
+        raise ValueError(f"Direction must be LONG or SHORT, got: {direction}")
+
+    params = INSTITUTIONAL_OPTIONS_PARAMS
+
+    try:
+        # Get McMillan analysis (includes institutional data now)
+        mcmillan = analyze_options_mcmillan(ticker, holding_period_days=target_dte)
+
+        current_price = mcmillan['current_price']
+        iv_analysis = mcmillan['iv_analysis']
+        institutional = mcmillan.get('institutional', {})
+        greeks = mcmillan.get('greeks_assessment', {})
+
+        # Extract key data
+        iv_rank = iv_analysis.get('iv_rank', 50)
+        iv_percentile = iv_analysis.get('iv_percentile', 50)
+        options_allowed = institutional.get('options_allowed', True)
+        liquidity_tier = institutional.get('liquidity_tier', {})
+        optimal_expiry = institutional.get('optimal_expiry', {})
+        expected_move = institutional.get('expected_move', {})
+        all_warnings = institutional.get('warnings', [])
+
+        # ============================================================
+        # 1. STOCK TRADING PLAN (Always generated)
+        # ============================================================
+        atr_pct = 2.5  # Default 2.5% ATR for stop calculation
+
+        if direction == "LONG":
+            stop_price = round(current_price * (1 - atr_pct * 2 / 100), 2)
+            target_1 = round(current_price * 1.05, 2)  # +5%
+            target_2 = round(current_price * 1.10, 2)  # +10%
+            risk_per_share = current_price - stop_price
+        else:  # SHORT
+            stop_price = round(current_price * (1 + atr_pct * 2 / 100), 2)
+            target_1 = round(current_price * 0.95, 2)  # -5%
+            target_2 = round(current_price * 0.90, 2)  # -10%
+            risk_per_share = stop_price - current_price
+
+        # Position sizing for stock
+        stock_risk_pct = 0.02  # 2% risk per trade
+        max_stock_risk = account_size * stock_risk_pct
+        shares = int(max_stock_risk / risk_per_share) if risk_per_share > 0 else 0
+        position_value = shares * current_price
+
+        stock_plan = {
+            "direction": direction,
+            "entry_price": current_price,
+            "stop_loss": stop_price,
+            "stop_loss_pct": round((stop_price - current_price) / current_price * 100, 2),
+            "target_1": target_1,
+            "target_1_pct": round((target_1 - current_price) / current_price * 100, 2),
+            "target_2": target_2,
+            "target_2_pct": round((target_2 - current_price) / current_price * 100, 2),
+            "shares": shares,
+            "position_value": round(position_value, 2),
+            "risk_per_share": round(risk_per_share, 2),
+            "total_risk": round(shares * risk_per_share, 2),
+            "reward_risk_ratio": round(abs(target_1 - current_price) / risk_per_share, 2) if risk_per_share > 0 else 0
+        }
+
+        # ============================================================
+        # 2. OPTIONS TRADING PLAN
+        # ============================================================
+        options_plan = None
+
+        if not options_allowed:
+            options_plan = {
+                "status": "SKIP",
+                "reason": institutional.get('skip_reason', "Options not recommended"),
+                "warnings": all_warnings
+            }
+        else:
+            # Determine IV environment for strategy selection
+            if iv_rank >= 70:
+                iv_env = "HIGH_IV_70_100"
+            elif iv_rank >= 50:
+                iv_env = "HIGH_IV_50_70"
+            elif iv_rank >= 30:
+                iv_env = "NORMAL_IV_30_50"
+            else:
+                iv_env = "LOW_IV_0_30"
+
+            # Get strategy suggestions based on IV environment
+            strategy_matrix = IV_STRATEGY_MATRIX.get(iv_env, {})
+            direction_key = direction.lower()
+            suggested_strategies = strategy_matrix.get(direction_key, [])
+            primary_strategy = suggested_strategies[0] if suggested_strategies else "Credit Spread"
+            rationale = strategy_matrix.get('rationale', '')
+
+            # Get recommended expiry
+            expiry_date = optimal_expiry.get('optimal_expiry')
+            dte = optimal_expiry.get('dte', target_dte)
+
+            # Get option chain data for specific strikes
+            t = yf.Ticker(ticker)
+            calls_df = pd.DataFrame()
+            puts_df = pd.DataFrame()
+
+            try:
+                if expiry_date and expiry_date in t.options:
+                    chain = t.option_chain(expiry_date)
+                    calls_df = chain.calls
+                    puts_df = chain.puts
+            except Exception:
+                pass
+
+            # Find 16-delta strikes
+            delta_strikes = _find_delta_strike(
+                calls_df=calls_df,
+                puts_df=puts_df,
+                current_price=current_price,
+                direction=direction,
+                target_delta=0.16
+            )
+
+            # Calculate trade details based on strategy type
+            short_strike = delta_strikes.get('short_strike')
+            long_strike = delta_strikes.get('long_strike')
+            short_premium = delta_strikes.get('short_premium', 0) or 0
+            long_premium = delta_strikes.get('long_premium', 0) or 0
+
+            # For credit spreads
+            spread_width = abs(short_strike - long_strike) if short_strike and long_strike else 5
+            net_credit = short_premium - long_premium if short_premium and long_premium else 0.50
+            max_profit = net_credit * 100  # Per contract
+            max_loss = (spread_width - net_credit) * 100  # Per contract
+
+            # Position sizing
+            size_multiplier = liquidity_tier.get('size_multiplier', 1.0)
+            position_sizing = _calculate_options_position_size(
+                account_size=account_size,
+                max_risk=(spread_width - net_credit),
+                spread_width=spread_width,
+                premium_received=net_credit,
+                is_defined_risk=True
+            )
+            # Apply liquidity multiplier
+            adjusted_contracts = max(1, int(position_sizing['contracts'] * size_multiplier))
+
+            # Calculate break-even
+            if direction == "LONG":
+                break_even = short_strike - net_credit if short_strike else current_price - net_credit
+            else:
+                break_even = short_strike + net_credit if short_strike else current_price + net_credit
+
+            # Probability of profit (approximation: 100 - delta for credit spreads)
+            pop = round(100 - (delta_strikes.get('short_delta', 0.16) or 0.16) * 100, 1)
+
+            # Build trade legs
+            if direction == "LONG":
+                # Bull Put Spread: Sell put at higher strike, buy put at lower strike
+                legs = [
+                    {
+                        "action": "SELL",
+                        "option_type": "PUT",
+                        "strike": short_strike,
+                        "expiry": expiry_date,
+                        "premium": short_premium,
+                        "delta": delta_strikes.get('short_delta'),
+                        "contracts": adjusted_contracts
+                    },
+                    {
+                        "action": "BUY",
+                        "option_type": "PUT",
+                        "strike": long_strike,
+                        "expiry": expiry_date,
+                        "premium": long_premium,
+                        "delta": delta_strikes.get('long_delta'),
+                        "contracts": adjusted_contracts
+                    }
+                ]
+            else:  # SHORT
+                # Bear Call Spread: Sell call at lower strike, buy call at higher strike
+                legs = [
+                    {
+                        "action": "SELL",
+                        "option_type": "CALL",
+                        "strike": short_strike,
+                        "expiry": expiry_date,
+                        "premium": short_premium,
+                        "delta": delta_strikes.get('short_delta'),
+                        "contracts": adjusted_contracts
+                    },
+                    {
+                        "action": "BUY",
+                        "option_type": "CALL",
+                        "strike": long_strike,
+                        "expiry": expiry_date,
+                        "premium": long_premium,
+                        "delta": delta_strikes.get('long_delta'),
+                        "contracts": adjusted_contracts
+                    }
+                ]
+
+            # Exit rules (NO STOP LOSSES per TastyTrade research)
+            exit_rules = {
+                "profit_target": "Close at 50% of max profit",
+                "profit_target_value": round(max_profit * 0.50, 2),
+                "time_exit": "Roll or close at 21 DTE",
+                "roll_trigger_dte": 21,
+                "delta_adjustment": f"Roll if position delta exceeds ±{params['delta_adjustment_threshold']}",
+                "stop_loss": "⚠️ NO STOP LOSS - per TastyTrade research (stops reduce win rate to 46%)",
+                "loss_review": f"Review position at {params['loss_review_threshold']*100:.0f}% of max loss"
+            }
+
+            options_plan = {
+                "status": "TRADE",
+                "strategy": primary_strategy,
+                "iv_environment": iv_env,
+                "rationale": rationale,
+
+                # Entry Details
+                "entry": {
+                    "expiry": expiry_date,
+                    "dte": dte,
+                    "theta_zone": optimal_expiry.get('theta_zone'),
+                    "legs": legs,
+                    "net_credit": round(net_credit, 2),
+                    "spread_width": spread_width
+                },
+
+                # Risk/Reward
+                "risk_reward": {
+                    "max_profit": round(max_profit * adjusted_contracts, 2),
+                    "max_profit_per_contract": round(max_profit, 2),
+                    "max_loss": round(max_loss * adjusted_contracts, 2),
+                    "max_loss_per_contract": round(max_loss, 2),
+                    "break_even": round(break_even, 2),
+                    "probability_of_profit": pop,
+                    "reward_risk_ratio": round(max_profit / max_loss, 2) if max_loss > 0 else 0
+                },
+
+                # Position Sizing
+                "position_sizing": {
+                    "contracts": adjusted_contracts,
+                    "buying_power_required": round(max_loss * adjusted_contracts, 2),
+                    "account_risk_pct": round(max_loss * adjusted_contracts / account_size * 100, 2),
+                    "size_multiplier": size_multiplier,
+                    "sizing_method": position_sizing.get('sizing_method')
+                },
+
+                # Exit Rules
+                "exit_rules": exit_rules,
+
+                # Expected Move
+                "expected_move": expected_move,
+
+                # Greeks (if available)
+                "greeks": {
+                    "position_delta": round((delta_strikes.get('short_delta', 0) or 0) * adjusted_contracts * 100, 2),
+                    "position_theta": round((greeks.get('atm_call_theta', 0) or 0) * adjusted_contracts * 100, 2),
+                },
+
+                # Warnings
+                "warnings": all_warnings if all_warnings else ["✅ No liquidity warnings - Tier 1 underlying"]
+            }
+
+        # ============================================================
+        # 3. COMBINED RESULT
+        # ============================================================
+        return {
+            "ticker": ticker,
+            "direction": direction,
+            "current_price": current_price,
+            "analysis_date": datetime.now().strftime('%Y-%m-%d %H:%M'),
+            "account_size": account_size,
+
+            # IV Analysis Summary
+            "iv_summary": {
+                "iv_rank": iv_rank,
+                "iv_percentile": iv_percentile,
+                "iv_environment": iv_analysis.get('iv_environment'),
+                "interpretation": iv_analysis.get('interpretation')
+            },
+
+            # Both Plans
+            "stock_plan": stock_plan,
+            "options_plan": options_plan,
+
+            # Trade Decision
+            "recommendation": {
+                "primary": "OPTIONS" if options_allowed and iv_rank >= 50 else "STOCK",
+                "options_allowed": options_allowed,
+                "liquidity_tier": liquidity_tier.get('tier'),
+                "days_to_earnings": institutional.get('days_to_earnings')
+            },
+
+            # All Warnings
+            "warnings": all_warnings,
+
+            "methodology": "McMillan Options Strategy + TastyTrade 45 DTE / 50% Profit Management"
+        }
+
+    except Exception as e:
+        logger.error(f"Error generating options trade plan for {ticker}: {e}")
+        raise ValueError(f"Options trade plan generation failed: {str(e)}")
 
 
 def _calculate_iv_analysis(ticker: str, calls_df: pd.DataFrame, puts_df: pd.DataFrame, current_price: float) -> dict:
@@ -2397,45 +3809,81 @@ def _calculate_pc_ratio(calls_df: pd.DataFrame, puts_df: pd.DataFrame) -> dict:
     # Volume-based P/C ratio
     call_volume = calls_df['volume'].sum() if 'volume' in calls_df.columns else 0
     put_volume = puts_df['volume'].sum() if 'volume' in puts_df.columns else 0
-    volume_pc_ratio = put_volume / call_volume if call_volume > 0 else 1.0
 
-    # Open Interest-based P/C ratio
+    # FIX: Handle division by zero properly
+    # - call_vol=0, put_vol>0 = EXTREMELY BEARISH (use 99.0 to represent infinity)
+    # - call_vol=0, put_vol=0 = NO DATA (use None)
+    # - otherwise = normal calculation
+    if call_volume == 0 and put_volume == 0:
+        volume_pc_ratio = None  # No data
+    elif call_volume == 0 and put_volume > 0:
+        volume_pc_ratio = 99.0  # Infinite P/C = extremely bearish (all puts, no calls)
+    else:
+        volume_pc_ratio = put_volume / call_volume
+
+    # Open Interest-based P/C ratio (same logic)
     call_oi = calls_df['openInterest'].sum() if 'openInterest' in calls_df.columns else 0
     put_oi = puts_df['openInterest'].sum() if 'openInterest' in puts_df.columns else 0
-    oi_pc_ratio = put_oi / call_oi if call_oi > 0 else 1.0
+
+    if call_oi == 0 and put_oi == 0:
+        oi_pc_ratio = None
+    elif call_oi == 0 and put_oi > 0:
+        oi_pc_ratio = 99.0
+    else:
+        oi_pc_ratio = put_oi / call_oi
 
     # McMillan interpretation (contrarian indicator)
     # High P/C = Bearish sentiment = Contrarian Bullish
     # Low P/C = Bullish sentiment = Contrarian Bearish
-    if volume_pc_ratio > 1.2:
-        sentiment = "EXTREMELY_BEARISH"
+    # NEW: trading_signal shows the ACTIONABLE signal (what to do)
+    # raw_sentiment shows what options market is saying (crowd behavior)
+    if volume_pc_ratio is None:
+        raw_sentiment = "NO_DATA"
+        trading_signal = "NEUTRAL"
+        contrarian_signal = "NEUTRAL"
+        interpretation = "No options volume data available"
+    elif volume_pc_ratio >= 99.0:
+        # All puts, no calls = extreme bearish sentiment
+        raw_sentiment = "ALL_PUTS_NO_CALLS"
+        trading_signal = "CONTRARIAN_BULLISH"  # What to DO
         contrarian_signal = "BULLISH"
-        interpretation = "Extreme put buying suggests fear - contrarian bullish signal"
+        interpretation = f"All puts ({put_volume}), zero calls - EXTREME fear → contrarian BULLISH"
+    elif volume_pc_ratio > 1.2:
+        raw_sentiment = "EXTREMELY_BEARISH"
+        trading_signal = "CONTRARIAN_BULLISH"
+        contrarian_signal = "BULLISH"
+        interpretation = "Extreme put buying = fear → contrarian BULLISH signal"
     elif volume_pc_ratio > 0.9:
-        sentiment = "BEARISH"
+        raw_sentiment = "BEARISH"
+        trading_signal = "SLIGHTLY_BULLISH"
         contrarian_signal = "SLIGHTLY_BULLISH"
-        interpretation = "Elevated put activity - moderate contrarian bullish"
+        interpretation = "Elevated puts = moderate fear → mild contrarian bullish"
     elif volume_pc_ratio < 0.5:
-        sentiment = "EXTREMELY_BULLISH"
+        raw_sentiment = "EXTREMELY_BULLISH"
+        trading_signal = "CONTRARIAN_BEARISH"  # What to DO (clear!)
         contrarian_signal = "BEARISH"
-        interpretation = "Extreme call buying suggests greed - contrarian bearish signal"
+        interpretation = "Extreme call buying = greed → contrarian BEARISH signal"
     elif volume_pc_ratio < 0.7:
-        sentiment = "BULLISH"
+        raw_sentiment = "BULLISH"
+        trading_signal = "SLIGHTLY_BEARISH"
         contrarian_signal = "SLIGHTLY_BEARISH"
-        interpretation = "Elevated call activity - moderate contrarian bearish"
+        interpretation = "Elevated calls = moderate greed → mild contrarian bearish"
     else:
-        sentiment = "NEUTRAL"
+        raw_sentiment = "NEUTRAL"
+        trading_signal = "NEUTRAL"
         contrarian_signal = "NEUTRAL"
         interpretation = "P/C ratio in neutral zone - no strong signal"
 
     return {
-        "volume_pc_ratio": round(volume_pc_ratio, 3),
-        "oi_pc_ratio": round(oi_pc_ratio, 3),
+        "volume_pc_ratio": round(volume_pc_ratio, 3) if volume_pc_ratio is not None else None,
+        "oi_pc_ratio": round(oi_pc_ratio, 3) if oi_pc_ratio is not None else None,
         "call_volume": int(call_volume),
         "put_volume": int(put_volume),
         "call_oi": int(call_oi),
         "put_oi": int(put_oi),
-        "sentiment": sentiment,
+        "raw_sentiment": raw_sentiment,  # What the crowd is doing
+        "trading_signal": trading_signal,  # What to DO (actionable)
+        "sentiment": raw_sentiment,  # Keep for backward compatibility
         "contrarian_signal": contrarian_signal,
         "interpretation": interpretation,
         "mcmillan_reference": "Chapter 24: Stock Option Strategies"
@@ -2488,6 +3936,13 @@ def _calculate_oi_analysis(calls_df: pd.DataFrame, puts_df: pd.DataFrame, curren
         oi_bias = "BEARISH"
         interpretation = f"Max pain {abs(distance_to_max_pain):.1f}% below price - gravitational pull lower"
 
+    # Outlier detection: flag when max pain is >20% from current price
+    is_outlier = abs(distance_to_max_pain) > 20
+    outlier_warning = None
+    if is_outlier:
+        outlier_warning = f"Max pain {abs(distance_to_max_pain):.1f}% from price is unusual (>20%) - positioning may be stale, manipulated, or reflect unusual market conditions"
+        interpretation += f" ⚠️ UNUSUAL: {outlier_warning}"
+
     return {
         "max_pain_strike": max_pain_strike,
         "distance_to_max_pain_pct": round(distance_to_max_pain, 2),
@@ -2495,6 +3950,8 @@ def _calculate_oi_analysis(calls_df: pd.DataFrame, puts_df: pd.DataFrame, curren
         "top_put_oi_strikes": top_put_strikes,
         "oi_bias": oi_bias,
         "interpretation": interpretation,
+        "is_outlier": is_outlier,  # NEW: Flag for unusual max pain distance
+        "outlier_warning": outlier_warning,  # NEW: Warning message if outlier
         "mcmillan_reference": "Chapter 25: Index Option Strategies"
     }
 
@@ -5228,6 +6685,16 @@ async def analyze_ml_enhanced(
     if hist is None or hist.empty or len(hist) < 50:
         return f"Error: Insufficient data for {ticker}"
 
+    # Ensure hist has tz-naive DatetimeIndex (required by ML functions and VWAP calculations)
+    if not isinstance(hist.index, pd.DatetimeIndex):
+        try:
+            hist.index = pd.to_datetime(hist.index, utc=True).tz_localize(None)
+        except Exception as e:
+            return f"Error: Could not convert index to DatetimeIndex for {ticker}: {e}"
+    elif hist.index.tz is not None:
+        # Remove timezone info if present (ML functions expect tz-naive)
+        hist.index = hist.index.tz_localize(None)
+
     prices = hist['Close']
 
     # 1. Triple-Barrier Analysis
@@ -5406,8 +6873,13 @@ async def analyze_ml_enhanced(
 
     # 10. Exhaustion Score Analysis (NEW - Volumetric Liquidity Enhancement)
     # Calculate exhaustion for both LONG and SHORT directions
-    exhaustion_long = calculate_exhaustion_score(ticker, direction="LONG", period=period) if _bootstrap_available else {"score": 0, "level": "UNKNOWN"}
-    exhaustion_short = calculate_exhaustion_score(ticker, direction="SHORT", period=period) if _bootstrap_available else {"score": 0, "level": "UNKNOWN"}
+    exhaustion_result = calculate_exhaustion_score(ticker, period=period) if _bootstrap_available else {"score": 0, "level": "UNKNOWN"}
+    # Extract direction-specific exhaustion (components are in sub-dicts)
+    exhaustion_long = exhaustion_result.get('long_exhaustion', {"score": 0, "level": "UNKNOWN", "components": {}})
+    exhaustion_short = exhaustion_result.get('short_exhaustion', {"score": 0, "level": "UNKNOWN", "components": {}})
+    # Add interpretation at top level for easy access
+    exhaustion_long['interpretation'] = exhaustion_result.get('interpretation', '')
+    exhaustion_short['interpretation'] = exhaustion_result.get('interpretation', '')
 
     # Determine which direction is more relevant based on current trend
     current_trend_direction = "LONG" if ts_result.labels.iloc[-1] >= 0 else "SHORT"
@@ -5658,11 +7130,11 @@ async def analyze_ml_enhanced(
 - **Suggested Action:** {exhaustion_long.get('suggested_action', 'N/A')}
 
 ### Component Breakdown (LONG):
-{f"- CVD Divergence: {exhaustion_long.get('components', {}).get('cvd_divergence', {}).get('points', 0)}/20 pts" if exhaustion_long.get('components') else "- CVD Divergence: N/A"}
-{f"- RSI Divergence: {exhaustion_long.get('components', {}).get('rsi_divergence', {}).get('points', 0)}/20 pts" if exhaustion_long.get('components') else "- RSI Divergence: N/A"}
-{f"- Trend Days: {exhaustion_long.get('components', {}).get('trend_days', {}).get('points', 0)}/25 pts ({exhaustion_long.get('components', {}).get('trend_days', {}).get('count', 0)} consecutive)" if exhaustion_long.get('components') else "- Trend Days: N/A"}
-{f"- VWAP Extension: {exhaustion_long.get('components', {}).get('vwap_extension', {}).get('points', 0)}/15 pts (σ={exhaustion_long.get('components', {}).get('vwap_extension', {}).get('sigma_distance', 0)})" if exhaustion_long.get('components') else "- VWAP Extension: N/A"}
-{f"- Volume Decline: {exhaustion_long.get('components', {}).get('volume_decline', {}).get('points', 0)}/20 pts" if exhaustion_long.get('components') else "- Volume Decline: N/A"}
+{f"- CVD Divergence: {exhaustion_long.get('components', {}).get('cvd_divergence', {}).get('points', 0)}/20 pts ({exhaustion_long.get('components', {}).get('cvd_divergence', {}).get('signal', 'NONE')})" if exhaustion_long.get('components') else "- CVD Divergence: N/A"}
+{f"- RSI: {exhaustion_long.get('components', {}).get('rsi_divergence', {}).get('points', 0)}/20 pts ({exhaustion_long.get('components', {}).get('rsi_divergence', {}).get('note', exhaustion_long.get('components', {}).get('rsi_divergence', {}).get('signal', 'NONE'))})" if exhaustion_long.get('components') else "- RSI: N/A"}
+{f"- Trend Days: {exhaustion_long.get('components', {}).get('trend_days', {}).get('points', 0)}/25 pts ({exhaustion_long.get('components', {}).get('trend_days', {}).get('note', 'N/A')})" if exhaustion_long.get('components') else "- Trend Days: N/A"}
+{f"- VWAP Extension: {exhaustion_long.get('components', {}).get('vwap_extension', {}).get('points', 0)}/15 pts (σ={exhaustion_long.get('components', {}).get('vwap_extension', {}).get('sigma', 0)})" if exhaustion_long.get('components') else "- VWAP Extension: N/A"}
+{f"- Volume Decline: {exhaustion_long.get('components', {}).get('volume_decline', {}).get('points', 0)}/20 pts ({exhaustion_long.get('components', {}).get('volume_decline', {}).get('days', 0)} days declining)" if exhaustion_long.get('components') else "- Volume Decline: N/A"}
 
 ### Interpretation:
 {exhaustion_long.get('interpretation', 'No exhaustion data available')}
@@ -6560,6 +8032,87 @@ def _get_ohlcv_cached(ticker: str, period: str = "3mo") -> pd.DataFrame | None:
     return df
 
 
+def _get_recent_predictions(direction: str, days: int = 7) -> dict[str, dict]:
+    """
+    Get predictions from DB for the last N days.
+
+    Used by scanner to skip re-analysis of recently validated tickers.
+
+    Args:
+        direction: "LONG" or "SHORT"
+        days: Number of days to look back (default 7)
+
+    Returns:
+        Dict mapping ticker -> prediction data (most recent per ticker)
+    """
+    from .database import execute_query
+    from datetime import datetime, timedelta
+
+    cutoff_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
+
+    query = """
+        SELECT
+            ticker, direction, signal, confidence_score, gates_passed,
+            gate_catalyst, gate_freshness, gate_brooks, gate_quality,
+            entry_price, stop_price, target_1_price, target_2_price,
+            catalyst_direction, catalyst_strength,
+            dalio_ratio, dalio_interpretation,
+            brooks_probability, brooks_pattern, trap_risk,
+            quality_score, quality_grade, f_score, z_score,
+            data_direction, created_at
+        FROM predictions
+        WHERE direction = :direction
+          AND prediction_date >= :cutoff_date
+          AND report_type = 'scanner'
+        ORDER BY created_at DESC
+    """
+
+    try:
+        rows = execute_query(query, {"direction": direction, "cutoff_date": cutoff_date})
+
+        # Build lookup dict - use most recent prediction per ticker
+        result = {}
+        for row in rows:
+            ticker = row['ticker']
+            if ticker not in result:  # Only keep most recent
+                result[ticker] = {
+                    'signal': row['signal'],
+                    'confidence': row['confidence_score'],
+                    'gates_passed': row['gates_passed'],
+                    'gate_status': {
+                        'catalyst': row['gate_catalyst'],
+                        'freshness': row['gate_freshness'],
+                        'brooks': row['gate_brooks'],
+                        'quality': row['gate_quality']
+                    },
+                    'entry_price': float(row['entry_price']) if row['entry_price'] else None,
+                    'stop_price': float(row['stop_price']) if row['stop_price'] else None,
+                    'target_1': float(row['target_1_price']) if row['target_1_price'] else None,
+                    'target_2': float(row['target_2_price']) if row['target_2_price'] else None,
+                    'catalyst_direction': row['catalyst_direction'],
+                    'catalyst_strength': row['catalyst_strength'],
+                    'dalio_ratio': float(row['dalio_ratio']) if row['dalio_ratio'] else None,
+                    'dalio_interpretation': row['dalio_interpretation'],
+                    'brooks_probability': float(row['brooks_probability']) if row['brooks_probability'] else None,
+                    'brooks_pattern': row['brooks_pattern'],
+                    'trap_risk': row['trap_risk'],
+                    'quality_score': float(row['quality_score']) if row['quality_score'] else None,
+                    'quality_grade': row['quality_grade'],
+                    'f_score': row['f_score'],
+                    'z_score': float(row['z_score']) if row['z_score'] else None,
+                    'data_direction': row['data_direction'],
+                    'stored_at': row['created_at'].isoformat() if row['created_at'] else None,
+                    'is_repeated': True
+                }
+
+        logger.info(f"📦 DB Cache: Found {len(result)} {direction} predictions from last {days} days")
+        return result
+
+    except Exception as e:
+        logger.warning(f"Failed to fetch recent predictions from DB: {e}")
+        return {}
+
+
 def _scan_one_direction(
     direction: Literal["LONG", "SHORT"],
     market: str,
@@ -6646,6 +8199,9 @@ def _scan_one_direction(
             "scan_time": datetime.now(et).strftime("%Y-%m-%d %H:%M:%S %Z"),
             "scanner_source": scanner_source,
             "raw_candidates": 0,
+            "db_matches": 0,
+            "repeated": 0,
+            "new_analyzed": 0,
             "scanned": 0,
             "four_gate_passed": 0,
             "three_gate_passed": 0,
@@ -6668,6 +8224,15 @@ def _scan_one_direction(
     num_batches = (len(all_candidates) + batch_size - 1) // batch_size
     log_progress(f"📦 Processing {raw_candidates_count} candidates in {num_batches} batches of {batch_size}...")
 
+    # Step 2.5: Get recent predictions from DB to skip repeated tickers
+    recent_predictions = _get_recent_predictions(direction, days=7)
+    recent_tickers = set(recent_predictions.keys())
+    if recent_tickers:
+        log_progress(f"📦 Found {len(recent_tickers)} {direction} predictions in DB from last 7 days - will skip re-analysis")
+
+    # Track repeated vs new
+    repeated_count = 0
+
     for batch_num in range(num_batches):
         batch_start = batch_num * batch_size
         batch_end = min(batch_start + batch_size, len(all_candidates))
@@ -6687,10 +8252,69 @@ def _scan_one_direction(
             stocks_seen.add(symbol)
 
             global_idx = batch_start + i + 1
-            log_progress(f"[{direction} {global_idx}/{raw_candidates_count}] Checking {symbol}...")
+
+            # CHECK IF TICKER IS IN RECENT DB PREDICTIONS
+            if symbol in recent_tickers:
+                # REPEATED: Skip full analysis, use stored data
+                stored = recent_predictions[symbol]
+                repeated_count += 1
+                log_progress(f"[{direction} {global_idx}/{raw_candidates_count}] ♻️ REPEATED: {symbol} (from DB)")
+
+                gates_passed = stored['gates_passed'] or 0
+                if gates_passed >= 3:
+                    validated.append({
+                        'symbol': symbol,
+                        'direction': direction,
+                        'is_repeated': True,
+                        'stored_at': stored['stored_at'],
+                        'price': stored['entry_price'],
+                        'signal': stored['signal'],
+                        'confidence': stored['confidence'],
+                        'gates_passed': gates_passed,
+                        'gate_status': stored['gate_status'],
+                        'trading_plan': {
+                            'entry_price': stored['entry_price'],
+                            'stop_price': stored['stop_price'],
+                            'target_1': stored['target_1'],
+                            'target_2': stored['target_2'],
+                        },
+                        'catalyst_analysis': {
+                            'catalyst_direction': stored['catalyst_direction'],
+                            'catalyst_strength': stored['catalyst_strength'],
+                        },
+                        'freshness_analysis': {
+                            'dalio_ratio': stored['dalio_ratio'],
+                            'dalio_interpretation': stored['dalio_interpretation'],
+                        },
+                        'brooks_analysis': {
+                            'probability': stored['brooks_probability'],
+                            'pattern': stored['brooks_pattern'],
+                            'trap_risk': stored['trap_risk'],
+                        },
+                        'quality_analysis': {
+                            'quality_score': stored['quality_score'],
+                            'quality_grade': stored['quality_grade'],
+                            'f_score': stored['f_score'],
+                            'z_score': stored['z_score'],
+                        },
+                    })
+
+                # Add to results with REPEATED marker
+                gs = stored['gate_status']
+                c = (gs.get('catalyst', '?') or '?')[0]
+                f = (gs.get('freshness', '?') or '?')[0]
+                b = (gs.get('brooks', '?') or '?')[0]
+                q = (gs.get('quality', '?') or '?')[0]
+                all_results.append(f"♻️ {symbol}: {gates_passed}/4 [C:{c} F:{f} B:{b} Q:{q}] (REPEATED)")
+
+                continue  # Skip to next candidate - no need to re-analyze
+
+            # NEW TICKER: Run full analysis
+            log_progress(f"[{direction} {global_idx}/{raw_candidates_count}] 🔍 Checking {symbol}...")
 
             try:
-                signal = generate_trading_signal(ticker=symbol, direction=direction)
+                # Pass report_type="scanner" for auto-storage tracking
+                signal = generate_trading_signal(ticker=symbol, direction=direction, report_type="scanner")
                 gate_status = signal.get('gate_status', {})
                 gates_passed = sum(1 for g in gate_status.values() if g == "PASS")
 
@@ -6704,9 +8328,16 @@ def _scan_one_direction(
                 all_results.append(result_line)
 
                 if gates_passed >= 3:
+                    # Check for direction conflict
+                    data_dir = signal.get('data_direction', 'NO_CONSENSUS')
+                    direction_conflict = data_dir != "NO_CONSENSUS" and data_dir != direction
+
                     validated.append({
                         'symbol': symbol,
                         'direction': direction,
+                        'data_direction': data_dir,  # NEW: What the data actually says
+                        'direction_conflict': direction_conflict,  # NEW: True if scanner direction != data direction
+                        'direction_votes': signal.get('direction_votes', {}),  # NEW: How each tool voted
                         'price': price,
                         'signal': signal.get('signal'),
                         'confidence': signal.get('confidence', 0),
@@ -6718,7 +8349,8 @@ def _scan_one_direction(
                         'brooks_analysis': signal.get('brooks_analysis'),
                         'quality_analysis': signal.get('quality_analysis'),
                     })
-                    log_progress(f"   ✅ {symbol}: {gates_passed}/4 gates | {gate_status}")
+                    conflict_warning = " ⚠️ DIRECTION CONFLICT" if direction_conflict else ""
+                    log_progress(f"   ✅ {symbol}: {gates_passed}/4 gates | {gate_status}{conflict_warning}")
                 else:
                     log_progress(f"   ❌ {symbol}: {gates_passed}/4 gates | {gate_status}")
                     for gate, val in gate_status.items():
@@ -6770,6 +8402,9 @@ def _scan_one_direction(
         "scan_time": datetime.now(et).strftime("%Y-%m-%d %H:%M:%S %Z"),
         "scanner_source": scanner_source,
         "raw_candidates": raw_candidates_count,
+        "db_matches": len(recent_tickers),
+        "repeated": repeated_count,
+        "new_analyzed": len(stocks_seen) - repeated_count,
         "scanned": len(stocks_seen),
         "four_gate_passed": len(four_gates),
         "three_gate_passed": len(three_gates),
@@ -6821,7 +8456,9 @@ def scan_long_candidates(
 
     4-Gate Validation:
         GATE 1 (CATALYST): Earnings proximity, insider buying, analyst upgrades
-        GATE 2 (FRESHNESS): CVD alignment, exhaustion < 50
+        GATE 2 (FRESHNESS): Enhanced with Dalio Economic Machine (6 checks, need 5/6):
+            - CVD alignment, Exhaustion < 50, Fresh direction
+            - Dalio Ratio >= 1.0, Dollar Flow positive, Sustainability >= 50
         GATE 3 (BROOKS): Probability >= 55%, no HIGH trap risk
         GATE 4 (QUALITY): Quality score >= 50
 
@@ -6874,7 +8511,9 @@ def scan_short_candidates(
 
     4-Gate Validation:
         GATE 1 (CATALYST): Earnings proximity, insider buying, analyst upgrades
-        GATE 2 (FRESHNESS): CVD alignment, exhaustion < 50
+        GATE 2 (FRESHNESS): Enhanced with Dalio Economic Machine (6 checks, need 5/6):
+            - CVD alignment, Exhaustion < 50, Fresh direction
+            - Dalio Ratio <= 1.0, Dollar Flow negative, Sustainability >= 50
         GATE 3 (BROOKS): Probability >= 55%, no HIGH trap risk
         GATE 4 (QUALITY): Quality score >= 50
 
@@ -7023,7 +8662,13 @@ def scan_market_opportunities(
 
     4-Gate Validation System:
         GATE 1 (CATALYST): Earnings proximity, insider buying, analyst upgrades
-        GATE 2 (FRESHNESS): CVD alignment, exhaustion < 50
+        GATE 2 (FRESHNESS): Enhanced with Dalio Economic Machine (6 checks, need 5/6):
+            - CVD alignment
+            - Exhaustion < 50
+            - Fresh direction
+            - Dalio Ratio aligned (>1.0 for LONG, <1.0 for SHORT)
+            - Dollar Flow aligned (positive for LONG, negative for SHORT)
+            - Sustainability >= 50
         GATE 3 (BROOKS): Probability >= 55%, no HIGH trap risk, direction aligned
         GATE 4 (QUALITY): Quality score >= 50
 
@@ -7175,17 +8820,18 @@ def scan_market_opportunities(
             log_progress(f"[LONG {total_scanned_long}/{len(all_long_candidates)}] Checking {symbol}...")
 
             try:
-                # Run FULL 4-gate validation
-                signal = generate_trading_signal(ticker=symbol, direction="LONG")
+                # Run FULL 4-gate validation - let data determine direction
+                signal = generate_trading_signal(ticker=symbol, direction=None)
 
                 gate_status = signal.get('gate_status', {})
                 gates_passed = sum(1 for g in gate_status.values() if g == "PASS")
+                signal_direction = signal.get('direction')
 
-                # Store ALL candidates with 3+ gates for smart relaxation later
-                if gates_passed >= 3:
+                # Only add if data confirms LONG direction AND 3+ gates pass
+                if gates_passed >= 3 and signal_direction == "LONG":
                     validated_long.append({
                         'symbol': symbol,
-                        'direction': 'LONG',
+                        'direction': signal_direction,
                         'price': candidate.get('price', signal.get('current_price')),
                         'signal': signal.get('signal'),
                         'confidence': signal.get('confidence', 0),
@@ -7199,6 +8845,12 @@ def scan_market_opportunities(
                         'tv_data': candidate
                     })
                     log_progress(f"   ✅ {symbol}: {gates_passed}/4 gates PASSED | {gate_status}")
+                elif signal_direction is None:
+                    # NO_TRADE - all indicators neutral
+                    log_progress(f"   ⏸️ {symbol}: NO_TRADE - indicators neutral, no clear direction")
+                elif signal_direction == "SHORT":
+                    # Data says SHORT, not LONG - skip for LONG scanner
+                    log_progress(f"   🔄 {symbol}: Data indicates SHORT, not LONG | skipping")
                 else:
                     # Track rejection reasons and log the failure
                     log_progress(f"   ❌ {symbol}: {gates_passed}/4 gates | {gate_status}")
@@ -7236,16 +8888,18 @@ def scan_market_opportunities(
             log_progress(f"[SHORT {total_scanned_short}/{len(all_short_candidates)}] Checking {symbol}...")
 
             try:
-                signal = generate_trading_signal(ticker=symbol, direction="SHORT")
+                # Let data determine direction - verify SHORT is truly warranted
+                signal = generate_trading_signal(ticker=symbol, direction=None)
 
                 gate_status = signal.get('gate_status', {})
                 gates_passed = sum(1 for g in gate_status.values() if g == "PASS")
+                signal_direction = signal.get('direction')
 
-                # Store ALL candidates with 3+ gates for smart relaxation later
-                if gates_passed >= 3:
+                # Only add if data confirms SHORT direction AND 3+ gates pass
+                if gates_passed >= 3 and signal_direction == "SHORT":
                     validated_short.append({
                         'symbol': symbol,
-                        'direction': 'SHORT',
+                        'direction': signal_direction,
                         'price': candidate.get('price', signal.get('current_price')),
                         'signal': signal.get('signal'),
                         'confidence': signal.get('confidence', 0),
@@ -7259,6 +8913,12 @@ def scan_market_opportunities(
                         'tv_data': candidate
                     })
                     log_progress(f"   ✅ {symbol}: {gates_passed}/4 gates PASSED | {gate_status}")
+                elif signal_direction is None:
+                    # NO_TRADE - all indicators neutral
+                    log_progress(f"   ⏸️ {symbol}: NO_TRADE - indicators neutral, no clear direction")
+                elif signal_direction == "LONG":
+                    # Data says LONG, not SHORT - skip for SHORT scanner
+                    log_progress(f"   🔄 {symbol}: Data indicates LONG, not SHORT | skipping")
                 else:
                     # Track rejection reasons and log the failure
                     log_progress(f"   ❌ {symbol}: {gates_passed}/4 gates | {gate_status}")
@@ -8486,6 +10146,60 @@ def get_portfolio_summary(account_number: str) -> dict[str, Any]:
                     except Exception as e:
                         position_info["al_brooks_price_action"] = {"error": f"Analysis failed: {str(e)}"}
 
+                    # Add Dalio Economic Machine analysis for education (NEW - January 2026)
+                    try:
+                        volume_analysis = analyze_volume_tool(symbol, period="3mo", include_quality_score=True)
+                        if isinstance(volume_analysis, dict) and "dalio_metrics" in volume_analysis:
+                            dalio = volume_analysis["dalio_metrics"]
+
+                            dalio_ratio = dalio.get("dalio_ratio", 1.0)
+                            dollar_flow = dalio.get("cumulative_dollar_flow", 0)
+                            flow_direction = dalio.get("dollar_flow_direction", "NEUTRAL")
+                            sustainability = dalio.get("sustainability_score", 50)
+                            sustainability_grade = dalio.get("sustainability_grade", "C")
+
+                            # Determine Dalio signal
+                            dalio_bullish = dalio_ratio >= 1.0 and dollar_flow > 0 and sustainability >= 50
+                            dalio_bearish = dalio_ratio < 1.0 and dollar_flow < 0 and sustainability >= 50
+
+                            if dalio_bullish:
+                                dalio_signal = "BULLISH"
+                                dalio_action = "Money flow supports holding LONG positions. Consider adding on pullbacks."
+                            elif dalio_bearish:
+                                dalio_signal = "BEARISH"
+                                dalio_action = "Money flow supports SHORT positions or exiting LONGs. Consider reducing exposure."
+                            else:
+                                dalio_signal = "MIXED"
+                                dalio_action = "Money flow is not aligned. Wait for clarity before adding to positions."
+
+                            # Educational paragraph
+                            dalio_paragraph = (
+                                f"📚 DALIO ECONOMIC MACHINE LESSON:\n\n"
+                                f"WHAT THE MONEY IS DOING: The Dalio Ratio is {dalio_ratio:.4f}, which means "
+                                f"{'buyers are paying MORE than yesterday - bullish demand' if dalio_ratio > 1.0 else 'buyers are paying LESS than yesterday - weakening demand' if dalio_ratio < 1.0 else 'buyers are paying the same as yesterday - neutral'}. "
+                                f"Ray Dalio teaches: 'Price = Total Spending / Quantity Sold.' When the ratio is above 1.0, spending is outpacing volume - bullish.\n\n"
+                                f"DOLLAR FLOW ANALYSIS: Cumulative Dollar Flow is ${dollar_flow/1e6:.2f}M ({flow_direction}). "
+                                f"{'This shows NET ACCUMULATION - institutions are building positions.' if flow_direction == 'ACCUMULATION' else 'This shows NET DISTRIBUTION - institutions may be exiting.'}\n\n"
+                                f"TREND SUSTAINABILITY: Score is {sustainability}/100, Grade {sustainability_grade}. "
+                                f"{'This trend is SUSTAINABLE - money flow, volume, and momentum are aligned.' if sustainability >= 60 else 'This trend is MODERATING - some components are weakening.' if sustainability >= 40 else 'This trend is UNSUSTAINABLE - reversal risk is elevated.'}\n\n"
+                                f"TRADING IMPLICATION: {dalio_action}"
+                            )
+
+                            position_info["dalio_economic_machine"] = {
+                                "dalio_ratio": dalio_ratio,
+                                "dollar_flow": dollar_flow,
+                                "flow_direction": flow_direction,
+                                "sustainability_score": sustainability,
+                                "sustainability_grade": sustainability_grade,
+                                "signal": dalio_signal,
+                                "action": dalio_action,
+                                "educational_paragraph": dalio_paragraph
+                            }
+                        else:
+                            position_info["dalio_economic_machine"] = {"error": "Dalio analysis unavailable"}
+                    except Exception as e:
+                        position_info["dalio_economic_machine"] = {"error": f"Dalio analysis failed: {str(e)}"}
+
                     result["stocks"].append(position_info)
 
         return result
@@ -8721,12 +10435,20 @@ def _analyze_news_sentiment(news_items: list, ticker: str = None) -> dict:
 
     ENHANCED: Also performs web search for major catalysts (deals, partnerships, etc.)
 
+    NEWS SEVERITY SYSTEM (Jan 2026):
+    - CRITICAL: Regulatory/policy changes, government actions, CEO/CFO changes
+    - HIGH: Earnings guidance, major contracts, analyst clusters
+    - MEDIUM: Product launches, partnerships, industry trends
+    - LOW: General coverage, routine filings
+
     Returns:
         - sentiment: BULLISH / BEARISH / NEUTRAL / MIXED
         - bullish_count: Number of bullish headlines
         - bearish_count: Number of bearish headlines
         - notable_headlines: List of significant headlines
         - major_catalysts: List of major catalysts found via web search
+        - critical_news: List of CRITICAL severity news requiring investigation
+        - severity_breakdown: Count by severity level
     """
     result = {
         "sentiment": "NEUTRAL",
@@ -8735,8 +10457,39 @@ def _analyze_news_sentiment(news_items: list, ticker: str = None) -> dict:
         "neutral_count": 0,
         "notable_headlines": [],
         "major_catalysts": [],
-        "web_search_performed": False
+        "web_search_performed": False,
+        "critical_news": [],  # NEW: Track critical severity news
+        "severity_breakdown": {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}  # NEW
     }
+
+    # =========================================================================
+    # CRITICAL REGULATORY KEYWORDS - MANDATORY WEB SEARCH TRIGGERS (Jan 2026)
+    # When these appear, MUST flag as CRITICAL and investigate further
+    # =========================================================================
+    CRITICAL_REGULATORY_KEYWORDS = [
+        # Government/Policy
+        "trump", "biden", "congress", "senate", "white house", "executive order",
+        "legislation", "bill", "law", "policy", "government", "federal",
+        # Regulatory Bodies
+        "sec", "doj", "ftc", "cfpb", "fcc", "fda", "epa", "fed", "federal reserve",
+        # Regulatory Actions
+        "regulation", "regulatory", "cap", "rate cap", "price cap", "fee cap",
+        "ban", "banned", "restriction", "antitrust", "monopoly", "breakup",
+        "investigation", "probe", "subpoena", "lawsuit", "sue", "sued",
+        "fraud", "accounting", "restatement", "material weakness",
+        # Executive Changes
+        "ceo", "cfo", "coo", "resignation", "fired", "terminated", "steps down",
+        "sudden departure", "leaves company", "retires effective immediately",
+        # Critical Business
+        "bankruptcy", "default", "delisting", "going concern", "liquidity crisis"
+    ]
+
+    # HIGH severity keywords
+    HIGH_SEVERITY_KEYWORDS = [
+        "earnings", "guidance", "outlook", "forecast", "billion dollar", "major contract",
+        "strategic review", "restructuring", "layoffs", "workforce reduction",
+        "upgrade", "downgrade", "price target", "rating change"
+    ]
 
     # Sentiment keywords - comprehensive list
     BULLISH_KEYWORDS = [
@@ -8756,7 +10509,8 @@ def _analyze_news_sentiment(news_items: list, ticker: str = None) -> dict:
         "lawsuit", "investigation", "recall", "warning", "layoffs", "restructuring",
         "ban", "banned", "restriction", "sanctions", "tariff", "trade war",
         "export", "block", "blocked", "hit", "loss", "down", "slide", "tumble",
-        "risk", "threat", "probe", "fine", "penalty", "delay", "halt", "suspend"
+        "risk", "threat", "probe", "fine", "penalty", "delay", "halt", "suspend",
+        "cap", "rate cap", "limit", "ceiling"  # NEW: Regulatory bearish terms
     ]
 
     # Major catalyst keywords (requires web search for context)
@@ -8765,46 +10519,224 @@ def _analyze_news_sentiment(news_items: list, ticker: str = None) -> dict:
         "merger", "fda", "approval", "ban", "restriction", "tariff", "antitrust"
     ]
 
-    # Step 1: Analyze yfinance news
+    def _word_boundary_match(keyword: str, text: str) -> bool:
+        """Check if keyword exists as a whole word in text (not substring)."""
+        import re
+        # Use word boundaries to avoid "ban" matching "Bank"
+        pattern = r'\b' + re.escape(keyword) + r'\b'
+        return bool(re.search(pattern, text, re.IGNORECASE))
+
+    def _classify_news_severity(title: str, days_ago: int = None) -> str:
+        """Classify news item severity: CRITICAL, HIGH, MEDIUM, LOW."""
+        title_lower = title.lower()
+
+        # CRITICAL: Regulatory/policy OR very recent (today) with high keywords
+        # Use word boundary matching to avoid false positives (e.g., "ban" in "Bank")
+        if any(_word_boundary_match(kw, title_lower) for kw in CRITICAL_REGULATORY_KEYWORDS):
+            return "CRITICAL"
+
+        # HIGH: Earnings, guidance, major contracts
+        if any(_word_boundary_match(kw, title_lower) for kw in HIGH_SEVERITY_KEYWORDS):
+            return "HIGH"
+
+        # MEDIUM: Recent news (0-2 days) with sentiment
+        if days_ago is not None and days_ago <= 2:
+            return "MEDIUM"
+
+        # LOW: Everything else
+        return "LOW"
+
+    def _get_critical_keywords_found(title: str) -> list:
+        """Get list of critical keywords found in title using word boundary matching."""
+        title_lower = title.lower()
+        return [kw for kw in CRITICAL_REGULATORY_KEYWORDS if _word_boundary_match(kw, title_lower)]
+
+    # Step 1: Analyze yfinance news with SEVERITY CLASSIFICATION
     if news_items:
         for item in news_items[:10]:
-            title = str(item.get('title', '')).lower()
+            title_original = item.get('title', '')
+            title = str(title_original).lower()
 
             is_bullish = any(kw in title for kw in BULLISH_KEYWORDS)
             is_bearish = any(kw in title for kw in BEARISH_KEYWORDS)
 
+            # NEW: Classify severity
+            severity = _classify_news_severity(title, days_ago=None)
+            result["severity_breakdown"][severity] += 1
+
+            # NEW: CRITICAL news gets special handling
+            if severity == "CRITICAL":
+                critical_keywords_found = _get_critical_keywords_found(title)
+                result["critical_news"].append({
+                    "title": title_original[:150],
+                    "severity": "CRITICAL",
+                    "sentiment": "BEARISH" if is_bearish else ("BULLISH" if is_bullish else "NEUTRAL"),
+                    "keywords": critical_keywords_found[:5],
+                    "source": "yfinance",
+                    "requires_investigation": True
+                })
+                # CRITICAL news counts 3x for scoring
+                score_multiplier = 3
+            elif severity == "HIGH":
+                score_multiplier = 2
+            else:
+                score_multiplier = 1
+
             if is_bullish and not is_bearish:
-                result["bullish_count"] += 1
+                result["bullish_count"] += score_multiplier
                 result["notable_headlines"].append({
-                    "title": item.get('title', '')[:100],
+                    "title": title_original[:100],
                     "sentiment": "BULLISH",
+                    "severity": severity,
                     "source": "yfinance"
                 })
             elif is_bearish and not is_bullish:
-                result["bearish_count"] += 1
+                result["bearish_count"] += score_multiplier
                 result["notable_headlines"].append({
-                    "title": item.get('title', '')[:100],
+                    "title": title_original[:100],
                     "sentiment": "BEARISH",
+                    "severity": severity,
                     "source": "yfinance"
                 })
             else:
                 result["neutral_count"] += 1
 
-    # Step 2: Google News - GET ALL DATED NEWS, evaluate by RECENCY + IMPACT
+    # Step 2: Google News - GET ALL DATED NEWS, evaluate by RECENCY + IMPACT + SEVERITY
     if ticker:
         result["web_search_performed"] = True
         google_news = _fetch_google_news(ticker, max_results=15)
 
+        # =========================================================================
+        # STEP 2.5: SECTOR-AWARE BREAKING NEWS CHECK (Jan 2026)
+        # Search for industry-wide regulatory news that affects this stock
+        # Even if the news doesn't mention the ticker, it may be critical
+        # =========================================================================
+        SECTOR_NEWS_QUERIES = {
+            # Financial sector - banks, credit cards, fintech
+            "financial": [
+                "credit card rate cap",
+                "Trump bank regulation",
+                "CFPB credit card",
+                "interest rate cap legislation",
+                "bank fee regulation",
+            ],
+            # Tech sector
+            "tech": [
+                "antitrust big tech",
+                "AI regulation",
+                "data privacy legislation",
+            ],
+            # Energy sector
+            "energy": [
+                "oil export ban",
+                "energy regulation",
+                "drilling ban",
+            ],
+            # Healthcare sector
+            "healthcare": [
+                "drug price cap",
+                "Medicare negotiation",
+                "FDA approval",
+            ],
+        }
+
+        # Detect sector from ticker (simple heuristic based on known tickers)
+        FINANCIAL_TICKERS = [
+            "V", "MA", "AXP", "COF", "DFS", "SYF", "ALLY",  # Credit cards
+            "JPM", "BAC", "WFC", "C", "GS", "MS", "USB",     # US Banks
+            "RY", "TD", "BNS", "BMO", "CM", "NA",            # Canadian Banks
+            "PYPL", "SQ", "AFRM", "UPST", "SOFI",            # Fintech
+        ]
+        TECH_TICKERS = ["AAPL", "GOOGL", "GOOG", "MSFT", "META", "AMZN", "NVDA", "TSLA"]
+        ENERGY_TICKERS = ["XOM", "CVX", "COP", "EOG", "SLB", "OXY", "DVN", "PXD"]
+        HEALTHCARE_TICKERS = ["JNJ", "PFE", "UNH", "MRK", "ABBV", "LLY", "BMY", "AMGN"]
+
+        detected_sectors = []
+        ticker_upper = ticker.upper()
+        if ticker_upper in FINANCIAL_TICKERS:
+            detected_sectors.append("financial")
+        if ticker_upper in TECH_TICKERS:
+            detected_sectors.append("tech")
+        if ticker_upper in ENERGY_TICKERS:
+            detected_sectors.append("energy")
+        if ticker_upper in HEALTHCARE_TICKERS:
+            detected_sectors.append("healthcare")
+
+        # Search for sector-wide breaking news
+        sector_breaking_news = []
+        for sector in detected_sectors:
+            queries = SECTOR_NEWS_QUERIES.get(sector, [])
+            for query in queries[:2]:  # Limit to 2 queries per sector to avoid slowdown
+                try:
+                    sector_news = _fetch_google_news(query, max_results=5)
+                    for item in sector_news:
+                        item["sector_query"] = query
+                        item["affected_sector"] = sector
+                        sector_breaking_news.append(item)
+                except Exception:
+                    pass
+
+        # Process sector-wide breaking news with CRITICAL priority
+        for item in sector_breaking_news:
+            title_original = item.get('title', '')
+            title = str(title_original).lower()
+            days_ago = item.get('days_ago')
+            is_recent = item.get('is_recent', False)
+
+            # Sector-wide regulatory news is CRITICAL if recent
+            if is_recent or (days_ago is not None and days_ago <= 7):
+                severity = "CRITICAL"
+                result["severity_breakdown"]["CRITICAL"] += 1
+
+                # Determine sentiment - regulatory caps/bans are typically BEARISH for affected companies
+                is_bearish = any(kw in title for kw in ["cap", "ban", "restrict", "limit", "fine", "probe", "investigation"])
+                is_bullish = any(kw in title for kw in ["relief", "deregulation", "approval", "stimulus"])
+
+                if is_bearish and not is_bullish:
+                    sentiment = "BEARISH"
+                    result["bearish_count"] += 5  # CRITICAL weight
+                elif is_bullish and not is_bearish:
+                    sentiment = "BULLISH"
+                    result["bullish_count"] += 5
+                else:
+                    sentiment = "NEUTRAL"
+
+                # Add to critical news
+                result["critical_news"].append({
+                    "title": title_original[:150],
+                    "severity": "CRITICAL",
+                    "sentiment": sentiment,
+                    "keywords": [item.get("sector_query", "")],
+                    "source": f"SECTOR-WIDE: {item.get('source', 'Google News')}",
+                    "days_ago": days_ago,
+                    "affected_sector": item.get("affected_sector"),
+                    "requires_investigation": True,
+                    "note": f"This news affects ALL {item.get('affected_sector', 'sector')} stocks including {ticker}"
+                })
+
+                # Also add to major catalysts
+                result["major_catalysts"].append({
+                    "title": title_original[:100],
+                    "days_ago": days_ago,
+                    "is_recent": is_recent,
+                    "news_source": f"SECTOR: {item.get('source', 'Google News')}",
+                    "keywords": [item.get("sector_query", "")],
+                    "sentiment": sentiment,
+                    "severity": "CRITICAL",
+                    "sector_wide": True
+                })
+
         for item in google_news:
-            title = str(item.get('title', '')).lower()
+            title_original = item.get('title', '')
+            title = str(title_original).lower()
             content = title
 
             # Analyze sentiment
             is_bullish = any(kw in content for kw in BULLISH_KEYWORDS)
             is_bearish = any(kw in content for kw in BEARISH_KEYWORDS)
 
-            # Check for major catalyst keywords
-            catalysts_found = [kw for kw in MAJOR_CATALYST_KEYWORDS if kw in content]
+            # Check for major catalyst keywords (using word boundary matching)
+            catalysts_found = [kw for kw in MAJOR_CATALYST_KEYWORDS if _word_boundary_match(kw, content)]
 
             # Determine sentiment
             if is_bullish and not is_bearish:
@@ -8814,26 +10746,53 @@ def _analyze_news_sentiment(news_items: list, ticker: str = None) -> dict:
             else:
                 sentiment = "NEUTRAL"
 
-            # RECENCY WEIGHTING: Only count RECENT news (last 3 days)
+            # RECENCY WEIGHTING
             is_recent = item.get('is_recent', False)
             days_ago = item.get('days_ago')
 
-            if sentiment != "NEUTRAL" and is_recent:
-                # Recent news counts more
+            # NEW: Classify severity
+            severity = _classify_news_severity(title, days_ago=days_ago)
+            result["severity_breakdown"][severity] += 1
+
+            # NEW: CRITICAL news gets special handling - ALWAYS add regardless of recency
+            if severity == "CRITICAL":
+                critical_keywords_found = _get_critical_keywords_found(title)
+                result["critical_news"].append({
+                    "title": title_original[:150],
+                    "severity": "CRITICAL",
+                    "sentiment": sentiment,
+                    "keywords": critical_keywords_found[:5],
+                    "source": item.get('source', 'Google News'),
+                    "days_ago": days_ago,
+                    "requires_investigation": True
+                })
+                # CRITICAL news: 5x score, HIGH: 3x, MEDIUM: 2x, LOW: 1x
+                if sentiment == "BULLISH":
+                    result["bullish_count"] += 5
+                elif sentiment == "BEARISH":
+                    result["bearish_count"] += 5
+            elif severity == "HIGH":
+                if sentiment == "BULLISH":
+                    result["bullish_count"] += 3 if is_recent else 2
+                elif sentiment == "BEARISH":
+                    result["bearish_count"] += 3 if is_recent else 2
+            elif sentiment != "NEUTRAL" and is_recent:
+                # MEDIUM/LOW recent news
                 if sentiment == "BULLISH":
                     result["bullish_count"] += 2 if days_ago == 0 else 1
                 else:
                     result["bearish_count"] += 2 if days_ago == 0 else 1
 
-            # Add to major_catalysts with date info
-            if catalysts_found or (sentiment != "NEUTRAL" and is_recent):
+            # Add to major_catalysts with severity info
+            if catalysts_found or severity in ["CRITICAL", "HIGH"] or (sentiment != "NEUTRAL" and is_recent):
                 result["major_catalysts"].append({
-                    "title": item.get('title', '')[:100],
+                    "title": title_original[:100],
                     "days_ago": days_ago,
                     "is_recent": is_recent,
                     "news_source": item.get('source', 'Google News'),
                     "keywords": catalysts_found[:3] if catalysts_found else [],
-                    "sentiment": sentiment
+                    "sentiment": sentiment,
+                    "severity": severity  # NEW
                 })
 
     # Determine overall sentiment
@@ -8851,6 +10810,42 @@ def _analyze_news_sentiment(news_items: list, ticker: str = None) -> dict:
 
     # Limit notable headlines
     result["notable_headlines"] = result["notable_headlines"][:5]
+
+    # NEW: Critical news escalation flags (Jan 2026)
+    result["has_critical_news"] = len(result["critical_news"]) > 0
+    result["critical_news_count"] = len(result["critical_news"])
+
+    # If critical news exists, add escalation warning
+    if result["has_critical_news"]:
+        # Deduplicate critical news by title
+        seen_titles = set()
+        unique_critical = []
+        for cn in result["critical_news"]:
+            title_key = cn["title"][:50].lower()
+            if title_key not in seen_titles:
+                seen_titles.add(title_key)
+                unique_critical.append(cn)
+        result["critical_news"] = unique_critical[:5]  # Top 5 unique critical news
+
+        # Create escalation summary
+        critical_keywords = []
+        for cn in result["critical_news"]:
+            critical_keywords.extend(cn.get("keywords", []))
+        result["critical_keywords_detected"] = list(set(critical_keywords))[:10]
+
+        # Determine critical sentiment direction
+        critical_bullish = sum(1 for cn in result["critical_news"] if cn["sentiment"] == "BULLISH")
+        critical_bearish = sum(1 for cn in result["critical_news"] if cn["sentiment"] == "BEARISH")
+
+        if critical_bearish > critical_bullish:
+            result["critical_direction"] = "BEARISH"
+            result["critical_warning"] = f"⚠️ CRITICAL: {len(result['critical_news'])} regulatory/policy news items detected - BEARISH bias"
+        elif critical_bullish > critical_bearish:
+            result["critical_direction"] = "BULLISH"
+            result["critical_warning"] = f"⚠️ CRITICAL: {len(result['critical_news'])} regulatory/policy news items detected - BULLISH bias"
+        else:
+            result["critical_direction"] = "MIXED"
+            result["critical_warning"] = f"⚠️ CRITICAL: {len(result['critical_news'])} regulatory/policy news items - requires investigation"
 
     return result
 
@@ -9169,9 +11164,31 @@ def detect_catalyst_strength(ticker: str) -> dict[str, Any]:
                     all_earnings_dates = earnings_date
                     earnings_date = earnings_date[0] if len(earnings_date) > 0 else None
             elif isinstance(calendar, pd.DataFrame) and not calendar.empty:
-                if 'Earnings Date' in calendar.columns:
+                # Check index FIRST (yfinance often stores 'Earnings Date' here)
+                if 'Earnings Date' in calendar.index:
+                    ed = calendar.loc['Earnings Date']
+                    if isinstance(ed, pd.Series):
+                        all_earnings_dates = ed.tolist() if not ed.empty else []
+                        earnings_date = ed.iloc[0] if not ed.empty else None
+                    else:
+                        all_earnings_dates = [ed] if ed is not None else []
+                        earnings_date = ed
+                elif 'Earnings Date' in calendar.columns:
                     all_earnings_dates = calendar['Earnings Date'].tolist()
                     earnings_date = calendar['Earnings Date'].iloc[0]
+
+        # Fallback to earnings_dates property if calendar didn't work
+        if earnings_date is None:
+            try:
+                ed_property = t.earnings_dates
+                if ed_property is not None and not ed_property.empty:
+                    today_dt = datetime.now()
+                    future_dates = ed_property[ed_property.index > today_dt]
+                    if not future_dates.empty:
+                        earnings_date = future_dates.index[0]
+                        all_earnings_dates = [earnings_date]
+            except Exception:
+                pass
 
         def to_date(d):
             if d is None:
@@ -9599,12 +11616,52 @@ def detect_catalyst_strength(ticker: str) -> dict[str, Any]:
                 for cat in major_catalysts[:3]:  # Top 3 catalysts
                     cat_sentiment = cat.get("sentiment", "NEUTRAL")
                     cat_keywords = cat.get("keywords", [])
+                    cat_severity = cat.get("severity", "MEDIUM")  # NEW: Check severity
+
+                    # CRITICAL severity catalysts get 3x bonus (Jan 2026)
+                    if cat_severity == "CRITICAL":
+                        bonus = 15
+                    elif cat_severity == "HIGH":
+                        bonus = 8
+                    else:
+                        bonus = 5
+
                     if cat_sentiment == "BULLISH":
-                        bullish_score += 5
-                        bullish_catalysts.append(f"Major Catalyst: {', '.join(cat_keywords[:2])}")
+                        bullish_score += bonus
+                        bullish_catalysts.append(f"{'⚠️ CRITICAL: ' if cat_severity == 'CRITICAL' else ''}Major Catalyst: {', '.join(cat_keywords[:2])}")
                     elif cat_sentiment == "BEARISH":
-                        bearish_score += 5
-                        bearish_catalysts.append(f"Major Catalyst: {', '.join(cat_keywords[:2])}")
+                        bearish_score += bonus
+                        bearish_catalysts.append(f"{'⚠️ CRITICAL: ' if cat_severity == 'CRITICAL' else ''}Major Catalyst: {', '.join(cat_keywords[:2])}")
+
+            # NEW: CRITICAL NEWS ESCALATION (Jan 2026)
+            if news_sentiment.get("has_critical_news"):
+                critical_news = news_sentiment.get("critical_news", [])
+                critical_direction = news_sentiment.get("critical_direction", "MIXED")
+                critical_warning = news_sentiment.get("critical_warning", "")
+
+                # Add to result for visibility
+                result["has_critical_news"] = True
+                result["critical_news"] = critical_news
+                result["critical_warning"] = critical_warning
+                result["severity_breakdown"] = news_sentiment.get("severity_breakdown", {})
+
+                # Add CRITICAL bonus to appropriate direction (25 pts - highest priority)
+                if critical_direction == "BEARISH":
+                    bearish_score += 25
+                    bearish_catalysts.insert(0, f"⚠️ CRITICAL NEWS: {len(critical_news)} regulatory/policy items - BEARISH")
+                    warnings.append(critical_warning)
+                elif critical_direction == "BULLISH":
+                    bullish_score += 25
+                    bullish_catalysts.insert(0, f"⚠️ CRITICAL NEWS: {len(critical_news)} regulatory/policy items - BULLISH")
+                    warnings.append(critical_warning)
+                else:
+                    # MIXED critical news - add warning but don't add to score
+                    warnings.append(f"⚠️ CRITICAL: {len(critical_news)} regulatory news items - requires manual investigation")
+
+                # Log critical keywords detected
+                result["critical_keywords_detected"] = news_sentiment.get("critical_keywords_detected", [])
+            else:
+                result["has_critical_news"] = False
     except Exception as e:
         result["details"]["news_sentiment_error"] = str(e)
 
@@ -10192,19 +12249,47 @@ def detect_unusual_options_activity(ticker: str) -> dict[str, Any]:
             pc_ratio = total_put_vol / total_call_vol
             result["put_call_ratio"] = round(pc_ratio, 2)
 
-        # Determine activity type
+        # Determine activity type (enhanced with premium-weighted classification)
         call_signals = len([s for s in unusual_signals if s["type"] == "CALL"])
         put_signals = len([s for s in unusual_signals if s["type"] == "PUT"])
+
+        # Calculate premium-weighted totals (dollar flow matters more than count)
+        total_call_premium = sum(s.get('premium', 0) for s in unusual_signals if s["type"] == "CALL")
+        total_put_premium = sum(s.get('premium', 0) for s in unusual_signals if s["type"] == "PUT")
 
         if len(unusual_signals) > 0:
             result["unusual_activity"] = True
 
+            # Count-based classification
             if call_signals > put_signals * 1.5:
-                result["activity_type"] = "BULLISH"
+                count_bias = "BULLISH"
             elif put_signals > call_signals * 1.5:
-                result["activity_type"] = "BEARISH"
+                count_bias = "BEARISH"
             else:
-                result["activity_type"] = "MIXED"
+                count_bias = "MIXED"
+
+            # Premium-based classification (follow the money)
+            if total_call_premium > total_put_premium * 1.5:
+                premium_bias = "BULLISH"
+            elif total_put_premium > total_call_premium * 1.5:
+                premium_bias = "BEARISH"
+            else:
+                premium_bias = "MIXED"
+
+            # Combined classification - premium wins when they disagree
+            if count_bias == premium_bias:
+                result["activity_type"] = count_bias
+            else:
+                result["activity_type"] = premium_bias  # Follow the money
+                result["activity_note"] = f"Count bias: {count_bias}, Premium bias: {premium_bias} (using premium)"
+
+            # Add premium breakdown for transparency
+            result["premium_breakdown"] = {
+                "call_premium": round(total_call_premium, 0),
+                "put_premium": round(total_put_premium, 0),
+                "count_bias": count_bias,
+                "premium_bias": premium_bias
+            }
 
         # Implied move from ATM straddle
         try:
@@ -10690,13 +12775,27 @@ def analyze_competitors(ticker: str, top_n: int = 5) -> dict[str, Any]:
 def generate_trading_signal(
     ticker: str,
     direction: Literal["LONG", "SHORT"] | None = None,
-    account_size: float = 10000.0
+    account_size: float = 10000.0,
+    auto_store: bool = True,
+    report_type: str = "comprehensive"
 ) -> dict[str, Any]:
     """
     Generate actionable trading signal with complete trading plan.
 
     NOW DATA-DRIVEN: Collects independent direction findings from each tool,
     determines consensus direction, then evaluates gates for that direction.
+
+    4-GATE VALIDATION SYSTEM:
+        GATE 1 (CATALYST): Earnings, Insider, UOA, News - with verification
+        GATE 2 (FRESHNESS): Enhanced with Dalio Economic Machine (6 checks, need 5/6):
+            - CVD alignment
+            - Exhaustion < 50
+            - Fresh direction
+            - Dalio Ratio aligned (>1.0 for LONG, <1.0 for SHORT)
+            - Dollar Flow aligned (positive for LONG, negative for SHORT)
+            - Sustainability >= 50
+        GATE 3 (BROOKS): Al Brooks price action analysis
+        GATE 4 (QUALITY): Fundamental quality scores
 
     Combines all analysis tools to produce:
     - data_direction: Direction determined by data (LONG/SHORT/NO_CONSENSUS)
@@ -10705,12 +12804,16 @@ def generate_trading_signal(
     - Complete trading plan with entry, stop, targets
     - Proof of validity from historical analysis
     - Gate status for all requirements
+    - freshness_analysis: Includes Dalio metrics (dalio_ratio, dollar_flow, sustainability)
+    - prediction_id: UUID of stored prediction (if auto_store=True)
 
     Args:
         ticker: Stock symbol
         direction: Optional expected direction. If None, uses data_direction.
                    If specified but conflicts with data, warning is issued.
         account_size: Account size for position sizing
+        auto_store: Automatically store prediction for tracking (default: True)
+        report_type: Report type for storage: "comprehensive", "concise", "scanner", "portfolio"
 
     Returns:
         Complete trading signal with plan and validation
@@ -10747,7 +12850,8 @@ def generate_trading_signal(
         "catalyst": "NEUTRAL",
         "cvd": "NEUTRAL",
         "exhaustion": "NEUTRAL",
-        "brooks": "NEUTRAL"
+        "brooks": "NEUTRAL",
+        "dollar_flow": "NEUTRAL"  # NEW: Dollar Flow as primary signal (80% accurate)
     }
 
     try:
@@ -10783,6 +12887,17 @@ def generate_trading_signal(
                     direction_votes["cvd"] = "BULLISH"
                 elif "BEARISH" in cvd_assessment.upper():
                     direction_votes["cvd"] = "BEARISH"
+
+                # NEW: Dollar Flow as PRIMARY signal (80% accurate in backtest)
+                # Dollar Flow follows the money - most reliable indicator
+                dalio_metrics = volume_data.get("dalio_metrics", {})
+                cdf_20d = dalio_metrics.get("cumulative_dollar_flow", {}).get("20d", 0)
+                # Threshold: $10M to avoid noise
+                if cdf_20d > 10_000_000:
+                    direction_votes["dollar_flow"] = "BULLISH"
+                elif cdf_20d < -10_000_000:
+                    direction_votes["dollar_flow"] = "BEARISH"
+                # else stays NEUTRAL
         except Exception as e:
             result["warnings"].append(f"Volume analysis failed: {e}")
 
@@ -10876,13 +12991,26 @@ def generate_trading_signal(
                     elif catalyst_vote == "BULLISH":
                         actual_direction = "LONG"
                     else:
-                        actual_direction = "LONG"  # Final fallback
+                        # NO TRADE when all indicators neutral - don't force direction
+                        actual_direction = None
+                        result["signal"] = "NO_TRADE"
+                        result["warnings"].append(
+                            "NO_TRADE: All indicators neutral (Brooks=NEUTRAL, Catalyst=NEUTRAL). No clear direction signal."
+                        )
 
-                result["warnings"].append(
-                    f"NO_CONSENSUS: {direction_votes}. Using Brooks ({brooks_vote}) -> {actual_direction}"
-                )
+                if actual_direction is not None:
+                    result["warnings"].append(
+                        f"NO_CONSENSUS: {direction_votes}. Using Brooks ({brooks_vote}) -> {actual_direction}"
+                    )
 
         result["direction"] = actual_direction
+
+        # Early return if NO_TRADE (all indicators neutral)
+        if actual_direction is None:
+            result["confidence"] = 0
+            result["gates_passed"] = 0
+            result["recommendation"] = "NO_TRADE: All indicators neutral. Wait for clearer signal."
+            return result
 
         # ========== GATE 1: CATALYST CHECK (direction-aware now) ==========
         try:
@@ -10895,7 +13023,8 @@ def generate_trading_signal(
                 "direction": catalyst_data.get("catalyst_direction"),
                 "bullish_score": catalyst_data.get("bullish_score"),
                 "bearish_score": catalyst_data.get("bearish_score"),
-                "catalysts": catalyst_data.get("catalysts_detected", [])
+                "catalysts": catalyst_data.get("catalysts_detected", []),
+                "trade_allowed": catalyst_data.get("trade_allowed")
             }
 
             # Check if catalyst direction aligns with actual_direction
@@ -10905,9 +13034,28 @@ def generate_trading_signal(
                 (actual_direction == "SHORT" and cat_dir in ["BEARISH", "NEUTRAL"])
             )
 
+            # NEW: Strong catalyst conflict = BLOCK TRADE (not just fail gate)
+            # This fixed CRNX which went SHORT despite BULLISH catalyst -> -16% loss
+            catalyst_conflict = (
+                (actual_direction == "LONG" and cat_dir == "BEARISH") or
+                (actual_direction == "SHORT" and cat_dir == "BULLISH")
+            )
+
             if catalyst_data.get("trade_allowed") and direction_aligned:
                 result["gate_status"]["catalyst"] = "PASS"
                 score += 25 if catalyst_data.get("catalyst_strength") == "STRONG" else 15
+            elif catalyst_conflict:
+                # CRITICAL FIX: Block trade entirely when catalyst strongly contradicts
+                result["gate_status"]["catalyst"] = "BLOCKED"
+                result["signal"] = "NO_TRADE"
+                result["warnings"].append(
+                    f"BLOCKED: Catalyst ({cat_dir}) strongly opposes trade direction ({actual_direction}). "
+                    f"Trading against catalyst has 30% win rate."
+                )
+                result["confidence"] = 0
+                result["gates_passed"] = 0
+                result["recommendation"] = f"NO_TRADE: Catalyst direction ({cat_dir}) conflicts with {actual_direction}. Wait for alignment."
+                return result
             elif catalyst_data.get("trade_allowed") and not direction_aligned:
                 result["gate_status"]["catalyst"] = "FAIL"
                 result["warnings"].append(f"Catalyst direction ({cat_dir}) conflicts with trade direction ({actual_direction})")
@@ -10919,7 +13067,9 @@ def generate_trading_signal(
             result["gate_status"]["catalyst"] = "ERROR"
             result["warnings"].append(f"Catalyst check failed: {e}")
 
-        # ========== GATE 2: FRESHNESS CHECK (now uses both-direction data) ==========
+        # ========== GATE 2: FRESHNESS CHECK (Enhanced with Dalio Economic Machine) ==========
+        # Now includes 6 checks: CVD, Exhaustion, Fresh Direction + 3 Dalio metrics
+        # Requires 5/6 checks to PASS
         try:
             if exhaustion_data is None:
                 from investor_agent.technical_analysis_bootstrap import calculate_exhaustion_score
@@ -10937,41 +13087,200 @@ def generate_trading_signal(
             if volume_data and isinstance(volume_data, dict):
                 cvd_trend = volume_data.get("cvd_analysis", {}).get("cvd_trend", "FLAT")
 
+            # ========== NEW: Extract Dalio Metrics ==========
+            dalio_metrics = {}
+            if volume_data and isinstance(volume_data, dict):
+                dalio_metrics = volume_data.get("dalio_metrics", {})
+
+            dalio_ratio = dalio_metrics.get("dalio_ratio", {}).get("20d_avg", 1.0)
+            cdf_20d = dalio_metrics.get("cumulative_dollar_flow", {}).get("20d", 0)
+            sustainability_score = dalio_metrics.get("trend_sustainability", {}).get("score", 50)
+            dv_momentum = dalio_metrics.get("dollar_volume", {}).get("momentum", "NEUTRAL")
+
             result["freshness_analysis"] = {
                 "cvd_trend": cvd_trend,
                 "fresh_direction": exhaustion_data.get("fresh_direction", "NEUTRAL"),
                 "long_exhaustion": exhaustion_data.get("long_exhaustion", {}).get("score", 0),
                 "short_exhaustion": exhaustion_data.get("short_exhaustion", {}).get("score", 0),
                 "exhaustion_score": exhaustion,
-                "exhaustion_level": exhaustion_level
+                "exhaustion_level": exhaustion_level,
+                # NEW: Dalio metrics in freshness analysis
+                "dalio_ratio": round(dalio_ratio, 4),
+                "dalio_interpretation": dalio_metrics.get("dalio_ratio", {}).get("interpretation", "UNKNOWN"),
+                "cumulative_dollar_flow_20d": cdf_20d,
+                "dollar_flow_direction": dalio_metrics.get("cumulative_dollar_flow", {}).get("direction", "UNKNOWN"),
+                "sustainability_score": sustainability_score,
+                "sustainability_grade": dalio_metrics.get("trend_sustainability", {}).get("grade", "?"),
+                "dollar_volume_momentum": dv_momentum
             }
 
-            # Check CVD alignment
+            # ========== 6 FRESHNESS CHECKS ==========
+            # Original 3 checks
+            # Check 1: CVD alignment
             cvd_aligned = (actual_direction == "LONG" and cvd_trend in ["RISING", "FLAT"]) or \
                           (actual_direction == "SHORT" and cvd_trend in ["FALLING", "FLAT"])
 
-            # Check exhaustion
+            # Check 2: Exhaustion < 50
             not_exhausted = exhaustion < 50
 
-            # Check if this is the fresh direction
+            # Check 3: Fresh direction
             is_fresh_direction = exhaustion_data.get("fresh_direction") == actual_direction
 
-            if cvd_aligned and not_exhausted:
+            # NEW: Dalio checks (3 additional)
+            # Check 4: Dalio Ratio aligned
+            dalio_ratio_aligned = (actual_direction == "LONG" and dalio_ratio >= 1.0) or \
+                                  (actual_direction == "SHORT" and dalio_ratio <= 1.0)
+
+            # Check 5: Dollar Flow aligned
+            dollar_flow_aligned = (actual_direction == "LONG" and cdf_20d > 0) or \
+                                  (actual_direction == "SHORT" and cdf_20d < 0)
+
+            # Check 6: Sustainability OK
+            sustainability_ok = sustainability_score >= 50
+
+            # Count passed checks
+            checks = {
+                "cvd_aligned": cvd_aligned,
+                "not_exhausted": not_exhausted,
+                "fresh_direction": is_fresh_direction,
+                "dalio_ratio_aligned": dalio_ratio_aligned,
+                "dollar_flow_aligned": dollar_flow_aligned,
+                "sustainability_ok": sustainability_ok
+            }
+            checks_passed = sum(checks.values())
+
+            # Store check details in result
+            result["freshness_analysis"]["checks"] = checks
+            result["freshness_analysis"]["checks_passed"] = checks_passed
+            result["freshness_analysis"]["checks_total"] = 6
+
+            # Gate 2 passes if 5/6 checks pass (allows 1 failure)
+            if checks_passed >= 5:
                 result["gate_status"]["freshness"] = "PASS"
                 score += 20
-            elif is_fresh_direction and not_exhausted:
+            elif checks_passed >= 4:
                 result["gate_status"]["freshness"] = "PASS"
-                score += 15  # Slightly less if CVD not aligned but it's the fresh direction
+                score += 15  # Marginal pass with 4/6
             else:
                 result["gate_status"]["freshness"] = "FAIL"
+                # Add specific warnings for failed checks
                 if not cvd_aligned:
                     result["warnings"].append(f"CVD not aligned: {cvd_trend}")
                 if not not_exhausted:
                     result["warnings"].append(f"High exhaustion for {actual_direction}: {exhaustion}")
+                if not dalio_ratio_aligned:
+                    result["warnings"].append(f"Dalio ratio not aligned: {dalio_ratio:.4f} (need {'≥1.0' if actual_direction == 'LONG' else '≤1.0'})")
+                if not dollar_flow_aligned:
+                    flow_dir = "positive" if actual_direction == "LONG" else "negative"
+                    result["warnings"].append(f"Dollar flow not aligned: ${cdf_20d:,.0f} (need {flow_dir})")
+                if not sustainability_ok:
+                    result["warnings"].append(f"Low sustainability score: {sustainability_score}/100")
+
+            # ========== DALIO ECONOMIC MACHINE SUMMARY ==========
+            # Dedicated section for Ray Dalio's principle: Price = Total Spending / Quantity Sold
+            institutional_activity = dalio_metrics.get("institutional_activity", {})
+            spending_efficiency = dalio_metrics.get("spending_efficiency", {})
+
+            # CRITICAL FIX: Dalio verdict MUST require Dollar Flow alignment
+            # This fixed FSLR which showed BULLISH Dalio with -$549M distribution -> -10% loss
+            # Dollar Flow is the PRIMARY indicator - cannot override it
+            dalio_verdict = "NEUTRAL"
+            if not dollar_flow_aligned:
+                # Dollar flow disagrees - CANNOT be bullish/bearish regardless of other metrics
+                dalio_verdict = "CONFLICTED"
+                result["warnings"].append(
+                    f"DALIO CONFLICT: Direction {actual_direction} but Dollar Flow ${cdf_20d:,.0f} "
+                    f"({('negative' if cdf_20d < 0 else 'positive')}) contradicts. Follow the money."
+                )
+            elif checks_passed >= 5 and sustainability_score >= 70 and dollar_flow_aligned:
+                dalio_verdict = "STRONG_BULLISH" if actual_direction == "LONG" else "STRONG_BEARISH"
+            elif checks_passed >= 4 and sustainability_score >= 50 and dollar_flow_aligned:
+                dalio_verdict = "BULLISH" if actual_direction == "LONG" else "BEARISH"
+            elif checks_passed <= 2:
+                dalio_verdict = "WEAK"
+
+            result["dalio_economic_machine"] = {
+                "principle": "Price = Total Spending / Quantity Sold (Ray Dalio)",
+                "verdict": dalio_verdict,
+                "key_metrics": {
+                    "dalio_ratio": {
+                        "value": round(dalio_ratio, 4),
+                        "interpretation": dalio_metrics.get("dalio_ratio", {}).get("interpretation", "UNKNOWN"),
+                        "aligned_for_trade": dalio_ratio_aligned
+                    },
+                    "cumulative_dollar_flow": {
+                        "20d_value": cdf_20d,
+                        "20d_formatted": f"${cdf_20d:,.0f}" if abs(cdf_20d) >= 1000 else f"${cdf_20d:.2f}",
+                        "direction": dalio_metrics.get("cumulative_dollar_flow", {}).get("direction", "UNKNOWN"),
+                        "aligned_for_trade": dollar_flow_aligned
+                    },
+                    "trend_sustainability": {
+                        "score": sustainability_score,
+                        "grade": dalio_metrics.get("trend_sustainability", {}).get("grade", "?"),
+                        "description": dalio_metrics.get("trend_sustainability", {}).get("description", "Unknown"),
+                        "is_sustainable": sustainability_ok
+                    },
+                    "dollar_volume_momentum": {
+                        "classification": dv_momentum,
+                        "percentage": dalio_metrics.get("dollar_volume", {}).get("dv_momentum_pct", 0)
+                    },
+                    "institutional_activity": {
+                        "detected": institutional_activity.get("detected", False),
+                        "type": institutional_activity.get("type", "NONE"),
+                        "confidence": institutional_activity.get("confidence", 0),
+                        "signals": institutional_activity.get("signals", [])
+                    },
+                    "spending_efficiency": {
+                        "ratio": spending_efficiency.get("ratio", 1.0),
+                        "interpretation": spending_efficiency.get("interpretation", "UNKNOWN"),
+                        "implication": spending_efficiency.get("implication", "Unknown")
+                    }
+                },
+                "gate_2_contribution": {
+                    "checks_passed": checks_passed,
+                    "checks_total": 6,
+                    "dalio_checks_passed": sum([dalio_ratio_aligned, dollar_flow_aligned, sustainability_ok]),
+                    "dalio_checks_total": 3
+                },
+                "trade_recommendation": {
+                    "direction_supported": checks_passed >= 4,
+                    "confidence_level": "HIGH" if checks_passed >= 5 else ("MODERATE" if checks_passed >= 4 else "LOW"),
+                    "key_insight": f"Dalio Ratio {dalio_ratio:.4f} with ${cdf_20d:,.0f} dollar flow suggests {'accumulation' if cdf_20d > 0 else 'distribution'}"
+                }
+            }
 
         except Exception as e:
             result["gate_status"]["freshness"] = "ERROR"
             result["warnings"].append(f"Freshness check failed: {e}")
+
+        # ========== DOLLAR FLOW BLOCK CHECK (after Gate 2) ==========
+        # CRITICAL: Block trades with large opposing Dollar Flow (> $500M)
+        # This fixed FSLR which lost -10% trading LONG against -$1.6B distribution
+        try:
+            if 'cdf_20d' in dir():
+                df_threshold = 500_000_000  # $500M threshold for blocking
+                if actual_direction == "LONG" and cdf_20d < -df_threshold:
+                    result["signal"] = "NO_TRADE"
+                    result["warnings"].append(
+                        f"BLOCKED: Massive distribution ${cdf_20d:,.0f} opposes LONG. "
+                        f"Institutions are selling. Follow the money!"
+                    )
+                    result["confidence"] = 0
+                    result["gates_passed"] = sum(1 for g in result["gate_status"].values() if g == "PASS")
+                    result["recommendation"] = f"NO_TRADE: ${abs(cdf_20d):,.0f} flowing OUT while trying to go LONG."
+                    return result
+                elif actual_direction == "SHORT" and cdf_20d > df_threshold:
+                    result["signal"] = "NO_TRADE"
+                    result["warnings"].append(
+                        f"BLOCKED: Massive accumulation ${cdf_20d:,.0f} opposes SHORT. "
+                        f"Institutions are buying. Follow the money!"
+                    )
+                    result["confidence"] = 0
+                    result["gates_passed"] = sum(1 for g in result["gate_status"].values() if g == "PASS")
+                    result["recommendation"] = f"NO_TRADE: ${cdf_20d:,.0f} flowing IN while trying to go SHORT."
+                    return result
+        except Exception:
+            pass  # Continue if cdf_20d not available
 
         # ========== GATE 3: AL BROOKS ANALYSIS ==========
         try:
@@ -11034,10 +13343,15 @@ def generate_trading_signal(
                 quality_grade = quality_data.get("quality_grade", "N/A")
                 red_flags = quality_data.get("red_flags", [])
 
+                # Extract f_score and z_score from components
+                components = quality_data.get("components", {})
+
                 result["quality_analysis"] = {
                     "score": quality_score,
                     "grade": quality_grade,
-                    "red_flags": red_flags
+                    "red_flags": red_flags,
+                    "f_score": components.get("f_score"),
+                    "z_score": components.get("z_score")
                 }
 
                 if actual_direction == "LONG":
@@ -11079,22 +13393,45 @@ def generate_trading_signal(
                 holding_period_days=10
             )
 
-            if isinstance(similar, dict) and 'error' not in similar:
-                setups_found = similar.get("similar_setups_found", 0)
-                success_rate = similar.get("success_rate_5d", 0)
+            if isinstance(similar, dict):
+                if 'error' in similar:
+                    result["proof_of_validity"] = {
+                        "similar_setups": 0,
+                        "success_rate": 0,
+                        "confidence": "N/A",
+                        "avg_return": 0,
+                        "error": similar.get("error")
+                    }
+                else:
+                    setups_found = similar.get("similar_setups_found", 0)
+                    success_rate = similar.get("success_rate_5d", 0)
 
+                    result["proof_of_validity"] = {
+                        "similar_setups": setups_found,
+                        "success_rate": success_rate,
+                        "confidence": similar.get("statistical_confidence", "N/A"),
+                        "avg_return": similar.get("average_return_5d", 0)
+                    }
+
+                    if setups_found >= 10 and success_rate >= 55:
+                        score += 15
+            else:
                 result["proof_of_validity"] = {
-                    "similar_setups": setups_found,
-                    "success_rate": success_rate,
-                    "confidence": similar.get("statistical_confidence", "N/A"),
-                    "avg_return": similar.get("average_return_5d", 0)
+                    "similar_setups": 0,
+                    "success_rate": 0,
+                    "confidence": "N/A",
+                    "avg_return": 0,
+                    "note": "Historical analysis unavailable"
                 }
 
-                if setups_found >= 10 and success_rate >= 55:
-                    score += 15
-
         except Exception as e:
-            result["proof_of_validity"] = {"error": str(e)}
+            result["proof_of_validity"] = {
+                "similar_setups": 0,
+                "success_rate": 0,
+                "confidence": "N/A",
+                "avg_return": 0,
+                "error": str(e)
+            }
 
         # ========== GENERATE TRADING PLAN ==========
         try:
@@ -11167,14 +13504,72 @@ def generate_trading_signal(
         except Exception as e:
             result["trading_plan"] = {"error": str(e)}
 
+        # ========== OPTIONS ANALYSIS (McMillan) ==========
+        try:
+            options_data = analyze_options_mcmillan(ticker)
+            if isinstance(options_data, dict) and "error" not in options_data:
+                iv_analysis = options_data.get("iv_analysis", {})
+                pc_analysis = options_data.get("put_call_ratio", {})
+                summary = options_data.get("summary", {})
+
+                result["options_analysis"] = {
+                    "iv_rank": iv_analysis.get("iv_rank"),
+                    "iv_percentile": iv_analysis.get("iv_percentile"),
+                    "iv_environment": iv_analysis.get("iv_environment"),
+                    "put_call_ratio": pc_analysis.get("volume_pc_ratio"),
+                    "pc_sentiment": pc_analysis.get("sentiment"),
+                    "recommended_strategy": summary.get("primary_suggestion")
+                }
+        except Exception as e:
+            result["options_analysis"] = {"error": str(e)}
+
         # ========== DETERMINE FINAL SIGNAL ==========
         result["confidence"] = score
+
+        # NEW: Confidence penalty for NO_CONSENSUS - but only when PRIMARY signals disagree
+        # Primary signals: Brooks (80% accurate) and Dollar Flow (80% accurate)
+        # APO had NO_CONSENSUS but got 80% confidence -> lost 6.2%
+        # TRMD had NO_CONSENSUS but Brooks+Dollar_Flow agreed -> won 14.4%
+        brooks_vote = direction_votes.get("brooks", "NEUTRAL")
+        df_vote = direction_votes.get("dollar_flow", "NEUTRAL")
+
+        # Check if primary signals (Brooks + Dollar Flow) agree with direction
+        primary_signals_agree = (
+            (actual_direction == "LONG" and brooks_vote == "LONG" and df_vote == "BULLISH") or
+            (actual_direction == "SHORT" and brooks_vote == "SHORT" and df_vote == "BEARISH")
+        )
+
+        if data_direction == "NO_CONSENSUS" and not primary_signals_agree:
+            # Apply 15% confidence penalty only when primary signals also disagree
+            original_score = score
+            score = max(0, score - 15)
+            result["confidence"] = score
+            result["warnings"].append(
+                f"NO_CONSENSUS penalty: Confidence reduced from {original_score}% to {score}% "
+                f"(primary signals don't align). Votes: {direction_votes}"
+            )
+        elif data_direction == "NO_CONSENSUS":
+            # NO_CONSENSUS but primary signals agree - no penalty, just note
+            result["warnings"].append(
+                f"NO_CONSENSUS but Brooks+Dollar_Flow agree on {actual_direction}. "
+                f"Votes: {direction_votes}"
+            )
 
         # Count passed gates
         passed_gates = sum(1 for g in result["gate_status"].values() if g == "PASS")
 
-        if passed_gates == 4 and score >= 70:
+        # Calculate composite score (weighted: confidence 60% + gates 40%)
+        gate_score = (passed_gates / 4) * 100
+        result["composite_score"] = round(score * 0.6 + gate_score * 0.4, 1)
+
+        # NEW: Stricter signal thresholds
+        # Previously: 4/4 gates + 70% = STRONG_BUY -> had 30% win rate!
+        # Now require: 4/4 gates + 80% AND no NO_CONSENSUS
+        if passed_gates == 4 and score >= 80 and data_direction != "NO_CONSENSUS":
             result["signal"] = f"STRONG_{'BUY' if actual_direction == 'LONG' else 'SELL'}"
+        elif passed_gates == 4 and score >= 70:
+            # 4/4 gates but lower confidence or NO_CONSENSUS -> regular BUY/SELL
+            result["signal"] = "BUY" if actual_direction == "LONG" else "SELL"
         elif passed_gates >= 3 and score >= 55:
             result["signal"] = "BUY" if actual_direction == "LONG" else "SELL"
         elif passed_gates >= 2 and score >= 40:
@@ -11185,9 +13580,72 @@ def generate_trading_signal(
         # Generate summary
         result["summary"] = f"{ticker}: {result['signal']} | Confidence: {score}% | Gates: {passed_gates}/4 passed"
 
+        # ========== OPTIONS TRADE PLAN (Institutional Methodology) ==========
+        # Generate complete options trade plan ONLY for actionable signals
+        actionable_signals_for_options = ["STRONG_BUY", "BUY", "STRONG_SELL", "SELL"]
+        if result.get("signal") in actionable_signals_for_options:
+            try:
+                # Determine options direction from signal
+                options_direction = "LONG" if result["signal"] in ["STRONG_BUY", "BUY"] else "SHORT"
+
+                # Generate institutional options trade plan
+                options_plan = generate_options_trade_plan(
+                    ticker=ticker,
+                    direction=options_direction,
+                    account_size=account_size,
+                    target_dte=45  # Institutional standard: 45 DTE
+                )
+
+                # Add to result
+                result["options_trade_plan"] = options_plan
+
+                # Add warning if options not recommended
+                if not options_plan.get("options_allowed", True):
+                    skip_reason = options_plan.get("skip_reason", "Unknown")
+                    result["warnings"].append(f"OPTIONS_SKIP: {skip_reason}")
+
+            except Exception as e:
+                result["options_trade_plan"] = {"error": str(e), "options_allowed": False}
+        else:
+            # Signal not actionable - no options plan needed
+            result["options_trade_plan"] = {
+                "options_allowed": False,
+                "skip_reason": f"Signal '{result.get('signal')}' not actionable for options"
+            }
+
     except Exception as e:
         result["error"] = str(e)
         result["signal"] = "ERROR"
+
+    # ========== AUTO-STORE PREDICTION ==========
+    # Store prediction automatically for tracking (unless disabled)
+    # Only store actionable signals: STRONG_BUY, BUY, STRONG_SELL, SELL
+    # Skip: WATCH, NO_TRADE, ERROR (not actionable predictions)
+    actionable_signals = ["STRONG_BUY", "BUY", "STRONG_SELL", "SELL"]
+    if auto_store and result.get("signal") in actionable_signals:
+        try:
+            from .prediction_tracker import PredictionTracker
+            tracker = PredictionTracker()
+            final_direction = result.get("direction") or result.get("data_direction", "LONG")
+            if final_direction == "NO_CONSENSUS":
+                final_direction = "LONG"  # Default to LONG if no consensus
+
+            store_result = tracker.store_prediction(
+                trading_signal=result,
+                report_type=report_type,
+                ticker=ticker,
+                direction=final_direction
+            )
+            result["prediction_stored"] = True
+            result["prediction_id"] = store_result.get("prediction_id")
+            result["prediction_status"] = store_result.get("status")
+        except Exception as e:
+            result["prediction_stored"] = False
+            result["prediction_error"] = str(e)
+    elif auto_store:
+        # Signal was not actionable (WATCH, NO_TRADE, ERROR) - skip storage
+        result["prediction_stored"] = False
+        result["prediction_skipped_reason"] = f"Signal '{result.get('signal')}' not actionable"
 
     return result
 
@@ -11588,6 +14046,208 @@ def _auto_track_picks(result: dict, scanner_source: str = "tradingview"):
 
 # Load history on module import
 _load_pick_history()
+
+
+# =============================================================================
+# PREDICTION TRACKING TOOLS (New Jan 2026)
+# Store predictions and generate efficiency reports
+# =============================================================================
+
+@mcp.tool()
+def store_trading_prediction(
+    ticker: str,
+    direction: str,
+    report_type: str,
+    trading_signal: dict
+) -> dict:
+    """
+    Store a trading prediction for outcome tracking and efficiency analysis.
+
+    NOTE: This is now OPTIONAL - generate_trading_signal() auto-stores predictions by default.
+    Use this only if you need to manually store a prediction with custom parameters.
+
+    Args:
+        ticker: Stock symbol (e.g., "AAPL")
+        direction: Trade direction - "LONG" or "SHORT"
+        report_type: Source report type - "comprehensive", "concise", "scanner", or "portfolio"
+        trading_signal: Full output from generate_trading_signal()
+
+    Returns:
+        dict with:
+        - status: "stored" or "error"
+        - prediction_id: UUID of stored prediction
+        - ticker, direction, report_type
+        - entry_price: Entry price from trading plan
+        - stored_at: ISO timestamp
+        - components_stored: Which components were captured (catalyst, freshness, dalio, brooks, quality, options)
+    """
+    try:
+        from .prediction_tracker import PredictionTracker
+        tracker = PredictionTracker()
+        return tracker.store_prediction(
+            trading_signal=trading_signal,
+            report_type=report_type,
+            ticker=ticker,
+            direction=direction
+        )
+    except ImportError as e:
+        return {
+            "status": "error",
+            "error": f"Prediction tracker not available: {e}",
+            "ticker": ticker
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "ticker": ticker
+        }
+
+
+@mcp.tool()
+def get_cached_predictions(
+    direction: str,
+    days: int = 7
+) -> dict:
+    """
+    Get cached predictions from DB for the last N days.
+
+    Use this BEFORE scanning to identify repeated tickers that can be skipped.
+    This enables the optimized workflow:
+    1. Call get_cached_predictions() to get DB cached tickers
+    2. Filter raw candidates to get only NEW tickers
+    3. Show repeated tickers with their stored data immediately
+    4. Process only NEW tickers in batches with scan_long/short_candidates
+
+    Args:
+        direction: "LONG" or "SHORT"
+        days: Number of days to look back (default 7)
+
+    Returns:
+        dict with:
+        - direction: LONG or SHORT
+        - days_lookback: Number of days searched
+        - total_cached: Count of cached predictions
+        - tickers: List of ticker symbols in cache
+        - predictions: Dict mapping ticker -> stored analysis data
+    """
+    try:
+        recent = _get_recent_predictions(direction.upper(), days=days)
+
+        return {
+            "direction": direction.upper(),
+            "days_lookback": days,
+            "total_cached": len(recent),
+            "tickers": list(recent.keys()),
+            "predictions": recent
+        }
+    except Exception as e:
+        logger.warning(f"Failed to get cached predictions: {e}")
+        return {
+            "direction": direction.upper(),
+            "days_lookback": days,
+            "total_cached": 0,
+            "tickers": [],
+            "predictions": {},
+            "error": str(e)
+        }
+
+
+@mcp.tool()
+def update_prediction_outcomes(
+    prediction_id: str | None = None
+) -> dict:
+    """
+    Update all open predictions with current prices and determine outcomes.
+
+    Fetches current market prices and updates:
+    - Returns at 5d, 10d, 20d horizons
+    - Target/stop hit tracking
+    - WIN/LOSS/OPEN outcome classification
+    - Validates predictions after 20 days
+
+    Args:
+        prediction_id: Optional specific prediction UUID to update.
+                      If None, updates ALL open predictions.
+
+    Returns:
+        dict with:
+        - status: "updated" or "no_updates"
+        - total_open: Number of open predictions
+        - updated: Number successfully updated
+        - newly_validated: Predictions that reached 20-day validation
+        - outcomes: Count of WIN/LOSS/OPEN
+        - updated_predictions: List of updated prediction details
+    """
+    try:
+        from .prediction_tracker import PredictionTracker
+        tracker = PredictionTracker()
+        return tracker.update_outcomes(prediction_id=prediction_id)
+    except ImportError as e:
+        return {
+            "status": "error",
+            "error": f"Prediction tracker not available: {e}"
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e)
+        }
+
+
+@mcp.tool()
+def generate_efficiency_report(
+    period_days: int = 7,
+    min_sample: int = 5
+) -> dict:
+    """
+    Generate weekly efficiency report with component accuracy analysis.
+
+    Analyzes all stored predictions to determine:
+    - Overall win rate and average returns
+    - Performance by report type (comprehensive, concise, scanner, portfolio)
+    - Performance by signal type (STRONG_BUY, BUY, WATCH, etc.)
+    - Performance by gates passed (4/4, 3/4, 2/4)
+    - Individual gate accuracy (catalyst, freshness, brooks, quality)
+    - Sub-component accuracy (cvd_trend, trap_risk, dalio_ratio, etc.)
+    - Improvement suggestions for low-accuracy components
+
+    Args:
+        period_days: Number of days to analyze (default: 7 for weekly)
+        min_sample: Minimum predictions required to generate report (default: 5)
+
+    Returns:
+        dict with:
+        - status: "generated" or "insufficient_data"
+        - report_date: Date of report
+        - period: Date range analyzed
+        - executive_summary: Key metrics overview
+        - by_report_type: Performance breakdown by report type
+        - by_signal: Performance breakdown by signal type
+        - by_gates_passed: Performance breakdown by gates passed
+        - gate_accuracy: Accuracy for each of 4 gates
+        - component_accuracy: Accuracy for sub-components
+        - improvement_suggestions: Auto-generated suggestions
+        - historical_trend: Win rate trend over past 4 weeks
+        - full_report_markdown: Complete report in markdown format
+    """
+    try:
+        from .prediction_tracker import EfficiencyReportGenerator
+        generator = EfficiencyReportGenerator()
+        return generator.generate_weekly_report(
+            period_days=period_days,
+            min_sample=min_sample
+        )
+    except ImportError as e:
+        return {
+            "status": "error",
+            "error": f"Efficiency report generator not available: {e}"
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e)
+        }
 
 
 if __name__ == "__main__":

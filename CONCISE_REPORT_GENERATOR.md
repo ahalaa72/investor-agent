@@ -4,7 +4,7 @@ Fast analysis with bullet points for data, detailed Al Brooks, McMillan Options,
 
 **Structure:** ~210 lines | **Time:** 35 minutes | **Framework:** 10-Phase Institutional
 
-**Methodology:** Al Brooks (Price Action) + McMillan (Options Strategy)
+**Methodology:** Al Brooks (Price Action) + McMillan (Options Strategy) + Ray Dalio (Economic Machine)
 
 ---
 
@@ -561,10 +561,16 @@ McMillan's framework teaches us: **"Match your strategy to market conditions, no
 - RS vs SPY: XX ([LEADER/LAGGARD]) [calculate_relative_strength_tool]
 - Trend: [UPTREND/DOWNTREND], XX.X% confidence [analyze_ml_enhanced]
 - OBV: [Accumulation/Distribution] [analyze_volume_tool]
-- **CVD:** [RISING/FALLING/FLAT], divergence: [BULLISH/BEARISH/NONE] [analyze_volume_tool.cvd_analysis] ⭐ NEW
-- **Exhaustion:** XX/100 ([NO/LOW/MODERATE/HIGH]_EXHAUSTION) [analyze_ml_enhanced.exhaustion] ⭐ NEW
-- **Multi-VWAP:** [STRONG_BULLISH/BULLISH/MIXED/BEARISH] alignment [analyze_volume_tool.multi_vwap] ⭐ NEW
+- **CVD:** [RISING/FALLING/FLAT], divergence: [BULLISH/BEARISH/NONE] [analyze_volume_tool.cvd_analysis]
+- **Exhaustion:** XX/100 ([NO/LOW/MODERATE/HIGH]_EXHAUSTION) [analyze_ml_enhanced.exhaustion]
+- **Multi-VWAP:** [STRONG_BULLISH/BULLISH/MIXED/BEARISH] alignment [analyze_volume_tool.multi_vwap]
 - **Al Brooks:** [Pattern], [XX]% adjusted probability [analyze_ml_enhanced.al_brooks]
+
+**Dalio Economic Machine:** [analyze_volume_tool.dalio_metrics] ⭐ NEW
+- **Dalio Ratio:** X.XXXX ([BULLISH >1.0 / NEUTRAL ~1.0 / BEARISH <1.0])
+- **Dollar Flow:** $XX.XXM ([ACCUMULATION / DISTRIBUTION])
+- **Sustainability:** XX/100, Grade [A-F]
+- **Dalio Gate 2:** [X/6 checks passing] - [PASS (5+) / WARN (4) / FAIL (≤3)]
 
 **Order Blocks (Institutional Footprints):** [analyze_ml_enhanced.order_blocks]
 - Signal: [BULLISH_OB_TEST / BEARISH_OB_TEST / NONE]
@@ -586,6 +592,68 @@ McMillan's framework teaches us: **"Match your strategy to market conditions, no
 ### Phase 7: Market Context (5.3%) - [BULLISH/BEARISH/NEUTRAL]
 - Fear & Greed: XX.X ([Extreme Fear/Fear/Neutral/Greed/Extreme Greed]) [get_cnn_fear_greed_index]
 - **Score: XX/100** → XX.X pts
+
+---
+
+## DIRECTION VALIDATION ⚠️ NEW
+
+**Purpose:** Validates trading direction using independent data sources.
+
+**📊 DIRECTION VOTES:** `[generate_trading_signal.direction_votes]`
+
+| Tool | Vote | Reason |
+|------|------|--------|
+| Catalyst | [BULLISH/BEARISH/NEUTRAL] | Primary catalyst |
+| CVD | [BULLISH/BEARISH] | Volume delta trend |
+| Exhaustion | [LONG/SHORT] | Fresh direction |
+| Brooks | [LONG/SHORT/NEUTRAL] | Always-In direction |
+| Dalio Ratio | [BULLISH/BEARISH] | >1.0 = BULLISH |
+| Dollar Flow | [BULLISH/BEARISH] | >0 = BULLISH |
+
+**Consensus:** X LONG votes, Y SHORT votes → **[LONG/SHORT/NO_CONSENSUS]**
+
+[If conflict]:
+🚨 **DIRECTION CONFLICT DETECTED**
+Scanner/Analysis suggests **[DIRECTION]** but data votes suggest **[OPPOSITE]**.
+⚠️ **Action:** Reduce position size by 50% or wait for alignment.
+
+---
+
+## 🎯 OPTIMAL OPTIONS STRATEGY (Risk-Managed) ⭐ NEW
+
+**Market Conditions:** `[analyze_options_mcmillan]`
+- IV Rank: XX% → [LOW = BUY premium / HIGH = SELL premium]
+- Direction: [LONG/SHORT] from Brooks + Dalio
+
+**📊 STRATEGY SELECTION:**
+
+| IV Environment | BULLISH | BEARISH |
+|----------------|---------|---------|
+| LOW (<30%) | Bull Call Spread | Bear Put Spread |
+| HIGH (>50%) | Bull Put Credit Spread | Bear Call Credit Spread |
+
+**🎯 RECOMMENDED TRADE:**
+
+| Leg | Action | Strike | Expiry | Premium |
+|-----|--------|--------|--------|---------|
+| 1 | [BUY/SELL] | $XXX [C/P] | [Date] | $X.XX |
+| 2 | [BUY/SELL] | $XXX [C/P] | [Date] | $X.XX |
+
+| Metric | Value |
+|--------|-------|
+| Max Risk | $XXX (defined) |
+| Max Profit | $XXX |
+| Break-Even | $XXX.XX |
+| R/R Ratio | 1:X.X |
+| Prob of Profit | XX% |
+
+**Position Sizing (1% Rule):** Max Contracts = (Account × 1%) / Max Risk
+
+**Exit Rules:**
+- Profit: 50% of max profit
+- Stop: 100% of max loss
+- Time: 21 DTE
+- Direction flip: Exit immediately
 
 ---
 
@@ -629,6 +697,12 @@ McMillan's framework teaches us: **"Match your strategy to market conditions, no
 - [Factor 3: RS score]
 - [Factor 4: fundamental support]
 - [Factor 5: smart money aligned]
+
+**🆕 DALIO ADJUSTMENTS:** `[analyze_volume_tool.dalio_economic_machine]`
+- Dalio Ratio: X.XXXX ([BULLISH >1.02 / BEARISH <0.98 / NEUTRAL]) → +/-5%
+- Dollar Flow: $XXM 20d ([ACCUMULATION / DISTRIBUTION]) → +/-3%
+- Sustainability: XX ([HIGH ≥70 / LOW ≤30 / NEUTRAL]) → +/-3%
+- **Total Dalio Impact:** +/-XX%
 
 **✗ NEGATIVE (Risk):**
 - [Risk 1]
@@ -970,4 +1044,105 @@ find_similar_historical_setups(
 ---
 
 **Time:** 35 minutes | **Output:** ~210 lines | **Quality:** Institutional-grade
-**Methodology:** Al Brooks (Price Action) + McMillan (Options Strategy)
+**Methodology:** Al Brooks (Price Action) + McMillan (Options Strategy) + Ray Dalio (Economic Machine)
+
+---
+
+## OPTIONS WISDOM (Institutional Trading Rules)
+
+**Source:** McMillan "Options as a Strategic Investment" + TastyTrade Research
+**Full Reference:** `Institutional Options Trading-Complete Methodology for Algorithmic Systems.md`
+
+### Key Principles
+
+| Rule | Principle | Rationale |
+|------|-----------|-----------|
+| **1** | **IV Drives Strategy** | HIGH IV → SELL premium; LOW IV → BUY premium |
+| **2** | **45 DTE Entry** | Optimal theta decay with manageable gamma |
+| **3** | **50% Profit Target** | Close at 50% max profit = 88% win rate |
+| **4** | **NO Stop Losses** | On credit spreads - manage at 21 DTE instead |
+| **5** | **Earnings Filter** | Skip if earnings < 30 days (IV crush risk) |
+| **6** | **Liquidity Rules** | Spread ≤5%, OI ≥100, Volume ≥50 |
+
+### Strategy Matrix
+
+| IV Rank | BULLISH | BEARISH |
+|---------|---------|---------|
+| HIGH (>50%) | Bull Put Credit Spread | Bear Call Credit Spread |
+| LOW (<30%) | Bull Call Debit Spread | Bear Put Debit Spread |
+
+### Trading Plan Rules
+
+**GENERATE full options trading plan ONLY for:**
+- ✅ STRONG_BUY / BUY / SELL / STRONG_SELL
+
+**DO NOT generate trading plan for:**
+- ❌ WATCH / NO_TRADE - Low conviction, skip
+
+---
+
+**Last Updated:** January 8, 2026
+**Version:** 2.2 - Added OPTIONS WISDOM + Trading Plan Rules
+
+---
+
+## 🔴 MANDATORY: STORE PREDICTION IN DATABASE
+
+**CRITICAL:** After generating every Concise Report with a trading signal, you MUST store the prediction for tracking.
+
+### When to Store
+
+Store prediction when:
+- Trading signal is generated (STRONG_BUY, BUY, WATCH, SELL, STRONG_SELL)
+- Entry price, stop loss, and targets are defined
+- All 4 gates have been evaluated
+
+### Storage Command
+
+After completing the report and generating `generate_trading_signal()`, IMMEDIATELY call:
+
+```python
+store_trading_prediction(
+    ticker="XXXX",
+    direction="LONG",  # or "SHORT"
+    report_type="concise",
+    trading_signal=<full output from generate_trading_signal()>
+)
+```
+
+### What Gets Stored
+
+| Category | Fields |
+|----------|--------|
+| **Core** | ticker, direction, signal_type, entry_price, stop_loss, targets |
+| **Gate 1 (Catalyst)** | catalyst_direction, catalyst_strength, catalyst_score, primary_catalyst, trade_allowed |
+| **Gate 2 (Freshness)** | cvd_trend, exhaustion_score, fresh_direction |
+| **Dalio Metrics** | dalio_ratio, dalio_interpretation, cumulative_dollar_flow, sustainability_score |
+| **Gate 3 (Brooks)** | always_in_direction, pattern, trap_risk, brooks_probability |
+| **Gate 4 (Quality)** | f_score, z_score, quality_grade, quality_score |
+| **Options** | iv_rank, iv_percentile, put_call_ratio, recommended_strategy |
+| **Historical** | historical_setups_found, historical_success_rate, avg_achievement |
+| **Score** | composite_score, gates_passed |
+
+### Verification
+
+After storing, verify the response:
+```json
+{
+    "status": "stored",
+    "prediction_id": "uuid-here",
+    "ticker": "XXXX",
+    "entry_price": 123.45
+}
+```
+
+### Report Completion Checklist
+
+- [ ] All 10 phases completed
+- [ ] `generate_trading_signal()` called with direction
+- [ ] Trading plan with entry/stop/targets defined
+- [ ] `store_trading_prediction()` called with full signal data
+- [ ] Prediction ID received and logged
+- [ ] Report saved to `/Users/AhmedE/Ahmed/[TICKER]_CONCISE_YYYY-MM-DD.md`
+
+**DO NOT skip prediction storage. This enables the self-learning feedback system.**
