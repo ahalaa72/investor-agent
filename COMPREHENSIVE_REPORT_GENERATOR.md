@@ -1148,6 +1148,62 @@ Al Brooks teaches us to **read price action like a language** - every bar tells 
 
 **McMillan Reference:** Chapter 28 - Volatility Trading
 
+#### A.1. Expected Price Movement & Standard Deviation Ranges ⭐ NEW
+
+**📊 STANDARD DEVIATION ANALYSIS:**
+
+**Formula:** Expected Move = Current Price × IV × √(DTE / 365)
+
+| Timeframe | DTE | 1 SD Move | 1 SD Range (68% prob) | 2 SD Move | 2 SD Range (95% prob) |
+|-----------|-----|-----------|----------------------|-----------|----------------------|
+| **Weekly** | 7 | ±$X.XX | $XXX.XX - $XXX.XX | ±$X.XX | $XXX.XX - $XXX.XX |
+| **Monthly** | 30 | ±$X.XX | $XXX.XX - $XXX.XX | ±$X.XX | $XXX.XX - $XXX.XX |
+| **45 DTE** | 45 | ±$X.XX | $XXX.XX - $XXX.XX | ±$X.XX | $XXX.XX - $XXX.XX |
+| **Quarterly** | 90 | ±$X.XX | $XXX.XX - $XXX.XX | ±$X.XX | $XXX.XX - $XXX.XX |
+
+**Current Price:** $XXX.XX
+**Current IV:** XX.X%
+
+**Probability-Based Strike Selection:**
+
+| Delta | Standard Deviation | Probability OTM | Strike Price | Use Case |
+|-------|-------------------|-----------------|--------------|----------|
+| **50Δ** | 0 SD (ATM) | 50% | $XXX.XX | Neutral / Maximum theta |
+| **30Δ** | ~0.5 SD | 70% | $XXX.XX | Moderate premium collection |
+| **16Δ** | ~1 SD | 84% | $XXX.XX | **TastyTrade Standard (Optimal R/R)** ⭐ |
+| **10Δ** | ~1.5 SD | 90% | $XXX.XX | Higher probability |
+| **5Δ** | ~2 SD | 95% | $XXX.XX | Highest probability (but low premium) |
+
+**Interpretation:**
+
+**1 Standard Deviation (68% Probability):**
+- Stock has **68% chance** of staying within ±$X.XX range over next [X] days
+- **16-delta options** sit at ~1 SD → **84% probability of expiring OTM**
+- **OPTIMAL for credit spreads** per TastyTrade research
+- Example: Sell $XXX put (16Δ) / Buy $XXX put (5Δ) = **84% win rate with reasonable premium**
+
+**2 Standard Deviation (95% Probability):**
+- Stock has **95% chance** of staying within ±$X.XX range
+- **5-delta options** sit at ~2 SD → **95% probability of expiring OTM**
+- **HIGH win rate BUT low premium** - not optimal for expected value
+- Use for protective strikes in spreads, not primary income generation
+
+**Why 16-Delta (1 SD) is Optimal:**
+
+| Strike Selection | Delta | Win Rate | Premium | Expected Value | Recommendation |
+|-----------------|-------|----------|---------|----------------|----------------|
+| ATM (50Δ) | 50Δ | 50% | $3.00 | Negative | ❌ Coin flip |
+| 1 SD (16Δ) | 16Δ | 84% | $1.00 | **POSITIVE** | ✅ **OPTIMAL** |
+| 2 SD (5Δ) | 5Δ | 95% | $0.30 | Negative | ❌ Too far OTM |
+
+**TastyTrade Research:** 16-delta strikes provide the **best risk-adjusted returns** over time:
+- Good win rate (84%)
+- Reasonable premium collection
+- Positive expected value
+- Manageable losses when wrong
+
+**Reference:** TastyTrade "The Skinny on Options Math" + McMillan Ch. 28
+
 #### B. Put/Call Ratio Analysis
 
 **📊 P/C RATIO METRICS:**
@@ -1321,6 +1377,56 @@ Al Brooks teaches us to **read price action like a language** - every bar tells 
 [2-3 sentence summary of McMillan options analysis and recommended strategy with specific strikes]
 
 **Tools:** `analyze_options_mcmillan(ticker, holding_period_days)` (direction-independent)
+
+---
+
+#### ⚠️ OPTIONS DATA INTERPRETATION - UNDERSTANDING EXPIRATION-SPECIFIC ANALYSIS
+
+**CRITICAL: Why Options Data May Appear Contradictory**
+
+`analyze_options_mcmillan()` analyzes options at **ONE SPECIFIC EXPIRATION** (the optimal 30-45 DTE entry point), while `detect_unusual_options_activity()` scans **ALL EXPIRATIONS** across the entire chain.
+
+**Example of Apparent Contradiction:**
+```
+analyze_options_mcmillan(ticker, holding_period_days=45)
+→ Analyzes: Feb 27, 2026 expiry (45 DTE)
+→ Returns: OI=0, Volume=1, "Poor liquidity"
+
+detect_unusual_options_activity(ticker)
+→ Scans: ALL expirations
+→ Finds: Jan 30, 2026 $350 call with 1,243 volume
+```
+
+**Both are CORRECT - they're analyzing DIFFERENT expirations!**
+
+**When reporting liquidity conflicts, ALWAYS specify expiration:**
+
+❌ **BAD (Confusing):**
+```
+Liquidity: Grade F (OI=0)
+Unusual Activity: YES - 1,243 volume
+[User thinks: "WTF? Different functions?"]
+```
+
+✅ **GOOD (Clear):**
+```
+Liquidity (45 DTE - Feb 27): Grade F (OI=0, Volume=1)
+Unusual Activity (10 DTE - Jan 30): 1,243 volume on $350 call
+
+**Interpretation:** The optimal 45 DTE expiration has NO liquidity.
+Unusual activity detected on 10 DTE expiration (1 day after Jan 29 earnings).
+This is a speculative earnings bet, NOT recommended for institutional approach.
+
+**Recommendation:** Trade the stock OR check 60-90 DTE expirations for better liquidity.
+```
+
+**When unusual activity conflicts with McMillan liquidity assessment:**
+
+1. ✅ **Check the expiration date** of the unusual activity
+2. ✅ **Check if earnings are nearby** (earnings plays = speculative, avoid)
+3. ✅ **Note the DTE difference** in your report
+4. ✅ **Recommend appropriate alternatives** (stock, later expirations)
+5. ❌ **NEVER say "I'm using different functions"** - say "different expirations"
 
 ---
 

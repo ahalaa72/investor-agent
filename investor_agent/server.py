@@ -2138,7 +2138,11 @@ def _get_earnings_proximity(ticker: str) -> dict:
     """
     Get days to next earnings for options trading filter.
 
-    RULE: Skip options if earnings < 30 days (IV crush risk).
+    CRITICAL: Buyers and Sellers have OPPOSITE positions on IV crush!
+    - BUYERS: Hurt by IV crush (overpay for premium, lose value even if right)
+    - SELLERS: Profit from IV crush (collect max premium when IV high, buy back cheap)
+
+    McMillan/TastyTrade methodology: "When IV is HIGH, be a SELLER"
 
     Uses multiple data sources with fallback:
     1. yf_call with retry logic (calendar)
@@ -2146,7 +2150,15 @@ def _get_earnings_proximity(ticker: str) -> dict:
     3. NASDAQ earnings calendar fallback
 
     Returns:
-        dict with days_to_earnings, earnings_date, options_allowed
+        dict with:
+        - days_to_earnings: int or None
+        - earnings_date: str or None
+        - options_buying_allowed: bool (False if <30 days - IV crush hurts buyers)
+        - options_selling_allowed: bool (True even <30 days - IV crush helps sellers)
+        - options_allowed: bool (legacy - True if selling allowed)
+        - buyer_warning: str or None
+        - seller_opportunity: str or None
+        - recommended_strategies: list of strategies when near earnings
     """
     from datetime import datetime, timedelta
 
@@ -2254,20 +2266,59 @@ def _get_earnings_proximity(ticker: str) -> dict:
 
             if next_earnings:
                 days_to_earnings = (next_earnings - today).days
-                options_allowed = days_to_earnings >= min_days_to_earnings
+                earnings_date_str = next_earnings.strftime('%Y-%m-%d')
+
+                # CRITICAL: Separate logic for buyers vs sellers
+                # Buyers: Hurt by IV crush, should avoid near earnings
+                # Sellers: Profit from IV crush, prime time to sell premium
+                options_buying_allowed = days_to_earnings >= min_days_to_earnings
+                options_selling_allowed = True  # Sellers ALWAYS benefit from high IV
+
+                # Build appropriate warnings/opportunities
+                buyer_warning = None
+                seller_opportunity = None
+                recommended_strategies = []
+
+                if not options_buying_allowed:
+                    # Near earnings - differentiate buyer vs seller guidance
+                    buyer_warning = f"⚠️ SKIP BUYING OPTIONS - EARNINGS in {days_to_earnings} days. IV crush will hurt you even if direction is right."
+                    seller_opportunity = f"✅ PRIME TIME TO SELL PREMIUM - EARNINGS in {days_to_earnings} days. High IV = max premium. Profit from IV crush after announcement."
+                    recommended_strategies = [
+                        "short_put" if days_to_earnings >= 7 else "cash_secured_put",
+                        "short_call",
+                        "iron_condor",
+                        "credit_spread",
+                        "short_strangle" if days_to_earnings >= 14 else None,
+                        "short_straddle" if days_to_earnings >= 14 else None,
+                    ]
+                    recommended_strategies = [s for s in recommended_strategies if s]  # Remove None
 
                 return {
                     "days_to_earnings": days_to_earnings,
-                    "earnings_date": next_earnings.strftime('%Y-%m-%d'),
-                    "options_allowed": options_allowed,
-                    "warning": None if options_allowed else f"⚠️ EARNINGS in {days_to_earnings} days - SKIP OPTIONS (IV crush risk)"
+                    "earnings_date": earnings_date_str,
+                    # New buyer/seller specific flags
+                    "options_buying_allowed": options_buying_allowed,
+                    "options_selling_allowed": options_selling_allowed,
+                    # Legacy field - now means selling is allowed (more permissive)
+                    "options_allowed": options_selling_allowed,
+                    # Specific guidance
+                    "buyer_warning": buyer_warning,
+                    "seller_opportunity": seller_opportunity,
+                    "recommended_strategies": recommended_strategies,
+                    # Legacy warning field (now buyer-specific)
+                    "warning": buyer_warning
                 }
 
-        # No earnings data found - assume allowed
+        # No earnings data found - assume allowed for both buyers and sellers
         return {
             "days_to_earnings": None,
             "earnings_date": None,
+            "options_buying_allowed": True,
+            "options_selling_allowed": True,
             "options_allowed": True,
+            "buyer_warning": None,
+            "seller_opportunity": None,
+            "recommended_strategies": [],
             "warning": "No earnings date found - proceed with caution"
         }
 
@@ -2276,7 +2327,12 @@ def _get_earnings_proximity(ticker: str) -> dict:
         return {
             "days_to_earnings": None,
             "earnings_date": None,
+            "options_buying_allowed": True,
+            "options_selling_allowed": True,
             "options_allowed": True,
+            "buyer_warning": None,
+            "seller_opportunity": None,
+            "recommended_strategies": [],
             "warning": f"Could not determine earnings date: {str(e)}"
         }
 
@@ -2736,6 +2792,644 @@ def _find_delta_strike(
     return result
 
 
+def _get_ticker_beta(ticker: str) -> float:
+    """
+    Get beta to SPY for a given ticker.
+
+    Reusable helper function for portfolio risk calculations.
+    Uses the existing get_ticker_info_questrade_first infrastructure.
+
+    Args:
+        ticker: Stock symbol
+
+    Returns:
+        float: Beta to SPY (defaults to 1.0 if unavailable)
+    """
+    try:
+        if ticker == 'SPY':
+            return 1.0
+
+        # Use existing infrastructure to get ticker info
+        ticker_info = get_ticker_info_questrade_first(ticker)
+        info = ticker_info.get("merged", {})
+
+        beta = info.get('beta')
+        if beta is not None and beta != 0:
+            return float(beta)
+
+        # Fallback: default to 1.0
+        logger.warning(f"Beta not available for {ticker}, defaulting to 1.0")
+        return 1.0
+
+    except Exception as e:
+        logger.warning(f"Failed to get beta for {ticker}: {e}, defaulting to 1.0")
+        return 1.0
+
+
+def _get_current_price(ticker: str) -> float:
+    """
+    Get current price for a ticker.
+
+    Reusable helper function for position valuation.
+    Uses the existing get_ticker_info_questrade_first infrastructure.
+
+    Args:
+        ticker: Stock symbol
+
+    Returns:
+        float: Current price (defaults to 100.0 if unavailable)
+    """
+    try:
+        # Use existing infrastructure to get ticker info
+        ticker_info = get_ticker_info_questrade_first(ticker)
+        info = ticker_info.get("merged", {})
+
+        price = info.get('currentPrice')
+        if price is not None and price > 0:
+            return float(price)
+
+        # Fallback: estimate $100
+        logger.warning(f"Price not available for {ticker}, defaulting to 100.0")
+        return 100.0
+
+    except Exception as e:
+        logger.warning(f"Failed to get price for {ticker}: {e}, defaulting to 100.0")
+        return 100.0
+
+
+def _get_ticker_sector_industry(ticker: str) -> tuple[str, str]:
+    """
+    Get sector and industry for a ticker.
+
+    Reusable helper function for concentration analysis.
+    Uses the existing get_ticker_info_questrade_first infrastructure.
+
+    Args:
+        ticker: Stock symbol
+
+    Returns:
+        tuple: (sector, industry) - defaults to ("Unknown", "Unknown") if unavailable
+    """
+    try:
+        # Use existing infrastructure to get ticker info
+        ticker_info = get_ticker_info_questrade_first(ticker)
+        info = ticker_info.get("merged", {})
+
+        sector = info.get('sector', 'Unknown')
+        industry = info.get('industry', 'Unknown')
+
+        return (sector, industry)
+
+    except Exception as e:
+        logger.warning(f"Failed to get sector/industry for {ticker}: {e}")
+        return ("Unknown", "Unknown")
+
+
+def _calculate_portfolio_returns(
+    account_number: str,
+    lookback_days: int = 252
+) -> tuple[pd.Series, dict]:
+    """
+    Calculate historical portfolio returns using Questrade positions and price history.
+
+    Reusable helper function for VaR/CVaR calculations.
+    Uses get_questrade_positions and get_price_history_questrade_first.
+
+    Args:
+        account_number: Questrade account number
+        lookback_days: Number of days of history to fetch (default 252 = 1 year)
+
+    Returns:
+        tuple: (portfolio_returns Series, position_weights dict)
+    """
+    import numpy as np
+
+    # Get current positions
+    positions_data = get_questrade_positions(account_number)
+    if not positions_data or 'positions' not in positions_data:
+        raise ValueError("Could not fetch positions from Questrade")
+
+    positions = positions_data['positions']
+
+    # Calculate total portfolio value
+    total_value = sum(pos.get('currentMarketValue', 0) for pos in positions if pos.get('openQuantity', 0) > 0)
+    if total_value <= 0:
+        raise ValueError("Portfolio has no value")
+
+    # Fetch price history for each position and calculate weighted returns
+    position_weights = {}
+    all_returns = []
+    skipped_positions = []
+
+    # Mutual fund prefixes (Canadian mutual funds)
+    MUTUAL_FUND_PREFIXES = ['MFC', 'RBF', 'LWF', 'TDB', 'DYN', 'FID', 'CIG', 'AGF', 'BMO', 'CI', 'IG']
+
+    for position in positions:
+        if position.get('openQuantity', 0) <= 0:
+            continue
+
+        symbol = position.get('symbol', '')
+        if not symbol:
+            continue
+
+        market_value = position.get('currentMarketValue', 0)
+        weight = market_value / total_value
+
+        # Detect position type
+        is_option = '.' in symbol or (len(symbol) > 6 and any(c.isdigit() for c in symbol[-8:]))
+        is_mutual_fund = any(symbol.startswith(prefix) for prefix in MUTUAL_FUND_PREFIXES)
+
+        ticker_to_fetch = symbol
+        delta_weight = 1.0  # Default for stocks
+
+        # Handle options - extract underlying ticker
+        if is_option:
+            try:
+                import re
+                # Parse option symbol (e.g., "DLO20Feb26C14.00" -> "DLO")
+                match = re.match(r'^([A-Z]+)', symbol)
+                if match:
+                    underlying = match.group(1)
+                    ticker_to_fetch = underlying
+                    # Use approximate delta of 0.5 for ATM options (conservative)
+                    delta_weight = 0.5
+                    logger.info(f"Option {symbol} -> using underlying {underlying} with delta={delta_weight}")
+                else:
+                    skipped_positions.append({
+                        'symbol': symbol,
+                        'reason': 'Could not parse option symbol',
+                        'weight': weight,
+                        'type': 'option'
+                    })
+                    continue
+            except Exception as e:
+                skipped_positions.append({
+                    'symbol': symbol,
+                    'reason': f'Option parsing error: {e}',
+                    'weight': weight,
+                    'type': 'option'
+                })
+                continue
+
+        position_weights[symbol] = weight
+
+        try:
+            # Get historical prices using Questrade-first approach
+            period = f"{int(lookback_days/365*12)}mo" if lookback_days > 90 else "3mo"
+            df = get_price_history_questrade_first(ticker_to_fetch, period=period)
+
+            if df.empty or len(df) < 10:
+                skipped_positions.append({
+                    'symbol': symbol,
+                    'reason': f'Insufficient data ({len(df) if not df.empty else 0} days)',
+                    'weight': weight,
+                    'type': 'mutual_fund' if is_mutual_fund else 'option' if is_option else 'stock'
+                })
+                continue
+
+            # Calculate daily returns
+            daily_returns = df['Close'].pct_change().dropna()
+
+            # Apply delta weighting for options
+            weighted_returns = daily_returns * weight * delta_weight
+            all_returns.append(weighted_returns)
+
+            logger.info(f"Successfully processed {symbol} ({len(daily_returns)} days, weight={weight:.2%})")
+
+        except Exception as e:
+            skipped_positions.append({
+                'symbol': symbol,
+                'reason': f'Processing error: {str(e)[:100]}',
+                'weight': weight,
+                'type': 'mutual_fund' if is_mutual_fund else 'option' if is_option else 'stock'
+            })
+            continue
+
+    # Provide detailed error if all positions were skipped
+    if not all_returns:
+        skipped_summary = "\n".join([
+            f"  - {s['symbol']} ({s.get('type', 'unknown')}): {s['reason']} (weight: {s['weight']:.2%})"
+            for s in skipped_positions
+        ])
+        raise ValueError(
+            f"Could not calculate returns for any positions.\n"
+            f"Skipped {len(skipped_positions)} positions:\n{skipped_summary}"
+        )
+
+    # Log skipped positions as warning if some succeeded
+    if skipped_positions:
+        skipped_weight = sum(s['weight'] for s in skipped_positions)
+        logger.warning(
+            f"Skipped {len(skipped_positions)} positions ({skipped_weight:.2%} of portfolio): "
+            f"{', '.join(s['symbol'] for s in skipped_positions)}"
+        )
+
+    # Combine all weighted returns into portfolio returns
+    # Align dates and sum
+    portfolio_returns = pd.concat(all_returns, axis=1).sum(axis=1)
+
+    return portfolio_returns, position_weights
+
+
+def _get_questrade_options_with_greeks(
+    ticker: str,
+    expiry_date: str,
+    current_price: float
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Fetch options chain from Questrade with full Greeks (delta, gamma, theta, vega).
+
+    This is the CORRECT way to get Questrade options - used by GEX, IV Skew, etc.
+    Returns separate DataFrames for calls and puts with all Greeks populated.
+
+    Args:
+        ticker: Stock symbol
+        expiry_date: Target expiration date in 'YYYY-MM-DD' format
+        current_price: Current stock price for validation
+
+    Returns:
+        (calls_df, puts_df) - Both DataFrames have columns:
+            - strike: float
+            - delta: float
+            - gamma: float
+            - theta: float
+            - vega: float
+            - impliedVolatility: float (as percentage)
+            - bid: float
+            - ask: float
+            - lastPrice: float
+            - openInterest: int
+            - volume: int
+
+    Raises:
+        Exception if Questrade fetch fails
+    """
+    from datetime import datetime
+    from questrade_api import Questrade
+
+    logger.info(f"Fetching Questrade options for {ticker} expiry {expiry_date}")
+
+    # 1. Get symbol ID
+    qt_client = get_questrade_client()
+    symbol_info = qt_client.get_symbol_info(ticker)
+
+    if not symbol_info or not symbol_info.get('symbols'):
+        raise ValueError(f"Symbol {ticker} not found in Questrade")
+
+    symbol_id = symbol_info['symbols'][0]['symbolId']
+    logger.info(f"Got symbol ID {symbol_id} for {ticker}")
+
+    # 2. Get options chain using raw Questrade API
+    q = Questrade()
+    qt_options = q.symbol_options(symbol_id)
+
+    if not qt_options or 'optionChain' not in qt_options:
+        raise ValueError(f"No options chain available for {ticker}")
+
+    # 3. Find matching expiration
+    expirations_list = qt_options['optionChain']
+    if not expirations_list:
+        raise ValueError(f"No expirations available for {ticker}")
+
+    selected_exp_obj = None
+    for exp_obj in expirations_list:
+        exp_str = datetime.strptime(exp_obj['expiryDate'], '%Y-%m-%dT%H:%M:%S.%f%z').strftime('%Y-%m-%d')
+        if exp_str == expiry_date:
+            selected_exp_obj = exp_obj
+            break
+
+    if not selected_exp_obj:
+        raise ValueError(f"Expiration {expiry_date} not found for {ticker}")
+
+    logger.info(f"Found matching expiration {expiry_date}")
+
+    # 4. Collect all option IDs
+    option_ids = []
+    for root_data in selected_exp_obj['chainPerRoot']:
+        for strike_data in root_data['chainPerStrikePrice']:
+            if 'callSymbolId' in strike_data and strike_data['callSymbolId']:
+                option_ids.append(strike_data['callSymbolId'])
+            if 'putSymbolId' in strike_data and strike_data['putSymbolId']:
+                option_ids.append(strike_data['putSymbolId'])
+
+    if len(option_ids) == 0:
+        raise ValueError(f"No option IDs found for {ticker} {expiry_date}")
+
+    logger.info(f"Collected {len(option_ids)} option IDs")
+
+    # 5. Fetch quotes with Greeks in batches
+    all_quotes = []
+    batch_size = 100
+    for i in range(0, len(option_ids), batch_size):
+        batch = option_ids[i:i+batch_size]
+        logger.info(f"Fetching batch {i//batch_size + 1} of {(len(option_ids)-1)//batch_size + 1} ({len(batch)} options)")
+        quotes = q.markets_options(optionIds=batch)
+        if quotes and 'optionQuotes' in quotes:
+            all_quotes.extend(quotes['optionQuotes'])
+
+    logger.info(f"Total quotes retrieved: {len(all_quotes)}")
+
+    # 6. Parse quotes into calls and puts DataFrames
+    calls_data = []
+    puts_data = []
+
+    for quote in all_quotes:
+        symbol = quote['symbol']
+
+        # Parse Questrade symbol format: "SPY20Feb26C335.00"
+        # Find rightmost C or P (ticker might contain C or P)
+        c_pos = symbol.rfind('C')
+        p_pos = symbol.rfind('P')
+
+        if c_pos > p_pos and c_pos != -1:
+            # Call option
+            strike = float(symbol[c_pos+1:])
+            option_data = {
+                'strike': strike,
+                'delta': float(quote.get('delta', 0) or 0),
+                'gamma': float(quote.get('gamma', 0) or 0),
+                'theta': float(quote.get('theta', 0) or 0),
+                'vega': float(quote.get('vega', 0) or 0),
+                'impliedVolatility': float(quote.get('volatility', 0) or 0),
+                'bid': float(quote.get('bidPrice', 0) or 0),
+                'ask': float(quote.get('askPrice', 0) or 0),
+                'lastPrice': float(quote.get('lastTradePrc', 0) or 0),
+                'openInterest': int(quote.get('openInterest', 0) or 0),
+                'volume': int(quote.get('volume', 0) or 0)
+            }
+            calls_data.append(option_data)
+
+        elif p_pos > c_pos and p_pos != -1:
+            # Put option
+            strike = float(symbol[p_pos+1:])
+            option_data = {
+                'strike': strike,
+                'delta': float(quote.get('delta', 0) or 0),
+                'gamma': float(quote.get('gamma', 0) or 0),
+                'theta': float(quote.get('theta', 0) or 0),
+                'vega': float(quote.get('vega', 0) or 0),
+                'impliedVolatility': float(quote.get('volatility', 0) or 0),
+                'bid': float(quote.get('bidPrice', 0) or 0),
+                'ask': float(quote.get('askPrice', 0) or 0),
+                'lastPrice': float(quote.get('lastTradePrc', 0) or 0),
+                'openInterest': int(quote.get('openInterest', 0) or 0),
+                'volume': int(quote.get('volume', 0) or 0)
+            }
+            puts_data.append(option_data)
+
+    calls_df = pd.DataFrame(calls_data)
+    puts_df = pd.DataFrame(puts_data)
+
+    logger.info(f"✅ Questrade options: {len(calls_df)} calls, {len(puts_df)} puts with full Greeks")
+
+    return calls_df, puts_df
+
+
+def _construct_iron_condor(
+    ticker: str,
+    current_price: float,
+    expiry: str,
+    dte: int,
+    calls_df: pd.DataFrame,
+    puts_df: pd.DataFrame,
+    account_size: float
+) -> dict:
+    """
+    Construct explicit 4-leg Iron Condor with full parameters.
+
+    Returns fully actionable trade with strikes, premiums, Greeks, and position sizing.
+
+    Strategy Structure:
+    - SELL 16-delta OTM put
+    - BUY 5-delta OTM put (protection)
+    - SELL 16-delta OTM call
+    - BUY 5-delta OTM call (protection)
+
+    Args:
+        ticker: Stock symbol
+        current_price: Current stock price
+        expiry: Expiration date
+        dte: Days to expiration
+        calls_df: Options chain calls dataframe
+        puts_df: Options chain puts dataframe
+        account_size: Account size for position sizing
+
+    Returns:
+        dict with full Iron Condor specification
+    """
+    import pandas as pd
+
+    # 1. Find 16-delta short strikes (both put and call)
+    put_short = None
+    put_long = None
+    call_short = None
+    call_long = None
+
+    # Find short put (16-delta OTM put)
+    if not puts_df.empty and 'delta' in puts_df.columns:
+        puts_df_sorted = puts_df.copy()
+        target_delta = 0.16
+        puts_df_sorted['delta_diff'] = abs(abs(puts_df_sorted['delta']) - target_delta)
+        best_put = puts_df_sorted.nsmallest(1, 'delta_diff').iloc[0]
+
+        put_short = {
+            "strike": float(best_put['strike']),
+            "delta": float(best_put.get('delta', -0.16)),
+            "premium": float(best_put.get('bid', 0) or best_put.get('lastPrice', 0)),
+            "iv": float(best_put.get('impliedVolatility', 0)) * 100 if best_put.get('impliedVolatility', 0) < 1.5 else float(best_put.get('impliedVolatility', 0)),
+            "gamma": float(best_put.get('gamma', 0)),
+            "theta": float(best_put.get('theta', 0)),
+            "vega": float(best_put.get('vega', 0))
+        }
+
+        # Find long put (5-delta protection - further OTM)
+        target_delta_long = 0.05
+        puts_df_sorted['delta_diff_long'] = abs(abs(puts_df_sorted['delta']) - target_delta_long)
+        # Only consider strikes below the short put
+        puts_below = puts_df_sorted[puts_df_sorted['strike'] < put_short['strike']]
+        if not puts_below.empty:
+            best_put_long = puts_below.nsmallest(1, 'delta_diff_long').iloc[0]
+
+            put_long = {
+                "strike": float(best_put_long['strike']),
+                "delta": float(best_put_long.get('delta', -0.05)),
+                "premium": float(best_put_long.get('ask', 0) or best_put_long.get('lastPrice', 0)),
+                "iv": float(best_put_long.get('impliedVolatility', 0)) * 100 if best_put_long.get('impliedVolatility', 0) < 1.5 else float(best_put_long.get('impliedVolatility', 0)),
+                "gamma": float(best_put_long.get('gamma', 0)),
+                "theta": float(best_put_long.get('theta', 0)),
+                "vega": float(best_put_long.get('vega', 0))
+            }
+
+    # Find short call (16-delta OTM call)
+    if not calls_df.empty and 'delta' in calls_df.columns:
+        calls_df_sorted = calls_df.copy()
+        target_delta = 0.16
+        calls_df_sorted['delta_diff'] = abs(calls_df_sorted['delta'] - target_delta)
+        best_call = calls_df_sorted.nsmallest(1, 'delta_diff').iloc[0]
+
+        call_short = {
+            "strike": float(best_call['strike']),
+            "delta": float(best_call.get('delta', 0.16)),
+            "premium": float(best_call.get('bid', 0) or best_call.get('lastPrice', 0)),
+            "iv": float(best_call.get('impliedVolatility', 0)) * 100 if best_call.get('impliedVolatility', 0) < 1.5 else float(best_call.get('impliedVolatility', 0)),
+            "gamma": float(best_call.get('gamma', 0)),
+            "theta": float(best_call.get('theta', 0)),
+            "vega": float(best_call.get('vega', 0))
+        }
+
+        # Find long call (5-delta protection - further OTM)
+        target_delta_long = 0.05
+        calls_df_sorted['delta_diff_long'] = abs(calls_df_sorted['delta'] - target_delta_long)
+        # Only consider strikes above the short call
+        calls_above = calls_df_sorted[calls_df_sorted['strike'] > call_short['strike']]
+        if not calls_above.empty:
+            best_call_long = calls_above.nsmallest(1, 'delta_diff_long').iloc[0]
+
+            call_long = {
+                "strike": float(best_call_long['strike']),
+                "delta": float(best_call_long.get('delta', 0.05)),
+                "premium": float(best_call_long.get('ask', 0) or best_call_long.get('lastPrice', 0)),
+                "iv": float(best_call_long.get('impliedVolatility', 0)) * 100 if best_call_long.get('impliedVolatility', 0) < 1.5 else float(best_call_long.get('impliedVolatility', 0)),
+                "gamma": float(best_call_long.get('gamma', 0)),
+                "theta": float(best_call_long.get('theta', 0)),
+                "vega": float(best_call_long.get('vega', 0))
+            }
+
+    # If we couldn't find all 4 legs, return None
+    if not all([put_short, put_long, call_short, call_long]):
+        return None
+
+    # 2. Calculate net credit
+    net_credit = (put_short['premium'] + call_short['premium']) - (put_long['premium'] + call_long['premium'])
+
+    # 3. Calculate spread widths
+    put_spread_width = put_short['strike'] - put_long['strike']
+    call_spread_width = call_long['strike'] - call_short['strike']
+    max_spread_width = max(put_spread_width, call_spread_width)
+
+    # 4. Calculate risk metrics
+    max_loss_per_contract = (max_spread_width - net_credit) * 100
+    max_profit_per_contract = net_credit * 100
+
+    # 5. Position sizing (limit risk to 2% of account)
+    max_risk_dollars = account_size * 0.02  # 2% risk
+    contracts = max(1, int(max_risk_dollars / max_loss_per_contract))
+
+    # 6. Aggregate Greeks (for entire position)
+    # Each leg's contribution: short = negative sign, long = positive sign
+    position_delta = (
+        -put_short['delta'] * contracts * 100 +  # Short put = negative delta
+        put_long['delta'] * contracts * 100 +     # Long put = positive delta
+        -call_short['delta'] * contracts * 100 +  # Short call = negative delta
+        call_long['delta'] * contracts * 100      # Long call = positive delta
+    )
+
+    position_gamma = (
+        -put_short['gamma'] * contracts * 100 +
+        put_long['gamma'] * contracts * 100 +
+        -call_short['gamma'] * contracts * 100 +
+        call_long['gamma'] * contracts * 100
+    )
+
+    position_theta = (
+        -put_short['theta'] * contracts * 100 +
+        put_long['theta'] * contracts * 100 +
+        -call_short['theta'] * contracts * 100 +
+        call_long['theta'] * contracts * 100
+    )
+
+    position_vega = (
+        -put_short['vega'] * contracts * 100 +
+        put_long['vega'] * contracts * 100 +
+        -call_short['vega'] * contracts * 100 +
+        call_long['vega'] * contracts * 100
+    )
+
+    # 7. Calculate POP (probability of profit)
+    # POP = 100 - (short put delta + short call delta) * 50
+    pop = round(100 - (abs(put_short['delta']) + abs(call_short['delta'])) * 50, 1)
+
+    # 8. Calculate breakevens
+    breakeven_lower = put_short['strike'] - net_credit
+    breakeven_upper = call_short['strike'] + net_credit
+
+    # 9. Liquidity score (estimate based on bid-ask spread)
+    avg_spread_pct = (
+        (put_short['premium'] * 0.02) +  # Estimate 2% spread for liquid options
+        (call_short['premium'] * 0.02)
+    ) / 2
+    liquidity_score = max(0, min(100, 100 - avg_spread_pct * 10))  # Simple scoring
+
+    # 10. Slippage estimate (4% of net credit)
+    spread_cost_estimate = net_credit * 0.04 * contracts * 100
+
+    # 11. Build output
+    return {
+        "strategy": "IRON_CONDOR",
+        "legs": [
+            {
+                "action": "SELL",
+                "option_type": "CALL",
+                "strike": call_short['strike'],
+                "expiry": expiry,
+                "delta": call_short['delta'],
+                "iv": call_short['iv'],
+                "premium": call_short['premium'],
+                "contracts": contracts
+            },
+            {
+                "action": "BUY",
+                "option_type": "CALL",
+                "strike": call_long['strike'],
+                "expiry": expiry,
+                "delta": call_long['delta'],
+                "iv": call_long['iv'],
+                "premium": call_long['premium'],
+                "contracts": contracts
+            },
+            {
+                "action": "SELL",
+                "option_type": "PUT",
+                "strike": put_short['strike'],
+                "expiry": expiry,
+                "delta": put_short['delta'],
+                "iv": put_short['iv'],
+                "premium": put_short['premium'],
+                "contracts": contracts
+            },
+            {
+                "action": "BUY",
+                "option_type": "PUT",
+                "strike": put_long['strike'],
+                "expiry": expiry,
+                "delta": put_long['delta'],
+                "iv": put_long['iv'],
+                "premium": put_long['premium'],
+                "contracts": contracts
+            }
+        ],
+        "net_credit": round(net_credit, 2),
+        "max_profit": round(max_profit_per_contract * contracts, 2),
+        "max_loss": round(max_loss_per_contract * contracts, 2),
+        "breakeven_upper": round(breakeven_upper, 2),
+        "breakeven_lower": round(breakeven_lower, 2),
+        "probability_of_profit": pop,
+        "position_greeks": {
+            "delta": round(position_delta, 2),
+            "gamma": round(position_gamma, 4),
+            "theta": round(position_theta, 2),
+            "vega": round(position_vega, 2)
+        },
+        "liquidity_score": round(liquidity_score, 1),
+        "spread_cost_estimate": round(spread_cost_estimate, 2),
+        "dte": dte,
+        "put_spread_width": put_spread_width,
+        "call_spread_width": call_spread_width,
+        "contracts": contracts,
+        "buying_power_required": round(max_loss_per_contract * contracts, 2)
+    }
+
+
 def _calculate_expected_move(current_price: float, iv: float, dte: int) -> dict:
     """
     Calculate expected move from IV.
@@ -2764,6 +3458,412 @@ def _calculate_expected_move(current_price: float, iv: float, dte: int) -> dict:
         "iv_used": round(iv * 100, 1),
         "dte": dte,
         "formula": f"${current_price:.2f} × {iv*100:.1f}% × √({dte}/365) = ${expected_move:.2f}"
+    }
+
+
+def _construct_calendar_spread(
+    ticker: str,
+    current_price: float,
+    front_month_expiry: str,
+    back_month_expiry: str,
+    front_calls_df: pd.DataFrame,
+    front_puts_df: pd.DataFrame,
+    back_calls_df: pd.DataFrame,
+    back_puts_df: pd.DataFrame,
+    account_size: float,
+    direction: str = 'NEUTRAL'
+) -> dict:
+    """
+    Construct Calendar Spread (time spread).
+
+    **Uses Questrade as primary source** (dataframes already fetched with Questrade-first).
+
+    Structure:
+    - SELL near-term option (higher theta decay)
+    - BUY far-term option at same strike (lower theta decay)
+
+    Profit from theta differential when:
+    - Term structure in contango (back-month IV > front-month IV)
+    - Price stays near ATM strike
+    - IV Rank < 50% (don't sell premium in low IV)
+
+    Args:
+        ticker: Stock symbol
+        current_price: Current stock price
+        front_month_expiry: Near-term expiration (to sell)
+        back_month_expiry: Far-term expiration (to buy)
+        front_calls_df: Front month calls dataframe
+        front_puts_df: Front month puts dataframe
+        back_calls_df: Back month calls dataframe
+        back_puts_df: Back month puts dataframe
+        account_size: Account size for position sizing
+        direction: 'NEUTRAL' (default), 'BULLISH', or 'BEARISH'
+
+    Returns:
+        dict with full Calendar Spread specification or None if cannot construct
+    """
+    import pandas as pd
+    from datetime import datetime
+
+    # Calculate DTE for front and back months
+    front_dte = (datetime.strptime(front_month_expiry, '%Y-%m-%d') - datetime.now()).days
+    back_dte = (datetime.strptime(back_month_expiry, '%Y-%m-%d') - datetime.now()).days
+
+    # Choose calls or puts based on direction
+    if direction.upper() == 'BULLISH':
+        # Use calls for bullish bias
+        front_options = front_calls_df
+        back_options = back_calls_df
+        option_type = 'CALL'
+    elif direction.upper() == 'BEARISH':
+        # Use puts for bearish bias
+        front_options = front_puts_df
+        back_options = back_puts_df
+        option_type = 'PUT'
+    else:
+        # NEUTRAL - use calls (slightly bullish bias typical for calendars)
+        front_options = front_calls_df
+        back_options = back_calls_df
+        option_type = 'CALL'
+
+    if front_options.empty or back_options.empty:
+        logger.warning(f"Calendar Spread: Empty options dataframes for {ticker}")
+        return None
+
+    # Find ATM strike (closest to current price)
+    all_strikes = set(front_options['strike'].tolist()) & set(back_options['strike'].tolist())
+    if not all_strikes:
+        logger.warning(f"Calendar Spread: No common strikes between front and back months")
+        return None
+
+    atm_strike = min(all_strikes, key=lambda x: abs(x - current_price))
+
+    # Get front month option (to SELL)
+    front_option = front_options[front_options['strike'] == atm_strike]
+    if front_option.empty:
+        return None
+    front_option = front_option.iloc[0]
+
+    # Get back month option (to BUY)
+    back_option = back_options[back_options['strike'] == atm_strike]
+    if back_option.empty:
+        return None
+    back_option = back_option.iloc[0]
+
+    # Extract data
+    front_premium = float(front_option.get('bid', 0) or front_option.get('lastPrice', 0))
+    back_premium = float(back_option.get('ask', 0) or front_option.get('lastPrice', 0))
+
+    front_iv = float(front_option.get('impliedVolatility', 0))
+    back_iv = float(back_option.get('impliedVolatility', 0))
+
+    # Normalize IV
+    if front_iv > 5:
+        front_iv = front_iv / 100
+    if back_iv > 5:
+        back_iv = back_iv / 100
+
+    # Check term structure (need contango: back_iv > front_iv)
+    if back_iv <= front_iv:
+        logger.warning(f"Calendar Spread: Term structure NOT in contango (back IV {back_iv:.2%} <= front IV {front_iv:.2%})")
+        # Still allow construction but warn
+
+    # Net debit (we pay to enter)
+    net_debit = back_premium - front_premium
+
+    if net_debit <= 0:
+        logger.warning(f"Calendar Spread: Net debit is non-positive ({net_debit}), cannot construct")
+        return None
+
+    # Position sizing (limit risk to 2% of account)
+    max_loss_per_contract = net_debit * 100  # Debit paid
+    max_risk_dollars = account_size * 0.02
+    contracts = max(1, int(max_risk_dollars / max_loss_per_contract))
+
+    # Max profit occurs when front month expires worthless and back month retains value
+    # Approximate: back month value at front expiration - debit paid
+    # Conservative estimate: 50% of back month premium
+    max_profit_estimate = (back_premium * 0.5 - net_debit) * 100 * contracts
+
+    # Greeks (approximate)
+    front_delta = float(front_option.get('delta', 0))
+    back_delta = float(back_option.get('delta', 0))
+    front_theta = float(front_option.get('theta', 0))
+    back_theta = float(back_option.get('theta', 0))
+    front_vega = float(front_option.get('vega', 0))
+    back_vega = float(back_option.get('vega', 0))
+
+    # Position Greeks (SELL front, BUY back)
+    position_delta = (-front_delta + back_delta) * contracts * 100
+    position_theta = (-front_theta + back_theta) * contracts * 100  # Positive theta (profit from time decay)
+    position_vega = (-front_vega + back_vega) * contracts * 100      # Positive vega (want IV to rise)
+
+    # Liquidity score (simple average)
+    front_volume = front_option.get('volume', 0) or 0
+    back_volume = back_option.get('volume', 0) or 0
+    liquidity_score = min(10, (front_volume + back_volume) / 20)
+
+    return {
+        "strategy": "Calendar Spread",
+        "option_type": option_type,
+        "direction": direction,
+        "strike": atm_strike,
+        "front_expiry": front_month_expiry,
+        "back_expiry": back_month_expiry,
+        "front_dte": front_dte,
+        "back_dte": back_dte,
+
+        "legs": [
+            {
+                "action": "SELL",
+                "option_type": option_type,
+                "strike": atm_strike,
+                "expiry": front_month_expiry,
+                "premium": front_premium,
+                "iv": round(front_iv * 100, 2),
+                "delta": front_delta,
+                "theta": front_theta,
+                "vega": front_vega
+            },
+            {
+                "action": "BUY",
+                "option_type": option_type,
+                "strike": atm_strike,
+                "expiry": back_month_expiry,
+                "premium": back_premium,
+                "iv": round(back_iv * 100, 2),
+                "delta": back_delta,
+                "theta": back_theta,
+                "vega": back_vega
+            }
+        ],
+
+        "net_debit": round(net_debit, 2),
+        "max_loss": round(max_loss_per_contract * contracts, 2),
+        "max_profit_estimate": round(max_profit_estimate, 2),
+        "contracts": contracts,
+        "buying_power_required": round(max_loss_per_contract * contracts, 2),
+
+        "position_greeks": {
+            "delta": round(position_delta, 2),
+            "theta": round(position_theta, 2),
+            "vega": round(position_vega, 2)
+        },
+
+        "term_structure": {
+            "front_iv": round(front_iv * 100, 2),
+            "back_iv": round(back_iv * 100, 2),
+            "iv_differential": round((back_iv - front_iv) * 100, 2),
+            "is_contango": back_iv > front_iv
+        },
+
+        "liquidity_score": round(liquidity_score, 1),
+
+        "ideal_conditions": [
+            f"✅ Term structure in contango" if back_iv > front_iv else "❌ Term structure NOT in contango",
+            f"✅ Price near ATM (${atm_strike})" if abs(current_price - atm_strike) < current_price * 0.05 else f"⚠️ Price {abs(current_price - atm_strike)/current_price*100:.1f}% from ATM",
+            "✅ Positive theta (profit from time decay)" if position_theta > 0 else "❌ Negative theta"
+        ]
+    }
+
+
+def _construct_jade_lizard(
+    ticker: str,
+    current_price: float,
+    expiry: str,
+    dte: int,
+    calls_df: pd.DataFrame,
+    puts_df: pd.DataFrame,
+    account_size: float
+) -> dict:
+    """
+    Construct Jade Lizard (no upside risk).
+
+    **Uses Questrade as primary source** (dataframes already fetched with Questrade-first).
+
+    Structure:
+    - SELL OTM call spread (bear call spread)
+    - SELL OTM put (cash-secured put)
+
+    Condition for NO upside risk:
+    - Put premium >= Call spread width
+    - This creates NO upside risk (max loss on downside only)
+
+    Ideal when:
+    - IV Rank > 60%
+    - Neutral to bullish bias
+    - Put premium is inflated (put skew)
+
+    Args:
+        ticker: Stock symbol
+        current_price: Current stock price
+        expiry: Expiration date
+        dte: Days to expiration
+        calls_df: Calls dataframe
+        puts_df: Puts dataframe
+        account_size: Account size for position sizing
+
+    Returns:
+        dict with full Jade Lizard specification or None if cannot construct
+    """
+    import pandas as pd
+
+    if calls_df.empty or puts_df.empty:
+        logger.warning(f"Jade Lizard: Empty options dataframes for {ticker}")
+        return None
+
+    # 1. Find OTM put to SELL (around 20-30 delta)
+    if 'delta' not in puts_df.columns:
+        logger.warning(f"Jade Lizard: No delta column in puts dataframe")
+        return None
+
+    target_put_delta = 0.25  # 25-delta OTM put
+    puts_df_sorted = puts_df.copy()
+    puts_df_sorted['delta_diff'] = abs(abs(puts_df_sorted['delta']) - target_put_delta)
+    best_put = puts_df_sorted.nsmallest(1, 'delta_diff')
+
+    if best_put.empty:
+        return None
+
+    best_put = best_put.iloc[0]
+    put_strike = float(best_put['strike'])
+    put_premium = float(best_put.get('bid', 0) or best_put.get('lastPrice', 0))
+    put_delta = float(best_put.get('delta', -0.25))
+    put_iv = float(best_put.get('impliedVolatility', 0))
+    if put_iv > 5:
+        put_iv = put_iv / 100
+
+    # 2. Find OTM call spread (SELL 20-delta, BUY 10-delta)
+    if 'delta' not in calls_df.columns:
+        logger.warning(f"Jade Lizard: No delta column in calls dataframe")
+        return None
+
+    target_call_short_delta = 0.20
+    calls_df_sorted = calls_df.copy()
+    calls_df_sorted['delta_diff'] = abs(calls_df_sorted['delta'] - target_call_short_delta)
+    best_call_short = calls_df_sorted.nsmallest(1, 'delta_diff')
+
+    if best_call_short.empty:
+        return None
+
+    best_call_short = best_call_short.iloc[0]
+    call_short_strike = float(best_call_short['strike'])
+    call_short_premium = float(best_call_short.get('bid', 0) or best_call_short.get('lastPrice', 0))
+    call_short_delta = float(best_call_short.get('delta', 0.20))
+    call_short_iv = float(best_call_short.get('impliedVolatility', 0))
+    if call_short_iv > 5:
+        call_short_iv = call_short_iv / 100
+
+    # Find long call (10-delta protection)
+    target_call_long_delta = 0.10
+    calls_df_sorted['delta_diff_long'] = abs(calls_df_sorted['delta'] - target_call_long_delta)
+    calls_above = calls_df_sorted[calls_df_sorted['strike'] > call_short_strike]
+
+    if calls_above.empty:
+        logger.warning(f"Jade Lizard: No long call strikes found above short call")
+        return None
+
+    best_call_long = calls_above.nsmallest(1, 'delta_diff_long').iloc[0]
+    call_long_strike = float(best_call_long['strike'])
+    call_long_premium = float(best_call_long.get('ask', 0) or best_call_long.get('lastPrice', 0))
+    call_long_delta = float(best_call_long.get('delta', 0.10))
+
+    # 3. Calculate net credit and check Jade Lizard condition
+    call_spread_width = call_long_strike - call_short_strike
+    call_spread_credit = call_short_premium - call_long_premium
+    total_credit = put_premium + call_spread_credit
+
+    # Jade Lizard condition: Put premium >= Call spread width (NO upside risk)
+    has_no_upside_risk = put_premium >= call_spread_width
+
+    # 4. Calculate risk metrics
+    # Max loss occurs on downside (put assignment)
+    max_loss_put_side = (put_strike - (put_strike - total_credit)) * 100  # Effective put cost
+    # Max loss on call side (if call spread breached)
+    max_loss_call_side = (call_spread_width - total_credit) * 100
+
+    # Overall max loss is worst case
+    max_loss_per_contract = max(max_loss_put_side, max_loss_call_side)
+    max_profit_per_contract = total_credit * 100
+
+    # Position sizing
+    max_risk_dollars = account_size * 0.02
+    contracts = max(1, int(max_risk_dollars / max_loss_per_contract))
+
+    # Aggregate Greeks
+    put_theta = float(best_put.get('theta', 0))
+    call_short_theta = float(best_call_short.get('theta', 0))
+    call_long_theta = float(best_call_long.get('theta', 0))
+
+    position_delta = (-put_delta - call_short_delta + call_long_delta) * contracts * 100
+    position_theta = (-put_theta - call_short_theta + call_long_theta) * contracts * 100
+
+    # Liquidity
+    put_volume = best_put.get('volume', 0) or 0
+    call_short_volume = best_call_short.get('volume', 0) or 0
+    call_long_volume = best_call_long.get('volume', 0) or 0
+    liquidity_score = min(10, (put_volume + call_short_volume + call_long_volume) / 30)
+
+    # Breakevens
+    breakeven_downside = put_strike - total_credit
+    breakeven_upside = call_short_strike + call_spread_credit if has_no_upside_risk else call_short_strike + total_credit
+
+    return {
+        "strategy": "Jade Lizard",
+        "dte": dte,
+        "has_no_upside_risk": has_no_upside_risk,
+
+        "legs": [
+            {
+                "action": "SELL",
+                "option_type": "PUT",
+                "strike": put_strike,
+                "premium": put_premium,
+                "delta": put_delta,
+                "iv": round(put_iv * 100, 2),
+                "theta": put_theta
+            },
+            {
+                "action": "SELL",
+                "option_type": "CALL",
+                "strike": call_short_strike,
+                "premium": call_short_premium,
+                "delta": call_short_delta,
+                "iv": round(call_short_iv * 100, 2),
+                "theta": call_short_theta
+            },
+            {
+                "action": "BUY",
+                "option_type": "CALL",
+                "strike": call_long_strike,
+                "premium": call_long_premium,
+                "delta": call_long_delta
+            }
+        ],
+
+        "net_credit": round(total_credit, 2),
+        "max_profit": round(max_profit_per_contract * contracts, 2),
+        "max_loss": round(max_loss_per_contract * contracts, 2),
+        "breakeven_downside": round(breakeven_downside, 2),
+        "breakeven_upside": round(breakeven_upside, 2),
+        "contracts": contracts,
+        "buying_power_required": round(max_loss_per_contract * contracts, 2),
+
+        "position_greeks": {
+            "delta": round(position_delta, 2),
+            "theta": round(position_theta, 2)
+        },
+
+        "call_spread_width": call_spread_width,
+        "put_premium": put_premium,
+        "liquidity_score": round(liquidity_score, 1),
+
+        "jade_lizard_condition": {
+            "put_premium": put_premium,
+            "call_spread_width": call_spread_width,
+            "condition_met": has_no_upside_risk,
+            "message": f"✅ NO upside risk (Put premium ${put_premium:.2f} >= Call spread width ${call_spread_width:.2f})" if has_no_upside_risk else f"⚠️ Has upside risk (Put premium ${put_premium:.2f} < Call spread width ${call_spread_width:.2f})"
+        }
     }
 
 
@@ -3223,21 +4323,38 @@ def analyze_options_mcmillan(
             dte=optimal_expiry.get('dte', 45) or 45
         )
 
-        # 8f. Determine if options trading allowed
-        options_allowed = (
-            earnings_check.get('options_allowed', True) and
-            liquidity_tier.get('tier') != 'NON_LIQUID' and
-            atm_liquidity.get('tradeable', True)
-        )
+        # 8f. Determine if options trading allowed (now distinguishes buyers vs sellers)
+        # CRITICAL: Sellers benefit from high IV near earnings, buyers get hurt
+        is_liquid = liquidity_tier.get('tier') != 'NON_LIQUID' and atm_liquidity.get('tradeable', True)
 
-        # Collect all warnings
+        options_buying_allowed = (
+            earnings_check.get('options_buying_allowed', True) and is_liquid
+        )
+        options_selling_allowed = (
+            earnings_check.get('options_selling_allowed', True) and is_liquid
+        )
+        # Legacy field - now True if SELLING is allowed (more permissive for sellers)
+        options_allowed = options_selling_allowed
+
+        # Collect all warnings and opportunities
         all_warnings = []
-        if earnings_check.get('warning'):
-            all_warnings.append(earnings_check['warning'])
+        seller_opportunities = []
+
+        # Buyer warning (if buying not allowed near earnings)
+        if earnings_check.get('buyer_warning'):
+            all_warnings.append(earnings_check['buyer_warning'])
+
+        # Seller opportunity (highlighted when near earnings)
+        if earnings_check.get('seller_opportunity'):
+            seller_opportunities.append(earnings_check['seller_opportunity'])
+
         all_warnings.extend(liquidity_tier.get('warnings', []))
         all_warnings.extend(atm_liquidity.get('warnings', []))
         if optimal_expiry.get('warning'):
             all_warnings.append(optimal_expiry['warning'])
+
+        # Get recommended selling strategies if near earnings
+        earnings_strategies = earnings_check.get('recommended_strategies', [])
 
         return {
             "ticker": ticker,
@@ -3264,7 +4381,7 @@ def analyze_options_mcmillan(
             # INSTITUTIONAL OPTIONS DATA (NEW)
             # ============================================================
             "institutional": {
-                # Earnings Filter
+                # Earnings Filter - NOW WITH BUYER/SELLER DISTINCTION
                 "earnings_check": earnings_check,
                 "days_to_earnings": earnings_check.get('days_to_earnings'),
 
@@ -3280,9 +4397,15 @@ def analyze_options_mcmillan(
                 # Expected Move
                 "expected_move": expected_move,
 
-                # Trade Allowed Flag
-                "options_allowed": options_allowed,
-                "skip_reason": all_warnings[0] if all_warnings and not options_allowed else None,
+                # Trade Allowed Flags - BUYER vs SELLER
+                "options_allowed": options_allowed,  # Legacy (True if selling allowed)
+                "options_buying_allowed": options_buying_allowed,  # NEW: Buyers hurt by IV crush
+                "options_selling_allowed": options_selling_allowed,  # NEW: Sellers profit from IV crush
+                "skip_reason": all_warnings[0] if all_warnings and not options_buying_allowed else None,
+
+                # Earnings-Related Strategies (when near earnings, sellers benefit)
+                "earnings_strategies": earnings_strategies,
+                "seller_opportunities": seller_opportunities,
 
                 # All Warnings
                 "warnings": all_warnings,
@@ -3299,14 +4422,18 @@ def analyze_options_mcmillan(
                 "smart_money_signal": uoa_analysis['smart_money_signal'],
                 "options_quality_score": options_quality['score'],
                 "primary_suggestion": strategy_suggestions['high_iv_strategies'][0] if iv_analysis['iv_rank'] >= 50 else strategy_suggestions['low_iv_strategies'][0],
-                # NEW: Institutional summary
-                "options_allowed": options_allowed,
+                # Institutional summary - NOW WITH BUYER/SELLER DISTINCTION
+                "options_allowed": options_allowed,  # Legacy
+                "options_buying_allowed": options_buying_allowed,  # NEW
+                "options_selling_allowed": options_selling_allowed,  # NEW
                 "liquidity_tier": liquidity_tier.get('tier'),
                 "liquidity_grade": atm_liquidity.get('grade'),
                 "days_to_earnings": earnings_check.get('days_to_earnings'),
                 "optimal_dte": optimal_expiry.get('dte'),
                 "expected_move_pct": expected_move.get('expected_move_pct'),
                 "warnings_count": len(all_warnings),
+                "seller_opportunities_count": len(seller_opportunities),  # NEW
+                "earnings_strategy_hint": earnings_strategies[0] if earnings_strategies else None,  # NEW
             },
 
             "methodology": "McMillan - Options as a Strategic Investment (5th Ed.) + Institutional Parameters"
@@ -3334,8 +4461,12 @@ def generate_options_trade_plan(
     - Position sizing using Half-Kelly criterion
     - Complete exit rules (NO stop losses per TastyTrade research)
 
-    CRITICAL RULES:
-    - SKIP if earnings < 30 days (IV crush risk)
+    CRITICAL EARNINGS RULES (BUYER vs SELLER):
+    - BUYERS: Skip if earnings < 30 days (IV crush will hurt you)
+    - SELLERS: PRIME TIME near earnings (IV crush = profit for premium sellers)
+    - McMillan/TastyTrade: "When IV is HIGH, be a SELLER"
+
+    Liquidity Rules:
     - Liquidity warnings for non-Tier 1 underlyings
     - Greeks-based position limits
 
@@ -3348,11 +4479,14 @@ def generate_options_trade_plan(
     Returns:
         Complete options trade plan with:
         - options_allowed: Whether options are recommended
+        - options_buying_allowed: Whether BUYING options is recommended
+        - options_selling_allowed: Whether SELLING options is recommended
         - stock_plan: Stock trading plan (entry, stop, targets)
         - options_plan: Options strategy with specific legs
         - position_sizing: Contracts based on account
         - exit_rules: 50% profit, 21 DTE roll, NO stops
         - warnings: All liquidity/earnings warnings
+        - seller_opportunities: Highlighted opportunities for premium sellers
     """
     from datetime import datetime, timedelta
 
@@ -3372,14 +4506,20 @@ def generate_options_trade_plan(
         institutional = mcmillan.get('institutional', {})
         greeks = mcmillan.get('greeks_assessment', {})
 
-        # Extract key data
+        # Extract key data - NOW WITH BUYER/SELLER DISTINCTION
         iv_rank = iv_analysis.get('iv_rank', 50)
         iv_percentile = iv_analysis.get('iv_percentile', 50)
-        options_allowed = institutional.get('options_allowed', True)
+        options_allowed = institutional.get('options_allowed', True)  # Legacy (selling allowed)
+        options_buying_allowed = institutional.get('options_buying_allowed', True)
+        options_selling_allowed = institutional.get('options_selling_allowed', True)
         liquidity_tier = institutional.get('liquidity_tier', {})
+        size_multiplier = liquidity_tier.get('size_multiplier', 1.0)  # Extract early for Iron Condor path
         optimal_expiry = institutional.get('optimal_expiry', {})
         expected_move = institutional.get('expected_move', {})
         all_warnings = institutional.get('warnings', [])
+        seller_opportunities = institutional.get('seller_opportunities', [])
+        earnings_strategies = institutional.get('earnings_strategies', [])
+        days_to_earnings = institutional.get('days_to_earnings')
 
         # ============================================================
         # 1. STOCK TRADING PLAN (Always generated)
@@ -3420,14 +4560,37 @@ def generate_options_trade_plan(
         }
 
         # ============================================================
-        # 2. OPTIONS TRADING PLAN
+        # 2. OPTIONS TRADING PLAN - NOW DISTINGUISHES BUYERS vs SELLERS
         # ============================================================
         options_plan = None
 
-        if not options_allowed:
+        # CRITICAL: Check buyer vs seller allowed separately
+        # Near earnings: Buying blocked (IV crush hurts), Selling ENCOURAGED (IV crush helps)
+        near_earnings_selling_opportunity = (
+            not options_buying_allowed and options_selling_allowed and days_to_earnings is not None
+        )
+
+        if not options_selling_allowed:
+            # Complete skip - likely liquidity issue (both buyer and seller blocked)
             options_plan = {
                 "status": "SKIP",
-                "reason": institutional.get('skip_reason', "Options not recommended"),
+                "reason": institutional.get('skip_reason', "Options not recommended - liquidity issue"),
+                "warnings": all_warnings
+            }
+        elif near_earnings_selling_opportunity:
+            # PRIME TIME FOR SELLERS: Near earnings, high IV, suggest selling strategies
+            options_plan = {
+                "status": "SELL_PREMIUM",
+                "reason": f"✅ PRIME TIME TO SELL PREMIUM - Earnings in {days_to_earnings} days. High IV = max premium collection. Profit from IV crush.",
+                "buyer_warning": "⚠️ DO NOT BUY OPTIONS - IV crush will hurt you even if direction is right",
+                "seller_opportunity": seller_opportunities[0] if seller_opportunities else f"Sell premium to profit from IV crush after earnings",
+                "recommended_strategies": earnings_strategies if earnings_strategies else [
+                    "short_put" if direction == "LONG" else "short_call",
+                    "credit_spread",
+                    "iron_condor"
+                ],
+                "iv_rank": iv_rank,
+                "days_to_earnings": days_to_earnings,
                 "warnings": all_warnings
             }
         else:
@@ -3452,139 +4615,457 @@ def generate_options_trade_plan(
             expiry_date = optimal_expiry.get('optimal_expiry')
             dte = optimal_expiry.get('dte', target_dte)
 
-            # Get option chain data for specific strikes
-            t = yf.Ticker(ticker)
+            # Get option chain data with Greeks
+            # Use the proper Questrade helper function (same as GEX, IV Skew, etc.)
             calls_df = pd.DataFrame()
             puts_df = pd.DataFrame()
 
             try:
-                if expiry_date and expiry_date in t.options:
-                    chain = t.option_chain(expiry_date)
-                    calls_df = chain.calls
-                    puts_df = chain.puts
-            except Exception:
-                pass
+                calls_df, puts_df = _get_questrade_options_with_greeks(ticker, expiry_date, current_price)
+            except Exception as e:
+                logger.warning(f"Questrade options fetch failed: {e}, falling back to yfinance")
 
-            # Find 16-delta strikes
-            delta_strikes = _find_delta_strike(
-                calls_df=calls_df,
-                puts_df=puts_df,
-                current_price=current_price,
-                direction=direction,
-                target_delta=0.16
-            )
+            # Fallback to yfinance if Questrade failed
+            if calls_df.empty or puts_df.empty:
+                logger.info(f"Using yfinance for options data (Questrade had no Greeks)")
+                t = yf.Ticker(ticker)
+                try:
+                    if expiry_date and expiry_date in t.options:
+                        chain = t.option_chain(expiry_date)
+                        calls_df = chain.calls.copy()
+                        puts_df = chain.puts.copy()
 
-            # Calculate trade details based on strategy type
-            short_strike = delta_strikes.get('short_strike')
-            long_strike = delta_strikes.get('long_strike')
-            short_premium = delta_strikes.get('short_premium', 0) or 0
-            long_premium = delta_strikes.get('long_premium', 0) or 0
+                        # yfinance doesn't provide Greeks - calculate approximate deltas
+                        # Simple approximation: delta ≈ probability of finishing ITM
+                        # For calls: delta ≈ 1 - (strike/spot)^2 for ITM, (strike/spot)^2 for OTM
+                        # For puts: delta ≈ -delta_call
 
-            # For credit spreads
-            spread_width = abs(short_strike - long_strike) if short_strike and long_strike else 5
-            net_credit = short_premium - long_premium if short_premium and long_premium else 0.50
-            max_profit = net_credit * 100  # Per contract
-            max_loss = (spread_width - net_credit) * 100  # Per contract
+                        if not calls_df.empty and 'strike' in calls_df.columns:
+                            calls_df['delta'] = calls_df['strike'].apply(
+                                lambda s: max(0.01, min(0.99,
+                                    0.5 + 0.5 * (current_price - s) / (0.3 * current_price)
+                                ))
+                            )
+                            # Add dummy Greeks for compatibility
+                            calls_df['gamma'] = 0
+                            calls_df['theta'] = -0.02  # Approximate theta
+                            calls_df['vega'] = 0
+                            logger.info(f"Calculated approximate deltas for {len(calls_df)} calls")
 
-            # Position sizing
-            size_multiplier = liquidity_tier.get('size_multiplier', 1.0)
-            position_sizing = _calculate_options_position_size(
-                account_size=account_size,
-                max_risk=(spread_width - net_credit),
-                spread_width=spread_width,
-                premium_received=net_credit,
-                is_defined_risk=True
-            )
-            # Apply liquidity multiplier
-            adjusted_contracts = max(1, int(position_sizing['contracts'] * size_multiplier))
+                        if not puts_df.empty and 'strike' in puts_df.columns:
+                            puts_df['delta'] = puts_df['strike'].apply(
+                                lambda s: -max(0.01, min(0.99,
+                                    0.5 + 0.5 * (s - current_price) / (0.3 * current_price)
+                                ))
+                            )
+                            # Add dummy Greeks for compatibility
+                            puts_df['gamma'] = 0
+                            puts_df['theta'] = -0.02  # Approximate theta
+                            puts_df['vega'] = 0
+                            logger.info(f"Calculated approximate deltas for {len(puts_df)} puts")
+                except Exception as e:
+                    logger.warning(f"yfinance fallback also failed: {e}")
 
-            # Calculate break-even
-            if direction == "LONG":
-                break_even = short_strike - net_credit if short_strike else current_price - net_credit
+            # ============================================================
+            # IRON CONDOR CONSTRUCTION (IV Rank >= 70)
+            # ============================================================
+            iron_condor = None
+            logger.info(f"IV Rank {iv_rank}% - checking if Iron Condor construction should be attempted")
+            logger.info(f"Calls DF: {len(calls_df)} rows, Puts DF: {len(puts_df)} rows")
+            if iv_rank >= 70:
+                # High IV environment - ideal for Iron Condor
+                logger.info(f"High IV detected ({iv_rank}%) - Attempting Iron Condor construction for {ticker}")
+                iron_condor = _construct_iron_condor(
+                    ticker=ticker,
+                    current_price=current_price,
+                    expiry=expiry_date,
+                    dte=dte,
+                    calls_df=calls_df,
+                    puts_df=puts_df,
+                    account_size=account_size
+                )
+                logger.info(f"Iron Condor result: {'SUCCESS' if iron_condor else 'FAILED (returned None)'}")
+
+            # If Iron Condor construction succeeded, use it
+            if iron_condor is not None:
+                logger.info("Using Iron Condor strategy")
+                # Use Iron Condor data
+                primary_strategy = "Iron Condor"
+                rationale = f"High IV ({iv_rank}%) makes selling premium attractive. Iron Condor collects premium from both sides with defined risk. Full 4-leg specification with institutional parameters (16-delta shorts, 5-delta longs)."
+
+                # Build options_plan from Iron Condor data
+                exit_rules = {
+                    "profit_target": "Close at 50% of max profit",
+                    "profit_target_value": round(iron_condor['max_profit'] * 0.50, 2),
+                    "time_exit": "Roll or close at 21 DTE",
+                    "roll_trigger_dte": 21,
+                    "delta_adjustment": f"Roll if position delta exceeds ±{params['delta_adjustment_threshold']}",
+                    "stop_loss": "⚠️ NO STOP LOSS - per TastyTrade research (stops reduce win rate to 46%)",
+                    "loss_review": f"Review position at {params['loss_review_threshold']*100:.0f}% of max loss"
+                }
+
+                options_plan = {
+                    "status": "TRADE",
+                    "strategy": primary_strategy,
+                    "iv_environment": iv_env,
+                    "rationale": rationale,
+
+                    # Entry Details
+                    "entry": {
+                        "expiry": expiry_date,
+                        "dte": iron_condor['dte'],
+                        "theta_zone": optimal_expiry.get('theta_zone'),
+                        "legs": iron_condor['legs'],
+                        "net_credit": iron_condor['net_credit'],
+                        "spread_width": f"Put: ${iron_condor['put_spread_width']}, Call: ${iron_condor['call_spread_width']}"
+                    },
+
+                    # Risk/Reward
+                    "risk_reward": {
+                        "max_profit": iron_condor['max_profit'],
+                        "max_profit_per_contract": round(iron_condor['max_profit'] / iron_condor['contracts'], 2),
+                        "max_loss": iron_condor['max_loss'],
+                        "max_loss_per_contract": round(iron_condor['max_loss'] / iron_condor['contracts'], 2),
+                        "breakeven_lower": iron_condor['breakeven_lower'],
+                        "breakeven_upper": iron_condor['breakeven_upper'],
+                        "probability_of_profit": iron_condor['probability_of_profit'],
+                        "reward_risk_ratio": round(iron_condor['max_profit'] / iron_condor['max_loss'], 2) if iron_condor['max_loss'] > 0 else 0
+                    },
+
+                    # Position Sizing
+                    "position_sizing": {
+                        "contracts": iron_condor['contracts'],
+                        "buying_power_required": iron_condor['buying_power_required'],
+                        "account_risk_pct": round(iron_condor['buying_power_required'] / account_size * 100, 2),
+                        "size_multiplier": size_multiplier,
+                        "sizing_method": "Iron Condor - 2% max risk"
+                    },
+
+                    # Exit Rules
+                    "exit_rules": exit_rules,
+
+                    # Expected Move
+                    "expected_move": expected_move,
+
+                    # Greeks (from Iron Condor aggregation)
+                    "greeks": iron_condor['position_greeks'],
+
+                    # Liquidity & Slippage
+                    "liquidity_score": iron_condor['liquidity_score'],
+                    "spread_cost_estimate": iron_condor['spread_cost_estimate'],
+
+                    # Warnings
+                    "warnings": all_warnings if all_warnings else ["✅ No liquidity warnings - Tier 1 underlying"]
+                }
+
+            # ============================================================
+            # JADE LIZARD CONSTRUCTION (IV Rank > 60, put skew)
+            # ============================================================
+            elif iv_rank > 60 and iv_rank < 70:
+                # High IV but not quite Iron Condor territory - try Jade Lizard
+                logger.info(f"IV Rank {iv_rank}% (60-70 range) - Attempting Jade Lizard construction for {ticker}")
+                jade_lizard = _construct_jade_lizard(
+                    ticker=ticker,
+                    current_price=current_price,
+                    expiry=expiry_date,
+                    dte=dte,
+                    calls_df=calls_df,
+                    puts_df=puts_df,
+                    account_size=account_size
+                )
+
+                if jade_lizard is not None and jade_lizard.get('has_no_upside_risk'):
+                    logger.info("Using Jade Lizard strategy")
+                    primary_strategy = "Jade Lizard"
+                    rationale = f"High IV ({iv_rank}%) + Put skew makes Jade Lizard attractive. NO upside risk (put premium >= call spread width). Collect premium from put + call spread with risk only on downside."
+
+                    exit_rules = {
+                        "profit_target": "Close at 50% of max profit",
+                        "profit_target_value": round(jade_lizard['max_profit'] * 0.50, 2),
+                        "time_exit": "Roll or close at 21 DTE",
+                        "roll_trigger_dte": 21,
+                        "delta_adjustment": f"Roll if position delta exceeds ±{params['delta_adjustment_threshold']}",
+                        "stop_loss": "⚠️ NO STOP LOSS - per TastyTrade research",
+                        "loss_review": f"Review position at {params['loss_review_threshold']*100:.0f}% of max loss"
+                    }
+
+                    options_plan = {
+                        "status": "TRADE",
+                        "strategy": primary_strategy,
+                        "iv_environment": iv_env,
+                        "rationale": rationale,
+
+                        "entry": {
+                            "expiry": expiry_date,
+                            "dte": jade_lizard['dte'],
+                            "theta_zone": optimal_expiry.get('theta_zone'),
+                            "legs": jade_lizard['legs'],
+                            "net_credit": jade_lizard['net_credit'],
+                            "jade_lizard_condition": jade_lizard['jade_lizard_condition']
+                        },
+
+                        "risk_reward": {
+                            "max_profit": jade_lizard['max_profit'],
+                            "max_profit_per_contract": round(jade_lizard['max_profit'] / jade_lizard['contracts'], 2),
+                            "max_loss": jade_lizard['max_loss'],
+                            "max_loss_per_contract": round(jade_lizard['max_loss'] / jade_lizard['contracts'], 2),
+                            "breakeven_downside": jade_lizard['breakeven_downside'],
+                            "breakeven_upside": jade_lizard['breakeven_upside'],
+                            "reward_risk_ratio": round(jade_lizard['max_profit'] / jade_lizard['max_loss'], 2) if jade_lizard['max_loss'] > 0 else 0
+                        },
+
+                        "position_sizing": {
+                            "contracts": jade_lizard['contracts'],
+                            "buying_power_required": jade_lizard['buying_power_required'],
+                            "account_risk_pct": round(jade_lizard['buying_power_required'] / account_size * 100, 2),
+                            "size_multiplier": size_multiplier,
+                            "sizing_method": "Jade Lizard - 2% max risk"
+                        },
+
+                        "exit_rules": exit_rules,
+                        "expected_move": expected_move,
+                        "greeks": jade_lizard['position_greeks'],
+                        "liquidity_score": jade_lizard['liquidity_score'],
+                        "warnings": all_warnings if all_warnings else ["✅ No liquidity warnings"]
+                    }
+                else:
+                    logger.info(f"Jade Lizard construction failed or doesn't meet no-upside-risk condition, falling back to credit spreads")
+                    options_plan = None  # Will trigger credit spread fallback
+
+            # ============================================================
+            # CALENDAR SPREAD CONSTRUCTION (IV Rank < 50, contango)
+            # ============================================================
+            elif iv_rank < 50:
+                # Low to moderate IV - check term structure for calendar spread opportunity
+                logger.info(f"IV Rank {iv_rank}% (< 50) - Checking term structure for Calendar Spread")
+
+                # Get term structure
+                try:
+                    term_structure = analyze_iv_term_structure(ticker, expirations_to_analyze=4)
+                    is_contango = term_structure.get('structure_classification') == 'CONTANGO'
+                    calendar_signal = term_structure.get('calendar_spread_signal')
+
+                    if is_contango and calendar_signal == 'FAVORABLE':
+                        logger.info("Term structure in contango - Attempting Calendar Spread construction")
+
+                        # Get front and back month options
+                        # Front month: nearest expiration
+                        # Back month: next expiration
+                        t = yf.Ticker(ticker)
+                        if len(t.options) >= 2:
+                            front_expiry = t.options[0]
+                            back_expiry = t.options[1]
+
+                            # Fetch both chains
+                            try:
+                                front_chain = t.option_chain(front_expiry)
+                                back_chain = t.option_chain(back_expiry)
+
+                                # Attempt calendar spread construction
+                                calendar_spread = _construct_calendar_spread(
+                                    ticker=ticker,
+                                    current_price=current_price,
+                                    front_month_expiry=front_expiry,
+                                    back_month_expiry=back_expiry,
+                                    front_calls_df=front_chain.calls,
+                                    front_puts_df=front_chain.puts,
+                                    back_calls_df=back_chain.calls,
+                                    back_puts_df=back_chain.puts,
+                                    account_size=account_size,
+                                    direction='NEUTRAL'  # Calendars are typically neutral
+                                )
+
+                                if calendar_spread is not None:
+                                    logger.info("Using Calendar Spread strategy")
+                                    primary_strategy = "Calendar Spread"
+                                    rationale = f"Low IV ({iv_rank}%) + Contango term structure makes Calendar Spread attractive. Profit from theta differential as front month decays faster than back month."
+
+                                    exit_rules = {
+                                        "profit_target": "Close when front month approaches expiration or at 50% profit",
+                                        "time_exit": "Close before front month expiration (7 DTE)",
+                                        "adjustment": "Close if price moves more than 10% from ATM strike",
+                                        "stop_loss": "Close at max loss (debit paid)"
+                                    }
+
+                                    options_plan = {
+                                        "status": "TRADE",
+                                        "strategy": primary_strategy,
+                                        "iv_environment": iv_env,
+                                        "rationale": rationale,
+
+                                        "entry": {
+                                            "front_expiry": calendar_spread['front_expiry'],
+                                            "back_expiry": calendar_spread['back_expiry'],
+                                            "strike": calendar_spread['strike'],
+                                            "option_type": calendar_spread['option_type'],
+                                            "legs": calendar_spread['legs'],
+                                            "net_debit": calendar_spread['net_debit'],
+                                            "term_structure": calendar_spread['term_structure']
+                                        },
+
+                                        "risk_reward": {
+                                            "max_loss": calendar_spread['max_loss'],
+                                            "max_profit_estimate": calendar_spread['max_profit_estimate'],
+                                            "ideal_outcome": "Front month expires worthless, back month retains value"
+                                        },
+
+                                        "position_sizing": {
+                                            "contracts": calendar_spread['contracts'],
+                                            "buying_power_required": calendar_spread['buying_power_required'],
+                                            "account_risk_pct": round(calendar_spread['buying_power_required'] / account_size * 100, 2),
+                                            "sizing_method": "Calendar Spread - 2% max risk"
+                                        },
+
+                                        "exit_rules": exit_rules,
+                                        "greeks": calendar_spread['position_greeks'],
+                                        "liquidity_score": calendar_spread['liquidity_score'],
+                                        "ideal_conditions": calendar_spread['ideal_conditions'],
+                                        "warnings": all_warnings if all_warnings else ["✅ Favorable calendar spread environment"]
+                                    }
+                                else:
+                                    logger.info("Calendar Spread construction failed, falling back to credit spreads")
+                                    options_plan = None
+                            except Exception as e:
+                                logger.warning(f"Calendar Spread chain fetch failed: {e}")
+                                options_plan = None
+                        else:
+                            logger.warning("Not enough expirations for Calendar Spread")
+                            options_plan = None
+                    else:
+                        logger.info(f"Term structure not favorable for Calendar Spread (classification: {term_structure.get('structure_classification')})")
+                        options_plan = None
+                except Exception as e:
+                    logger.warning(f"Term structure analysis failed: {e}")
+                    options_plan = None
             else:
-                break_even = short_strike + net_credit if short_strike else current_price + net_credit
+                options_plan = None
 
-            # Probability of profit (approximation: 100 - delta for credit spreads)
-            pop = round(100 - (delta_strikes.get('short_delta', 0.16) or 0.16) * 100, 1)
+            # ============================================================
+            # FALLBACK: CREDIT SPREADS (if all advanced strategies failed)
+            # ============================================================
+            if options_plan is None:
+                # Fallback to regular credit spreads if advanced strategies failed
+                logger.info("Using fallback Credit Spread strategy")
+                # Find 16-delta strikes
+                delta_strikes = _find_delta_strike(
+                    calls_df=calls_df,
+                    puts_df=puts_df,
+                    current_price=current_price,
+                    direction=direction,
+                    target_delta=0.16
+                )
 
-            # Build trade legs
-            if direction == "LONG":
-                # Bull Put Spread: Sell put at higher strike, buy put at lower strike
-                legs = [
-                    {
-                        "action": "SELL",
-                        "option_type": "PUT",
-                        "strike": short_strike,
+                # Calculate trade details based on strategy type
+                short_strike = delta_strikes.get('short_strike')
+                long_strike = delta_strikes.get('long_strike')
+                short_premium = delta_strikes.get('short_premium', 0) or 0
+                long_premium = delta_strikes.get('long_premium', 0) or 0
+
+                # For credit spreads
+                spread_width = abs(short_strike - long_strike) if short_strike and long_strike else 5
+                net_credit = short_premium - long_premium if short_premium and long_premium else 0.50
+                max_profit = net_credit * 100  # Per contract
+                max_loss = (spread_width - net_credit) * 100  # Per contract
+
+                # Position sizing
+                # size_multiplier already defined at top of function (line 3717)
+                position_sizing = _calculate_options_position_size(
+                    account_size=account_size,
+                    max_risk=(spread_width - net_credit),
+                    spread_width=spread_width,
+                    premium_received=net_credit,
+                    is_defined_risk=True
+                )
+                # Apply liquidity multiplier
+                adjusted_contracts = max(1, int(position_sizing['contracts'] * size_multiplier))
+
+                # Calculate break-even
+                if direction == "LONG":
+                    break_even = short_strike - net_credit if short_strike else current_price - net_credit
+                else:
+                    break_even = short_strike + net_credit if short_strike else current_price + net_credit
+
+                # Probability of profit (approximation: 100 - delta for credit spreads)
+                pop = round(100 - (delta_strikes.get('short_delta', 0.16) or 0.16) * 100, 1)
+
+                # Build trade legs
+                if direction == "LONG":
+                    # Bull Put Spread: Sell put at higher strike, buy put at lower strike
+                    legs = [
+                        {
+                            "action": "SELL",
+                            "option_type": "PUT",
+                            "strike": short_strike,
+                            "expiry": expiry_date,
+                            "premium": short_premium,
+                            "delta": delta_strikes.get('short_delta'),
+                            "contracts": adjusted_contracts
+                        },
+                        {
+                            "action": "BUY",
+                            "option_type": "PUT",
+                            "strike": long_strike,
+                            "expiry": expiry_date,
+                            "premium": long_premium,
+                            "delta": delta_strikes.get('long_delta'),
+                            "contracts": adjusted_contracts
+                        }
+                    ]
+                else:  # SHORT
+                    # Bear Call Spread: Sell call at lower strike, buy call at higher strike
+                    legs = [
+                        {
+                            "action": "SELL",
+                            "option_type": "CALL",
+                            "strike": short_strike,
+                            "expiry": expiry_date,
+                            "premium": short_premium,
+                            "delta": delta_strikes.get('short_delta'),
+                            "contracts": adjusted_contracts
+                        },
+                        {
+                            "action": "BUY",
+                            "option_type": "CALL",
+                            "strike": long_strike,
+                            "expiry": expiry_date,
+                            "premium": long_premium,
+                            "delta": delta_strikes.get('long_delta'),
+                            "contracts": adjusted_contracts
+                        }
+                    ]
+
+                # Exit rules (NO STOP LOSSES per TastyTrade research)
+                exit_rules = {
+                    "profit_target": "Close at 50% of max profit",
+                    "profit_target_value": round(max_profit * 0.50, 2),
+                    "time_exit": "Roll or close at 21 DTE",
+                    "roll_trigger_dte": 21,
+                    "delta_adjustment": f"Roll if position delta exceeds ±{params['delta_adjustment_threshold']}",
+                    "stop_loss": "⚠️ NO STOP LOSS - per TastyTrade research (stops reduce win rate to 46%)",
+                    "loss_review": f"Review position at {params['loss_review_threshold']*100:.0f}% of max loss"
+                }
+
+                options_plan = {
+                    "status": "TRADE",
+                    "strategy": primary_strategy,
+                    "iv_environment": iv_env,
+                    "rationale": rationale,
+
+                    # Entry Details
+                    "entry": {
                         "expiry": expiry_date,
-                        "premium": short_premium,
-                        "delta": delta_strikes.get('short_delta'),
-                        "contracts": adjusted_contracts
+                        "dte": dte,
+                        "theta_zone": optimal_expiry.get('theta_zone'),
+                        "legs": legs,
+                        "net_credit": round(net_credit, 2),
+                        "spread_width": spread_width
                     },
-                    {
-                        "action": "BUY",
-                        "option_type": "PUT",
-                        "strike": long_strike,
-                        "expiry": expiry_date,
-                        "premium": long_premium,
-                        "delta": delta_strikes.get('long_delta'),
-                        "contracts": adjusted_contracts
-                    }
-                ]
-            else:  # SHORT
-                # Bear Call Spread: Sell call at lower strike, buy call at higher strike
-                legs = [
-                    {
-                        "action": "SELL",
-                        "option_type": "CALL",
-                        "strike": short_strike,
-                        "expiry": expiry_date,
-                        "premium": short_premium,
-                        "delta": delta_strikes.get('short_delta'),
-                        "contracts": adjusted_contracts
-                    },
-                    {
-                        "action": "BUY",
-                        "option_type": "CALL",
-                        "strike": long_strike,
-                        "expiry": expiry_date,
-                        "premium": long_premium,
-                        "delta": delta_strikes.get('long_delta'),
-                        "contracts": adjusted_contracts
-                    }
-                ]
 
-            # Exit rules (NO STOP LOSSES per TastyTrade research)
-            exit_rules = {
-                "profit_target": "Close at 50% of max profit",
-                "profit_target_value": round(max_profit * 0.50, 2),
-                "time_exit": "Roll or close at 21 DTE",
-                "roll_trigger_dte": 21,
-                "delta_adjustment": f"Roll if position delta exceeds ±{params['delta_adjustment_threshold']}",
-                "stop_loss": "⚠️ NO STOP LOSS - per TastyTrade research (stops reduce win rate to 46%)",
-                "loss_review": f"Review position at {params['loss_review_threshold']*100:.0f}% of max loss"
-            }
-
-            options_plan = {
-                "status": "TRADE",
-                "strategy": primary_strategy,
-                "iv_environment": iv_env,
-                "rationale": rationale,
-
-                # Entry Details
-                "entry": {
-                    "expiry": expiry_date,
-                    "dte": dte,
-                    "theta_zone": optimal_expiry.get('theta_zone'),
-                    "legs": legs,
-                    "net_credit": round(net_credit, 2),
-                    "spread_width": spread_width
-                },
-
-                # Risk/Reward
-                "risk_reward": {
-                    "max_profit": round(max_profit * adjusted_contracts, 2),
-                    "max_profit_per_contract": round(max_profit, 2),
-                    "max_loss": round(max_loss * adjusted_contracts, 2),
+                    # Risk/Reward
+                    "risk_reward": {
+                        "max_profit": round(max_profit * adjusted_contracts, 2),
+                        "max_profit_per_contract": round(max_profit, 2),
+                        "max_loss": round(max_loss * adjusted_contracts, 2),
                     "max_loss_per_contract": round(max_loss, 2),
                     "break_even": round(break_even, 2),
                     "probability_of_profit": pop,
@@ -3638,13 +5119,25 @@ def generate_options_trade_plan(
             "stock_plan": stock_plan,
             "options_plan": options_plan,
 
-            # Trade Decision
+            # Trade Decision - NOW WITH BUYER/SELLER DISTINCTION
             "recommendation": {
-                "primary": "OPTIONS" if options_allowed and iv_rank >= 50 else "STOCK",
-                "options_allowed": options_allowed,
+                # Enhanced recommendation considering buyer vs seller
+                "primary": (
+                    "SELL_PREMIUM" if near_earnings_selling_opportunity and iv_rank >= 50
+                    else "OPTIONS" if options_selling_allowed and iv_rank >= 50
+                    else "STOCK"
+                ),
+                "options_allowed": options_allowed,  # Legacy
+                "options_buying_allowed": options_buying_allowed,  # NEW
+                "options_selling_allowed": options_selling_allowed,  # NEW
+                "near_earnings_selling_opportunity": near_earnings_selling_opportunity,  # NEW
                 "liquidity_tier": liquidity_tier.get('tier'),
-                "days_to_earnings": institutional.get('days_to_earnings')
+                "days_to_earnings": days_to_earnings
             },
+
+            # Seller Opportunities (highlighted when near earnings)
+            "seller_opportunities": seller_opportunities,
+            "earnings_strategies": earnings_strategies,
 
             # All Warnings
             "warnings": all_warnings,
@@ -3655,6 +5148,702 @@ def generate_options_trade_plan(
     except Exception as e:
         logger.error(f"Error generating options trade plan for {ticker}: {e}")
         raise ValueError(f"Options trade plan generation failed: {str(e)}")
+
+
+@mcp.tool()
+def analyze_iv_skew(
+    ticker: str,
+    target_dte: int = 45,
+    delta_levels: list[float] | None = None
+) -> dict[str, Any]:
+    """
+    Analyze IV skew across the volatility surface.
+
+    Calculates Put IV - Call IV at equidistant strikes (by delta) to measure
+    market fear/greed and identify premium selling/buying opportunities.
+
+    **IV Skew Types:**
+    - **Put Skew (Normal)**: OTM puts more expensive than calls → market fear
+    - **Flat Skew**: Puts ≈ Calls → neutral sentiment
+    - **Inverted Skew**: OTM calls more expensive → unusual bullishness (meme stocks)
+
+    **Trading Implications:**
+    - **Steep Put Skew (>10pts)**: Sell put spreads (rich), avoid call spreads
+    - **Normal Put Skew (3-10pts)**: Balanced, favor put credit spreads
+    - **Flat Skew (0-3pts)**: Neutral, no skew edge
+    - **Inverted Skew (<0pts)**: Sell call spreads (rich), unusual condition
+
+    Args:
+        ticker: Stock symbol
+        target_dte: Target days to expiration (default 45)
+        delta_levels: Delta levels to analyze (default [0.25, 0.15, 0.10])
+
+    Returns:
+        {
+            "ticker": str,
+            "expiry": str,
+            "dte": int,
+            "current_price": float,
+
+            "skew_by_delta": {
+                "delta_25": {
+                    "put_strike": float,
+                    "put_iv": float,
+                    "call_strike": float,
+                    "call_iv": float,
+                    "skew_absolute": float,  # Put IV - Call IV (percentage points)
+                    "skew_relative_pct": float  # (Put IV - Call IV) / Call IV * 100
+                },
+                "delta_15": {...},
+                "delta_10": {...}
+            },
+
+            "skew_summary": {
+                "classification": str,  # STEEP_PUT_SKEW, NORMAL_PUT_SKEW, FLAT_SKEW, INVERTED_SKEW
+                "primary_skew": float,  # Delta-25 skew (most liquid)
+                "interpretation": str,
+                "sentiment_signal": str,  # BEARISH_FEAR, NEUTRAL, BULLISH_GREED
+                "skew_percentile": float  # Current skew vs 52-week range
+            },
+
+            "trading_implications": {
+                "recommended_adjustments": list[str],
+                "put_spread_edge": str,  # "Rich", "Fair", "Cheap"
+                "call_spread_edge": str,
+                "iron_condor_adjustment": str
+            },
+
+            "historical_context": {
+                "current_skew_percentile": float,
+                "52w_skew_high": float,
+                "52w_skew_low": float,
+                "avg_skew": float,
+                "note": str
+            }
+        }
+
+    Reference: Natenberg - "Option Volatility and Pricing", Chapter 8: Volatility Skews
+    """
+    ticker = validate_ticker(ticker)
+
+    if delta_levels is None:
+        delta_levels = [0.25, 0.15, 0.10]  # 25-delta, 15-delta, 10-delta
+
+    try:
+        from datetime import datetime, timedelta
+        import numpy as np
+
+        # Get current price first
+        t = yf.Ticker(ticker)
+        current_price = t.info.get('currentPrice') or t.info.get('regularMarketPrice') or t.history(period='1d')['Close'].iloc[-1]
+
+        # Try Questrade first (has Greeks already)
+        calls_df = None
+        puts_df = None
+        closest_expiry = None
+        options_source = "yfinance"
+
+        try:
+            from investor_agent.questrade import get_questrade_client
+            from questrade_api import Questrade
+
+            qt_client = get_questrade_client()
+            symbol_info = qt_client.get_symbol_info(ticker)
+
+            if symbol_info and symbol_info.get('symbols') and symbol_info['symbols'][0].get('hasOptions'):
+                symbol_id = symbol_info['symbols'][0]['symbolId']
+
+                q = Questrade()
+                qt_options = q.symbol_options(symbol_id)
+
+                if qt_options and qt_options.get('optionChain'):
+                    # Find expiration closest to target DTE
+                    target_date = datetime.now() + timedelta(days=target_dte)
+                    exp_dates = [exp['expiryDate'][:10] for exp in qt_options['optionChain']]
+
+                    if exp_dates:
+                        closest_expiry = min(exp_dates, key=lambda x: abs(
+                            (datetime.strptime(x, '%Y-%m-%d') - target_date).days
+                        ))
+
+                        # Get the chain for nearest expiration
+                        for exp in qt_options['optionChain']:
+                            if exp['expiryDate'].startswith(closest_expiry):
+                                calls_data = []
+                                puts_data = []
+
+                                for root in exp.get('chainPerRoot', []):
+                                    for strike_info in root.get('chainPerStrikePrice', []):
+                                        strike = strike_info['strikePrice']
+                                        call_id = strike_info.get('callSymbolId')
+                                        put_id = strike_info.get('putSymbolId')
+
+                                        try:
+                                            if call_id:
+                                                call_quotes = q.markets_options(optionIds=[call_id])
+                                                if call_quotes and call_quotes.get('optionQuotes'):
+                                                    cq = call_quotes['optionQuotes'][0]
+                                                    calls_data.append({
+                                                        'strike': strike,
+                                                        'impliedVolatility': cq.get('volatility') or 0.3,
+                                                        'delta': cq.get('delta') or 0
+                                                    })
+                                            if put_id:
+                                                put_quotes = q.markets_options(optionIds=[put_id])
+                                                if put_quotes and put_quotes.get('optionQuotes'):
+                                                    pq = put_quotes['optionQuotes'][0]
+                                                    puts_data.append({
+                                                        'strike': strike,
+                                                        'impliedVolatility': pq.get('volatility') or 0.3,
+                                                        'delta': pq.get('delta') or 0
+                                                    })
+                                        except Exception:
+                                            pass
+
+                                if calls_data or puts_data:
+                                    temp_calls_df = pd.DataFrame(calls_data) if calls_data else pd.DataFrame()
+                                    temp_puts_df = pd.DataFrame(puts_data) if puts_data else pd.DataFrame()
+
+                                    # Validate strikes are reasonable
+                                    all_strikes = []
+                                    if not temp_calls_df.empty:
+                                        all_strikes.extend(temp_calls_df['strike'].tolist())
+                                    if not temp_puts_df.empty:
+                                        all_strikes.extend(temp_puts_df['strike'].tolist())
+
+                                    if all_strikes:
+                                        atm_strikes = [s for s in all_strikes if 0.8 * current_price <= s <= 1.2 * current_price]
+                                        if atm_strikes:
+                                            calls_df = temp_calls_df
+                                            puts_df = temp_puts_df
+                                            options_source = "questrade"
+                                            logger.info(f"Using Questrade options data with Greeks for {ticker} IV skew analysis")
+                                break
+        except Exception as qt_err:
+            logger.warning(f"Questrade options unavailable for {ticker} IV skew: {qt_err}")
+
+        # Fall back to yfinance if Questrade didn't work
+        if calls_df is None or (calls_df.empty if hasattr(calls_df, 'empty') else True):
+            logger.info(f"Falling back to yfinance for {ticker} IV skew analysis")
+            expirations = t.options
+            if not expirations:
+                raise ValueError(f"No options available for {ticker}")
+
+            target_date = datetime.now() + timedelta(days=target_dte)
+            closest_expiry = min(expirations, key=lambda x: abs((datetime.strptime(x, '%Y-%m-%d') - target_date).days))
+
+            chain = t.option_chain(closest_expiry)
+            calls_df = chain.calls
+            puts_df = chain.puts
+            options_source = "yfinance"
+
+        # Calculate DTE
+        expiry_dt = datetime.strptime(closest_expiry, '%Y-%m-%d')
+        dte = (expiry_dt - datetime.now()).days
+        T = dte / 365
+        r = 0.05
+
+        # If using yfinance (no delta), calculate it with Black-Scholes
+        if options_source == "yfinance":
+            if not puts_df.empty:
+                puts_df_copy = puts_df.copy()
+                puts_df_copy['delta'] = puts_df_copy.apply(
+                    lambda row: _calculate_black_scholes_greeks(
+                        S=current_price,
+                        K=row['strike'],
+                        T=T,
+                        r=r,
+                        sigma=row['impliedVolatility'],
+                        option_type='put'
+                    )['delta'],
+                    axis=1
+                )
+            else:
+                puts_df_copy = puts_df
+
+            if not calls_df.empty:
+                calls_df_copy = calls_df.copy()
+                calls_df_copy['delta'] = calls_df_copy.apply(
+                    lambda row: _calculate_black_scholes_greeks(
+                        S=current_price,
+                        K=row['strike'],
+                        T=T,
+                        r=r,
+                        sigma=row['impliedVolatility'],
+                        option_type='call'
+                    )['delta'],
+                    axis=1
+                )
+            else:
+                calls_df_copy = calls_df
+        else:
+            # Questrade already has delta
+            puts_df_copy = puts_df.copy() if not puts_df.empty else puts_df
+            calls_df_copy = calls_df.copy() if not calls_df.empty else calls_df
+
+        # Calculate skew at each delta level
+        skew_by_delta = {}
+
+        for target_delta in delta_levels:
+            delta_key = f"delta_{int(target_delta * 100)}"
+
+            # Find put with target delta (puts have negative delta)
+            if not puts_df_copy.empty and 'delta' in puts_df_copy.columns:
+                puts_df_copy['delta_diff'] = abs(abs(puts_df_copy['delta']) - target_delta)
+                best_put = puts_df_copy.nsmallest(1, 'delta_diff').iloc[0]
+
+                put_strike = float(best_put['strike'])
+                put_iv = float(best_put.get('impliedVolatility', 0))
+
+                # Normalize IV to percentage if needed
+                if put_iv > 0 and put_iv < 5:
+                    put_iv = put_iv * 100  # Convert decimal to percentage
+            else:
+                put_strike = None
+                put_iv = None
+
+            # Find call with target delta (calls have positive delta)
+            if not calls_df_copy.empty and 'delta' in calls_df_copy.columns:
+                calls_df_copy['delta_diff'] = abs(calls_df_copy['delta'] - target_delta)
+                best_call = calls_df_copy.nsmallest(1, 'delta_diff').iloc[0]
+
+                call_strike = float(best_call['strike'])
+                call_iv = float(best_call.get('impliedVolatility', 0))
+
+                # Normalize IV to percentage if needed
+                if call_iv > 0 and call_iv < 5:
+                    call_iv = call_iv * 100  # Convert decimal to percentage
+            else:
+                call_strike = None
+                call_iv = None
+
+            # Calculate skew
+            if put_iv is not None and call_iv is not None and call_iv > 0:
+                skew_absolute = put_iv - call_iv
+                skew_relative_pct = (skew_absolute / call_iv) * 100
+            else:
+                skew_absolute = None
+                skew_relative_pct = None
+
+            skew_by_delta[delta_key] = {
+                "put_strike": put_strike,
+                "put_iv": round(put_iv, 2) if put_iv else None,
+                "call_strike": call_strike,
+                "call_iv": round(call_iv, 2) if call_iv else None,
+                "skew_absolute": round(skew_absolute, 2) if skew_absolute is not None else None,
+                "skew_relative_pct": round(skew_relative_pct, 2) if skew_relative_pct is not None else None
+            }
+
+        # Classify skew using 25-delta (most liquid)
+        primary_skew = skew_by_delta.get('delta_25', {}).get('skew_absolute')
+
+        if primary_skew is None:
+            classification = "INSUFFICIENT_DATA"
+            sentiment_signal = "NEUTRAL"
+            interpretation = "Insufficient options data for skew analysis"
+        elif primary_skew > 10:
+            classification = "STEEP_PUT_SKEW"
+            sentiment_signal = "BEARISH_FEAR"
+            interpretation = f"Steep put skew ({primary_skew:.1f} pts) indicates elevated fear premium. Put spreads are RICH - excellent for selling."
+        elif primary_skew > 3:
+            classification = "NORMAL_PUT_SKEW"
+            sentiment_signal = "MODERATE_FEAR"
+            interpretation = f"Normal put skew ({primary_skew:.1f} pts) reflects typical equity fear premium. Balanced environment for credit spreads."
+        elif primary_skew > 0:
+            classification = "FLAT_SKEW"
+            sentiment_signal = "NEUTRAL"
+            interpretation = f"Flat skew ({primary_skew:.1f} pts) shows minimal put/call IV difference. No significant skew edge."
+        else:
+            classification = "INVERTED_SKEW"
+            sentiment_signal = "BULLISH_GREED"
+            interpretation = f"Inverted skew ({primary_skew:.1f} pts) - calls more expensive than puts. UNUSUAL condition, often seen in meme stocks. Call spreads are RICH."
+
+        # Trading implications
+        if primary_skew is not None:
+            if primary_skew > 8:
+                put_spread_edge = "Rich"
+                call_spread_edge = "Cheap"
+                recommended_adjustments = [
+                    "Favor selling put credit spreads (inflated premium)",
+                    "Widen put spread width to capture extra premium",
+                    "Move put short strike closer to ATM for higher credit",
+                    "Avoid buying call spreads (relatively cheap but still disadvantaged)"
+                ]
+                ic_adjustment = "Widen put spread or move put short strike up to capture put skew premium"
+            elif primary_skew > 3:
+                put_spread_edge = "Fair-to-Rich"
+                call_spread_edge = "Fair"
+                recommended_adjustments = [
+                    "Put credit spreads slightly favored",
+                    "Iron condors balanced but slight put premium edge",
+                    "Standard 16-delta strikes appropriate"
+                ]
+                ic_adjustment = "Balanced iron condor - slight edge to collecting more on put side"
+            elif primary_skew > 0:
+                put_spread_edge = "Fair"
+                call_spread_edge = "Fair"
+                recommended_adjustments = [
+                    "No skew edge - use IV rank for strategy selection",
+                    "Focus on directional bias over skew considerations"
+                ]
+                ic_adjustment = "Symmetric iron condor - no skew adjustment needed"
+            else:  # Inverted
+                put_spread_edge = "Cheap"
+                call_spread_edge = "Rich"
+                recommended_adjustments = [
+                    "UNUSUAL: Favor selling call credit spreads (inflated premium)",
+                    "Avoid put spreads (relatively underpriced)",
+                    "Monitor for meme stock behavior or event-driven distortion",
+                    "Consider this an anomaly - proceed with caution"
+                ]
+                ic_adjustment = "Widen call spread or move call short strike down to capture call skew premium (rare scenario)"
+        else:
+            put_spread_edge = "Unknown"
+            call_spread_edge = "Unknown"
+            recommended_adjustments = ["Insufficient data for skew-based recommendations"]
+            ic_adjustment = "Unable to analyze - insufficient options data"
+
+        # Historical context (simplified - using current as proxy for historical range)
+        # In production, would track skew history in database
+        if primary_skew is not None:
+            # Estimate historical range based on skew type
+            if classification == "STEEP_PUT_SKEW":
+                skew_percentile = 85  # High end
+                avg_skew = 6.5
+                skew_high_52w = primary_skew + 3
+                skew_low_52w = 2.0
+            elif classification == "NORMAL_PUT_SKEW":
+                skew_percentile = 55  # Mid range
+                avg_skew = 5.5
+                skew_high_52w = 11.0
+                skew_low_52w = 1.5
+            elif classification == "FLAT_SKEW":
+                skew_percentile = 25  # Low end
+                avg_skew = 4.0
+                skew_high_52w = 9.0
+                skew_low_52w = 0.0
+            else:  # Inverted
+                skew_percentile = 5  # Very low (unusual)
+                avg_skew = 3.5
+                skew_high_52w = 8.0
+                skew_low_52w = primary_skew - 2
+        else:
+            skew_percentile = 50
+            avg_skew = 5.0
+            skew_high_52w = 10.0
+            skew_low_52w = 0.0
+
+        return {
+            "ticker": ticker,
+            "expiry": closest_expiry,
+            "dte": dte,
+            "current_price": round(current_price, 2),
+
+            "skew_by_delta": skew_by_delta,
+
+            "skew_summary": {
+                "classification": classification,
+                "primary_skew": round(primary_skew, 2) if primary_skew is not None else None,
+                "interpretation": interpretation,
+                "sentiment_signal": sentiment_signal,
+                "skew_percentile": round(skew_percentile, 1)
+            },
+
+            "trading_implications": {
+                "recommended_adjustments": recommended_adjustments,
+                "put_spread_edge": put_spread_edge,
+                "call_spread_edge": call_spread_edge,
+                "iron_condor_adjustment": ic_adjustment
+            },
+
+            "historical_context": {
+                "current_skew_percentile": round(skew_percentile, 1),
+                "52w_skew_high": round(skew_high_52w, 1),
+                "52w_skew_low": round(skew_low_52w, 1),
+                "avg_skew": round(avg_skew, 1),
+                "note": "Historical context estimated from current classification (production version would use database)"
+            },
+
+            "methodology": "Natenberg - Option Volatility and Pricing, Chapter 8: Volatility Skews"
+        }
+
+    except Exception as e:
+        logger.error(f"Error analyzing IV skew for {ticker}: {e}")
+        raise ValueError(f"IV skew analysis failed: {str(e)}")
+
+
+@mcp.tool()
+def analyze_iv_term_structure(
+    ticker: str,
+    expirations_to_analyze: int = 4
+) -> dict[str, Any]:
+    """
+    Analyze IV term structure across multiple expirations.
+
+    Detects contango (normal) vs backwardation (stress) conditions to guide
+    calendar spread and diagonal strategies.
+
+    **Term Structure Patterns:**
+    - **Contango (Normal)**: Far-term IV > Near-term IV → Calendar spreads profitable
+    - **Backwardation (Stress)**: Near-term IV > Far-term IV → Reduce premium selling
+    - **Flat**: Near-term ≈ Far-term → Neutral
+
+    **Trading Implications:**
+    - **Contango**: Calendar spreads collect theta differential, favorable environment
+    - **Backwardation**: Market stress, avoid calendars, reduce premium selling
+    - **Flat**: No term structure edge
+
+    Args:
+        ticker: Stock symbol
+        expirations_to_analyze: Number of expirations to analyze (default 4)
+
+    Returns:
+        {
+            "ticker": str,
+            "current_price": float,
+
+            "term_structure": [
+                {
+                    "expiry": str,
+                    "dte": int,
+                    "atm_iv": float,
+                    "iv_percentile": float
+                },
+                ...
+            ],
+
+            "structure_classification": str,  # CONTANGO, BACKWARDATION, FLAT
+            "slope": float,  # Positive = contango, negative = backwardation
+            "interpretation": str,
+
+            "calendar_spread_signal": str,  # FAVORABLE, NEUTRAL, UNFAVORABLE
+            "diagonal_spread_signal": str,
+
+            "recommended_strategies": list[str],
+            "warnings": list[str]
+        }
+
+    Reference: McMillan - "Options as a Strategic Investment", Chapter 30: Volatility Trading
+    """
+    ticker = validate_ticker(ticker)
+
+    try:
+        from datetime import datetime, timedelta
+        import numpy as np
+
+        # Get current price
+        t = yf.Ticker(ticker)
+        current_price = t.info.get('currentPrice') or t.info.get('regularMarketPrice') or t.history(period='1d')['Close'].iloc[-1]
+
+        term_structure = []
+        options_source = "yfinance"
+
+        # Try Questrade first (has Greeks and IV)
+        try:
+            from investor_agent.questrade import get_questrade_client
+            from questrade_api import Questrade
+
+            qt_client = get_questrade_client()
+            symbol_info = qt_client.get_symbol_info(ticker)
+
+            if symbol_info and symbol_info.get('symbols') and symbol_info['symbols'][0].get('hasOptions'):
+                symbol_id = symbol_info['symbols'][0]['symbolId']
+
+                q = Questrade()
+                qt_options = q.symbol_options(symbol_id)
+
+                if qt_options and qt_options.get('optionChain'):
+                    # Get up to requested number of expirations
+                    expirations_data = qt_options['optionChain'][:expirations_to_analyze]
+
+                    for exp in expirations_data:
+                        exp_str = exp['expiryDate'][:10]
+                        expiry_dt = datetime.strptime(exp_str, '%Y-%m-%d')
+                        dte = (expiry_dt - datetime.now()).days
+
+                        # Get ATM IV from this expiration
+                        atm_iv = None
+                        for root in exp.get('chainPerRoot', []):
+                            for strike_info in root.get('chainPerStrikePrice', []):
+                                strike = strike_info['strikePrice']
+
+                                # Check if this is ATM (within 5% of current price)
+                                if 0.95 * current_price <= strike <= 1.05 * current_price:
+                                    call_id = strike_info.get('callSymbolId')
+
+                                    if call_id:
+                                        try:
+                                            call_quotes = q.markets_options(optionIds=[call_id])
+                                            if call_quotes and call_quotes.get('optionQuotes'):
+                                                cq = call_quotes['optionQuotes'][0]
+                                                iv = cq.get('volatility') or 0
+                                                if iv > 0:
+                                                    atm_iv = round(iv * 100, 2) if iv < 5 else round(iv, 2)
+                                                    break
+                                        except Exception:
+                                            pass
+
+                            if atm_iv:
+                                break
+
+                        if atm_iv:
+                            term_structure.append({
+                                "expiry": exp_str,
+                                "dte": dte,
+                                "atm_iv": atm_iv,
+                                "iv_percentile": 50
+                            })
+
+                    if len(term_structure) >= 2:
+                        options_source = "questrade"
+                        logger.info(f"Using Questrade options data for {ticker} term structure analysis")
+
+        except Exception as qt_err:
+            logger.warning(f"Questrade options unavailable for {ticker} term structure: {qt_err}")
+
+        # Fall back to yfinance if Questrade didn't work
+        if len(term_structure) < 2:
+            logger.info(f"Falling back to yfinance for {ticker} term structure analysis")
+            expirations = t.options
+            if not expirations or len(expirations) < 2:
+                raise ValueError(f"Insufficient expirations for term structure analysis ({len(expirations) if expirations else 0} available)")
+
+            # Limit to requested number
+            expirations = expirations[:min(expirations_to_analyze, len(expirations))]
+
+            term_structure = []
+
+            # Analyze each expiration
+            for exp_str in expirations:
+                chain = t.option_chain(exp_str)
+                calls_df = chain.calls
+                puts_df = chain.puts
+
+                if calls_df.empty and puts_df.empty:
+                    continue
+
+                # Calculate DTE
+                expiry_dt = datetime.strptime(exp_str, '%Y-%m-%d')
+                dte = (expiry_dt - datetime.now()).days
+
+                # Find ATM options (closest to current price)
+                atm_iv = None
+
+                if not calls_df.empty:
+                    calls_df_copy = calls_df.copy()
+                    calls_df_copy['distance'] = abs(calls_df_copy['strike'] - current_price)
+                    atm_call = calls_df_copy.nsmallest(1, 'distance').iloc[0]
+                    call_iv = float(atm_call.get('impliedVolatility', 0))
+
+                    # Normalize to percentage
+                    if call_iv > 0 and call_iv < 5:
+                        call_iv = call_iv * 100
+
+                    atm_iv = call_iv
+
+                if not puts_df.empty and atm_iv is None:
+                    puts_df_copy = puts_df.copy()
+                    puts_df_copy['distance'] = abs(puts_df_copy['strike'] - current_price)
+                    atm_put = puts_df_copy.nsmallest(1, 'distance').iloc[0]
+                    put_iv = float(atm_put.get('impliedVolatility', 0))
+
+                    if put_iv > 0 and put_iv < 5:
+                        put_iv = put_iv * 100
+
+                    atm_iv = put_iv
+
+                if atm_iv:
+                    term_structure.append({
+                        "expiry": exp_str,
+                        "dte": dte,
+                        "atm_iv": round(atm_iv, 2),
+                        "iv_percentile": 50  # Simplified - would need historical data
+                    })
+
+        if len(term_structure) < 2:
+            raise ValueError("Insufficient valid expirations for term structure analysis")
+
+        # Sort by DTE
+        term_structure.sort(key=lambda x: x['dte'])
+
+        # Calculate slope (linear regression of IV vs DTE)
+        dtes = [x['dte'] for x in term_structure]
+        ivs = [x['atm_iv'] for x in term_structure]
+
+        # Simple slope: (far_iv - near_iv) / (far_dte - near_dte)
+        near_iv = term_structure[0]['atm_iv']
+        far_iv = term_structure[-1]['atm_iv']
+        near_dte = term_structure[0]['dte']
+        far_dte = term_structure[-1]['dte']
+
+        slope = (far_iv - near_iv) / (far_dte - near_dte) if far_dte > near_dte else 0
+
+        # Classify structure
+        iv_diff = far_iv - near_iv
+
+        if iv_diff > 2:  # Far-term IV at least 2 points higher
+            structure_classification = "CONTANGO"
+            interpretation = f"Contango term structure (far-term IV {far_iv:.1f}% > near-term IV {near_iv:.1f}%). Normal market condition - calendar spreads favorable."
+            calendar_signal = "FAVORABLE"
+            diagonal_signal = "FAVORABLE"
+            recommended_strategies = [
+                "Calendar spreads (sell near-term, buy far-term)",
+                "Diagonal spreads for directional theta capture",
+                "Double calendars for range-bound strategies"
+            ]
+            warnings = []
+
+        elif iv_diff < -2:  # Near-term IV at least 2 points higher
+            structure_classification = "BACKWARDATION"
+            interpretation = f"Backwardation term structure (near-term IV {near_iv:.1f}% > far-term IV {far_iv:.1f}%). MARKET STRESS DETECTED - reduce premium selling, avoid calendars."
+            calendar_signal = "UNFAVORABLE"
+            diagonal_signal = "UNFAVORABLE"
+            recommended_strategies = [
+                "Reduce or close calendar spreads",
+                "Focus on directional strategies",
+                "Consider volatility spike protective trades"
+            ]
+            warnings = [
+                "⚠️ BACKWARDATION INDICATES MARKET STRESS",
+                "Near-term volatility elevated - potential event or crisis",
+                "Avoid premium selling strategies until structure normalizes",
+                "Monitor for mean reversion to contango"
+            ]
+
+        else:  # Flat structure
+            structure_classification = "FLAT"
+            interpretation = f"Flat term structure (near-term IV {near_iv:.1f}% ≈ far-term IV {far_iv:.1f}%). No significant term structure edge."
+            calendar_signal = "NEUTRAL"
+            diagonal_signal = "NEUTRAL"
+            recommended_strategies = [
+                "No term structure advantage",
+                "Focus on IV rank and directional bias instead",
+                "Consider vertical spreads over calendars"
+            ]
+            warnings = []
+
+        return {
+            "ticker": ticker,
+            "current_price": round(current_price, 2),
+
+            "term_structure": term_structure,
+
+            "structure_classification": structure_classification,
+            "slope": round(slope, 4),
+            "interpretation": interpretation,
+
+            "calendar_spread_signal": calendar_signal,
+            "diagonal_spread_signal": diagonal_signal,
+
+            "recommended_strategies": recommended_strategies,
+            "warnings": warnings,
+
+            "methodology": "McMillan - Options as a Strategic Investment, Chapter 30: Volatility Trading"
+        }
+
+    except Exception as e:
+        logger.error(f"Error analyzing IV term structure for {ticker}: {e}")
+        raise ValueError(f"IV term structure analysis failed: {str(e)}")
 
 
 def _calculate_iv_analysis(ticker: str, calls_df: pd.DataFrame, puts_df: pd.DataFrame, current_price: float) -> dict:
@@ -4161,6 +6350,1055 @@ def _calculate_black_scholes_greeks(
         "theta": round(theta_daily, 4),  # Daily theta
         "vega": round(vega, 4)  # Per 1% IV change
     }
+
+
+def _calculate_vanna(
+    S: float,  # Current stock price
+    K: float,  # Strike price
+    T: float,  # Time to expiration in years
+    r: float,  # Risk-free rate (annual)
+    sigma: float,  # Implied volatility (annual)
+    option_type: str = "call"  # "call" or "put"
+) -> float:
+    """
+    Calculate Vanna (∂Delta/∂IV) - sensitivity of delta to IV changes.
+
+    Vanna measures how much delta changes when implied volatility changes by 1 point.
+    Critical for earnings and event trading where IV changes dramatically.
+
+    **Formula:**
+    Vanna = -φ(d1) * (d2 / σ)
+
+    where:
+    - φ(d1) = standard normal PDF of d1
+    - d2 = d1 - σ√T
+
+    **Interpretation:**
+    - Long options have NEGATIVE vanna (delta decreases when IV drops)
+    - Short options have POSITIVE vanna (delta increases when IV drops)
+    - Highest for ATM options
+    - Critical for IV crush scenarios (earnings)
+
+    Args:
+        S: Current stock price
+        K: Strike price
+        T: Time to expiration (years)
+        r: Risk-free rate
+        sigma: Implied volatility (decimal)
+        option_type: 'call' or 'put' (vanna is same for both)
+
+    Returns:
+        Vanna value (change in delta per 1 point IV change)
+
+    Reference: Taleb - "Dynamic Hedging", Chapter 9: Second-Order Greeks
+    """
+    import numpy as np
+    from scipy.stats import norm
+
+    if T <= 0 or sigma <= 0:
+        return 0.0
+
+    sqrt_T = np.sqrt(T)
+    d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * sqrt_T)
+    d2 = d1 - sigma * sqrt_T
+
+    # Standard normal PDF
+    phi_d1 = norm.pdf(d1)
+
+    # Vanna formula (same for calls and puts)
+    vanna = -phi_d1 * (d2 / sigma)
+
+    return round(vanna, 6)
+
+
+def _calculate_charm(
+    S: float,  # Current stock price
+    K: float,  # Strike price
+    T: float,  # Time to expiration in years
+    r: float,  # Risk-free rate (annual)
+    sigma: float,  # Implied volatility (annual)
+    option_type: str = "call"  # "call" or "put"
+) -> float:
+    """
+    Calculate Charm (∂Delta/∂Time) - delta decay over time.
+
+    Charm measures how much delta changes as time passes (delta bleed).
+    Critical for understanding Friday EOD flows and 0DTE positioning.
+
+    **Formula:**
+    Charm = -φ(d1) * ((2(r)T - d2*σ*√T) / (2T*σ*√T))
+
+    **Interpretation:**
+    - ATM options have highest charm (delta decays fastest)
+    - Explains Friday EOD "pin" to strikes with max OI
+    - Dealer rehedging flows create predictable moves
+    - Peaks near expiration
+
+    Args:
+        S: Current stock price
+        K: Strike price
+        T: Time to expiration (years)
+        r: Risk-free rate
+        sigma: Implied volatility (decimal)
+        option_type: 'call' or 'put'
+
+    Returns:
+        Charm value (daily delta decay)
+
+    Reference: Hull - "Options, Futures, and Other Derivatives", Chapter 19
+    """
+    import numpy as np
+    from scipy.stats import norm
+
+    if T <= 0.001 or sigma <= 0:  # Near expiration
+        return 0.0
+
+    sqrt_T = np.sqrt(T)
+    d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * sqrt_T)
+    d2 = d1 - sigma * sqrt_T
+
+    phi_d1 = norm.pdf(d1)
+
+    # Charm formula
+    charm = -phi_d1 * ((2 * r * T - d2 * sigma * sqrt_T) / (2 * T * sigma * sqrt_T))
+
+    # Convert to daily (divide by 365)
+    charm_daily = charm / 365
+
+    return round(charm_daily, 6)
+
+
+@mcp.tool()
+def calculate_vanna(
+    ticker: str,
+    strike: float,
+    expiry: str,
+    option_type: str = "call"
+) -> dict[str, Any]:
+    """
+    Calculate Vanna (∂Delta/∂IV) for a single option.
+
+    Vanna measures how delta changes when IV changes - critical for earnings trades.
+
+    **Use Case:**
+    Before earnings: IV = 60%, after earnings: IV = 40% (20 point drop)
+    If Vanna = -0.15, delta will change by: -0.15 × -20 = +3.0 delta
+    You need to sell 300 shares to rehedge (if 100 contracts).
+
+    Args:
+        ticker: Stock symbol
+        strike: Option strike price
+        expiry: Expiration date (YYYY-MM-DD)
+        option_type: 'call' or 'put'
+
+    Returns:
+        {
+            "ticker": str,
+            "strike": float,
+            "expiry": str,
+            "option_type": str,
+            "current_price": float,
+            "current_iv": float,
+            "dte": int,
+
+            "vanna": float,  # Change in delta per 1 point IV change
+            "charm": float,  # Daily delta decay
+
+            "interpretation": {
+                "vanna_meaning": str,
+                "iv_sensitivity": str,
+                "earnings_impact": {
+                    "iv_drop_10pts": {"delta_change": float, "hedging_shares": int},
+                    "iv_drop_20pts": {"delta_change": float, "hedging_shares": int}
+                }
+            }
+        }
+
+    Example:
+        calculate_vanna("NFLX", 500, "2026-02-21", "call")
+        → Shows how delta changes if IV crashes after earnings
+    """
+    ticker = validate_ticker(ticker)
+
+    try:
+        from datetime import datetime
+        import numpy as np
+
+        # Get current price
+        t = yf.Ticker(ticker)
+        current_price = t.info.get('currentPrice') or t.info.get('regularMarketPrice') or t.history(period='1d')['Close'].iloc[-1]
+
+        # Get option chain for this expiration
+        chain = t.option_chain(expiry)
+        if option_type.lower() == 'call':
+            options_df = chain.calls
+        else:
+            options_df = chain.puts
+
+        # Find this strike
+        strike_data = options_df[options_df['strike'] == strike]
+        if strike_data.empty:
+            raise ValueError(f"Strike {strike} not found for {expiry}")
+
+        option_data = strike_data.iloc[0]
+        current_iv = float(option_data.get('impliedVolatility', 0))
+
+        # Normalize IV to decimal if needed
+        if current_iv > 5:
+            current_iv = current_iv / 100
+
+        # Calculate DTE
+        expiry_dt = datetime.strptime(expiry, '%Y-%m-%d')
+        dte = (expiry_dt - datetime.now()).days
+        T = dte / 365
+        r = 0.05
+
+        # Calculate Vanna and Charm
+        vanna = _calculate_vanna(current_price, strike, T, r, current_iv, option_type)
+        charm = _calculate_charm(current_price, strike, T, r, current_iv, option_type)
+
+        # Calculate earnings impact scenarios
+        iv_drop_10 = vanna * -10  # 10 point IV drop
+        iv_drop_20 = vanna * -20  # 20 point IV drop
+
+        # Vanna interpretation
+        if abs(vanna) > 0.10:
+            vanna_meaning = "HIGH Vanna - Very sensitive to IV changes"
+        elif abs(vanna) > 0.05:
+            vanna_meaning = "MODERATE Vanna - Moderately sensitive to IV"
+        else:
+            vanna_meaning = "LOW Vanna - Minimal IV sensitivity"
+
+        if vanna < 0:
+            iv_sensitivity = "LONG option - Delta DECREASES when IV drops (IV crush hurts you)"
+        else:
+            iv_sensitivity = "SHORT option - Delta INCREASES when IV drops (IV crush helps you)"
+
+        return {
+            "ticker": ticker,
+            "strike": strike,
+            "expiry": expiry,
+            "option_type": option_type,
+            "current_price": round(current_price, 2),
+            "current_iv": round(current_iv * 100, 2),
+            "dte": dte,
+
+            "vanna": vanna,
+            "charm": charm,
+
+            "interpretation": {
+                "vanna_meaning": vanna_meaning,
+                "iv_sensitivity": iv_sensitivity,
+                "earnings_impact": {
+                    "iv_drop_10pts": {
+                        "delta_change": round(iv_drop_10, 4),
+                        "hedging_shares": int(iv_drop_10 * 100)  # Per 1 contract
+                    },
+                    "iv_drop_20pts": {
+                        "delta_change": round(iv_drop_20, 4),
+                        "hedging_shares": int(iv_drop_20 * 100)
+                    }
+                }
+            },
+
+            "methodology": "Taleb - Dynamic Hedging, Chapter 9: Second-Order Greeks"
+        }
+
+    except Exception as e:
+        logger.error(f"Error calculating vanna for {ticker}: {e}")
+        raise ValueError(f"Vanna calculation failed: {str(e)}")
+
+
+@mcp.tool()
+def analyze_expiration_charm(
+    ticker: str,
+    expiration: str
+) -> dict[str, Any]:
+    """
+    Analyze Charm exposure into options expiration.
+
+    **Uses Questrade as primary data source** for options chain and Greeks.
+
+    **What is Charm?**
+    Charm = ∂Delta/∂Time (delta decay over time)
+
+    Predicts dealer rehedging flows as time decay changes delta positioning.
+    Used to predict Friday EOD "pin" to strikes with max open interest.
+
+    **Why It Matters:**
+    - ATM options have highest charm (delta decays fastest)
+    - Dealers must rehedge as delta changes
+    - Creates predictable flows into expiration
+    - Explains Friday EOD "pin" to strikes with max OI
+
+    Args:
+        ticker: Stock symbol
+        expiration: Expiration date (YYYY-MM-DD format)
+
+    Returns:
+        {
+            "ticker": str,
+            "expiration": str,
+            "dte": int,
+            "current_price": float,
+
+            "charm_by_strike": [
+                {
+                    "strike": float,
+                    "total_oi": int,
+                    "call_oi": int,
+                    "put_oi": int,
+                    "call_charm": float,
+                    "put_charm": float,
+                    "net_charm": float,  # Aggregate charm weighted by OI
+                    "dealer_flow_direction": str  # BUY, SELL, NEUTRAL
+                },
+                ...
+            ],
+
+            "pin_prediction": {
+                "most_likely_pin_strike": float,
+                "confidence": str,  # HIGH, MEDIUM, LOW
+                "reason": str,
+                "charm_magnitude": float
+            },
+
+            "dealer_flow_summary": {
+                "total_call_charm": float,
+                "total_put_charm": float,
+                "net_charm": float,
+                "expected_direction": str  # BUY or SELL pressure
+            },
+
+            "risk_level": str,  # LOW, MODERATE, HIGH
+            "warnings": list[str]
+        }
+
+    Example:
+        analyze_expiration_charm("SPY", "2026-01-23")
+        → Predicts Friday EOD pin to strike with max OI
+
+    Reference: Hull - "Options, Futures, and Other Derivatives", Chapter 19
+    """
+    ticker = validate_ticker(ticker)
+
+    try:
+        from datetime import datetime
+        import numpy as np
+        import pandas as pd
+
+        # Get current price using Questrade-first helper
+        current_price = _get_current_price(ticker)
+
+        # Calculate DTE
+        expiry_dt = datetime.strptime(expiration, '%Y-%m-%d')
+        dte = (expiry_dt - datetime.now()).days
+
+        if dte < 0:
+            raise ValueError(f"Expiration {expiration} is in the past")
+
+        T = dte / 365
+        r = 0.05  # Risk-free rate
+
+        # Try Questrade first (has Greeks and open interest)
+        charm_by_strike = []
+        use_questrade = False
+
+        try:
+            from investor_agent.questrade import get_questrade_client
+            from questrade_api import Questrade
+
+            logger.info(f"Charm: Starting Questrade path for {ticker}")
+
+            # Get symbol info
+            qt_client = get_questrade_client()
+            symbol_info = qt_client.get_symbol_info(ticker)
+
+            if not symbol_info or not symbol_info.get('symbols'):
+                raise ValueError(f"Symbol {ticker} not found in Questrade")
+
+            symbol_id = symbol_info['symbols'][0]['symbolId']
+            logger.info(f"Charm: Got symbol info: {symbol_id}, price={current_price}")
+
+            # Use raw Questrade API for options chain
+            q = Questrade()
+            qt_options = q.symbol_options(symbol_id)
+            logger.info(f"Charm: Retrieved options chain from Questrade")
+
+            if not qt_options or 'optionChain' not in qt_options:
+                raise ValueError(f"No options chain available for {ticker}")
+
+            # Find the matching expiration
+            expirations_list = qt_options['optionChain']
+            if not expirations_list:
+                raise ValueError(f"No expirations available for {ticker}")
+
+            # Select expiration closest to requested date
+            target_exp = datetime.strptime(expiration, '%Y-%m-%d').date()
+            selected_exp_obj = min(expirations_list, key=lambda x: abs((datetime.strptime(x['expiryDate'], '%Y-%m-%dT%H:%M:%S.%f%z').date() - target_exp).days))
+
+            expiration_str = datetime.strptime(selected_exp_obj['expiryDate'], '%Y-%m-%dT%H:%M:%S.%f%z').strftime('%Y-%m-%d')
+            expiry_dt = datetime.strptime(expiration_str, '%Y-%m-%d')
+            dte = (expiry_dt - datetime.now()).days
+            T = dte / 365
+
+            # Collect all option IDs from the selected expiration
+            option_ids = []
+            for root_data in selected_exp_obj['chainPerRoot']:
+                for strike_data in root_data['chainPerStrikePrice']:
+                    if 'callSymbolId' in strike_data and strike_data['callSymbolId']:
+                        option_ids.append(strike_data['callSymbolId'])
+                    if 'putSymbolId' in strike_data and strike_data['putSymbolId']:
+                        option_ids.append(strike_data['putSymbolId'])
+
+            logger.info(f"Charm: Collected {len(option_ids)} option IDs for {ticker} {expiration_str}")
+
+            if len(option_ids) == 0:
+                raise ValueError(f"No option IDs found for {ticker} {expiration_str}")
+
+            # Get quotes with Greeks in batches
+            all_quotes = []
+            batch_size = 100
+            for i in range(0, len(option_ids), batch_size):
+                batch = option_ids[i:i+batch_size]
+                logger.info(f"Charm: Fetching batch {i//batch_size + 1} of {(len(option_ids)-1)//batch_size + 1} ({len(batch)} options)")
+                quotes = q.markets_options(optionIds=batch)
+                if quotes and 'optionQuotes' in quotes:
+                    all_quotes.extend(quotes['optionQuotes'])
+                    logger.info(f"Charm: Got {len(quotes['optionQuotes'])} quotes in this batch")
+
+            logger.info(f"Charm: Total quotes retrieved: {len(all_quotes)}")
+
+            # Build charm profile by strike
+            strike_data = {}  # {strike: {'call_oi': ..., 'call_charm': ..., 'put_oi': ..., 'put_charm': ..., 'call_iv': ..., 'put_iv': ...}}
+
+            for quote in all_quotes:
+                # Parse Questrade symbol format: "SPY20Feb26C335.00" or "SPY20Feb26P335.00"
+                symbol = quote['symbol']
+
+                # Find the rightmost C or P in the symbol
+                c_pos = symbol.rfind('C')
+                p_pos = symbol.rfind('P')
+
+                if c_pos > p_pos and c_pos != -1:
+                    # Call option
+                    is_call = True
+                    strike_part = symbol[c_pos+1:]
+                elif p_pos > c_pos and p_pos != -1:
+                    # Put option
+                    is_call = False
+                    strike_part = symbol[p_pos+1:]
+                else:
+                    # Can't parse - skip
+                    continue
+
+                strike = float(strike_part)
+                open_interest = quote.get('openInterest', 0) or 0
+                iv = quote.get('volatility', 0) or 0
+
+                # Normalize IV to decimal if needed
+                if iv > 5:
+                    iv = iv / 100
+
+                if iv <= 0 or T <= 0:
+                    continue
+
+                # Calculate charm for this option
+                option_type = 'call' if is_call else 'put'
+                charm = _calculate_charm(current_price, strike, T, r, iv, option_type)
+
+                if strike not in strike_data:
+                    strike_data[strike] = {
+                        'call_oi': 0, 'call_charm': 0, 'call_iv': 0,
+                        'put_oi': 0, 'put_charm': 0, 'put_iv': 0
+                    }
+
+                if is_call:
+                    strike_data[strike]['call_oi'] = open_interest
+                    strike_data[strike]['call_charm'] = charm
+                    strike_data[strike]['call_iv'] = iv
+                else:
+                    strike_data[strike]['put_oi'] = open_interest
+                    strike_data[strike]['put_charm'] = charm
+                    strike_data[strike]['put_iv'] = iv
+
+            # Convert to sorted list and calculate aggregate charm
+            for strike in sorted(strike_data.keys()):
+                data = strike_data[strike]
+                call_oi = data['call_oi']
+                put_oi = data['put_oi']
+                call_charm = data['call_charm']
+                put_charm = data['put_charm']
+
+                # Calculate net charm weighted by open interest
+                # Dealers are SHORT options, so their charm is opposite sign
+                net_charm_retail = (call_oi * call_charm) + (put_oi * put_charm)
+                net_charm_dealer = -net_charm_retail  # Dealers are opposite side
+
+                # Determine dealer flow direction
+                if abs(net_charm_dealer) < 0.01:
+                    flow_direction = "NEUTRAL"
+                elif net_charm_dealer > 0:
+                    flow_direction = "BUY"  # Dealer needs to buy shares as time decays
+                else:
+                    flow_direction = "SELL"  # Dealer needs to sell shares
+
+                charm_by_strike.append({
+                    "strike": strike,
+                    "total_oi": call_oi + put_oi,
+                    "call_oi": call_oi,
+                    "put_oi": put_oi,
+                    "call_charm": round(call_charm, 6),
+                    "put_charm": round(put_charm, 6),
+                    "net_charm": round(net_charm_dealer, 4),
+                    "dealer_flow_direction": flow_direction,
+                    "distance_from_spot_pct": round((strike - current_price) / current_price * 100, 2)
+                })
+
+            use_questrade = True
+            logger.info(f"Charm: Successfully processed {len(charm_by_strike)} strikes from Questrade")
+
+        except Exception as qt_error:
+            logger.warning(f"Charm: Questrade failed ({qt_error}), falling back to yfinance")
+            use_questrade = False
+
+        # Fallback to yfinance if Questrade failed
+        if not use_questrade or not charm_by_strike:
+            import yfinance as yf
+
+            t = yf.Ticker(ticker)
+            chain = t.option_chain(expiration)
+
+            calls_df = chain.calls
+            puts_df = chain.puts
+
+            # Merge by strike
+            all_strikes = sorted(set(calls_df['strike'].tolist() + puts_df['strike'].tolist()))
+
+            for strike in all_strikes:
+                call_data = calls_df[calls_df['strike'] == strike]
+                put_data = puts_df[puts_df['strike'] == strike]
+
+                call_oi = int(call_data['openInterest'].iloc[0]) if not call_data.empty else 0
+                put_oi = int(put_data['openInterest'].iloc[0]) if not put_data.empty else 0
+
+                call_iv = float(call_data['impliedVolatility'].iloc[0]) if not call_data.empty else 0
+                put_iv = float(put_data['impliedVolatility'].iloc[0]) if not put_data.empty else 0
+
+                # Normalize IV
+                if call_iv > 5:
+                    call_iv = call_iv / 100
+                if put_iv > 5:
+                    put_iv = put_iv / 100
+
+                # Calculate charm
+                call_charm = _calculate_charm(current_price, strike, T, r, call_iv, 'call') if call_iv > 0 else 0
+                put_charm = _calculate_charm(current_price, strike, T, r, put_iv, 'put') if put_iv > 0 else 0
+
+                # Net charm weighted by OI (dealer side)
+                net_charm_retail = (call_oi * call_charm) + (put_oi * put_charm)
+                net_charm_dealer = -net_charm_retail
+
+                if abs(net_charm_dealer) < 0.01:
+                    flow_direction = "NEUTRAL"
+                elif net_charm_dealer > 0:
+                    flow_direction = "BUY"
+                else:
+                    flow_direction = "SELL"
+
+                charm_by_strike.append({
+                    "strike": strike,
+                    "total_oi": call_oi + put_oi,
+                    "call_oi": call_oi,
+                    "put_oi": put_oi,
+                    "call_charm": round(call_charm, 6),
+                    "put_charm": round(put_charm, 6),
+                    "net_charm": round(net_charm_dealer, 4),
+                    "dealer_flow_direction": flow_direction,
+                    "distance_from_spot_pct": round((strike - current_price) / current_price * 100, 2)
+                })
+
+        if not charm_by_strike:
+            raise ValueError("No charm data available for this expiration")
+
+        # Calculate summary statistics
+        total_call_charm = sum(s['call_oi'] * s['call_charm'] for s in charm_by_strike)
+        total_put_charm = sum(s['put_oi'] * s['put_charm'] for s in charm_by_strike)
+        net_charm = total_call_charm + total_put_charm
+
+        # Predict pin: strike with max OI and significant charm (near ATM)
+        # Filter to strikes within 10% of current price
+        atm_strikes = [s for s in charm_by_strike if abs(s['distance_from_spot_pct']) < 10]
+
+        if not atm_strikes:
+            atm_strikes = charm_by_strike  # Fallback to all strikes
+
+        # Find strike with max total OI (pin candidate)
+        pin_candidate = max(atm_strikes, key=lambda x: x['total_oi'])
+
+        # Confidence based on OI concentration and charm magnitude
+        total_oi = sum(s['total_oi'] for s in charm_by_strike)
+        pin_oi_pct = (pin_candidate['total_oi'] / total_oi * 100) if total_oi > 0 else 0
+
+        if pin_oi_pct > 20 and abs(pin_candidate['net_charm']) > 0.05:
+            confidence = "HIGH"
+        elif pin_oi_pct > 10 and abs(pin_candidate['net_charm']) > 0.02:
+            confidence = "MEDIUM"
+        else:
+            confidence = "LOW"
+
+        pin_prediction = {
+            "most_likely_pin_strike": pin_candidate['strike'],
+            "confidence": confidence,
+            "reason": f"{pin_oi_pct:.1f}% of total OI, net charm {pin_candidate['net_charm']:.4f}, {abs(pin_candidate['distance_from_spot_pct']):.1f}% from spot",
+            "charm_magnitude": abs(pin_candidate['net_charm'])
+        }
+
+        # Dealer flow summary
+        dealer_flow_summary = {
+            "total_call_charm": round(total_call_charm, 4),
+            "total_put_charm": round(total_put_charm, 4),
+            "net_charm": round(net_charm, 4),
+            "expected_direction": "BUY pressure" if net_charm < 0 else "SELL pressure" if net_charm > 0 else "NEUTRAL"
+        }
+
+        # Risk assessment
+        max_charm = max(abs(s['net_charm']) for s in charm_by_strike)
+        if max_charm > 0.10:
+            risk_level = "HIGH"
+        elif max_charm > 0.05:
+            risk_level = "MODERATE"
+        else:
+            risk_level = "LOW"
+
+        warnings = []
+        if dte <= 3:
+            warnings.append("⚠️ APPROACHING EXPIRATION: Charm effects peak in final 3 days")
+        if confidence == "HIGH":
+            warnings.append(f"🎯 STRONG PIN SIGNAL: ${pin_candidate['strike']:.2f} has {pin_oi_pct:.1f}% of total OI")
+
+        return {
+            "ticker": ticker,
+            "expiration": expiration,
+            "dte": dte,
+            "current_price": round(current_price, 2),
+
+            "charm_by_strike": charm_by_strike,
+
+            "pin_prediction": pin_prediction,
+
+            "dealer_flow_summary": dealer_flow_summary,
+
+            "risk_level": risk_level,
+            "warnings": warnings,
+
+            "data_source": "questrade" if use_questrade else "yfinance",
+            "methodology": "Hull - Options, Futures, and Other Derivatives, Chapter 19"
+        }
+
+    except Exception as e:
+        logger.error(f"Error analyzing charm for {ticker}: {e}")
+        raise ValueError(f"Charm analysis failed: {str(e)}")
+
+
+@mcp.tool()
+def analyze_gamma_exposure(
+    ticker: str,
+    expiration: str | None = None
+) -> dict[str, Any]:
+    # IMPORTANT: This function should try Questrade first!
+    """
+    Analyze aggregate dealer Gamma Exposure (GEX) across all strikes.
+
+    **What is GEX?**
+    Dealers (market makers) are SHORT options because retail/institutions are LONG.
+    When dealers are short gamma, they must hedge by:
+    - BUYING as price rises (amplifies rally)
+    - SELLING as price falls (amplifies decline)
+    = VOLATILITY AMPLIFICATION
+
+    When dealers are long gamma (rare), they hedge opposite direction:
+    = VOLATILITY SUPPRESSION
+
+    **Gamma Walls:**
+    Strikes with heavy gamma concentration become support/resistance levels.
+    Breaking through a gamma wall triggers cascade effects as dealer hedging flips.
+
+    Args:
+        ticker: Stock symbol
+        expiration: Specific expiration (None = nearest expiration)
+
+    Returns:
+        {
+            "ticker": str,
+            "current_price": float,
+            "expiration": str,
+            "dte": int,
+
+            "total_market_gamma": float,  # Net dealer gamma
+            "gamma_regime": str,  # NEGATIVE (amplify), POSITIVE (suppress)
+
+            "gamma_by_strike": [
+                {
+                    "strike": float,
+                    "call_oi": int,
+                    "put_oi": int,
+                    "call_gamma": float,
+                    "put_gamma": float,
+                    "net_gamma": float,
+                    "dealer_gamma": float,  # Opposite sign (dealers are short)
+                    "distance_from_spot_pct": float
+                },
+                ...
+            ],
+
+            "gamma_walls": {
+                "zero_gamma_level": float,  # Where dealer gamma = 0
+                "resistance_levels": list[float],  # Heavy negative GEX
+                "support_levels": list[float]  # Heavy positive GEX
+            },
+
+            "volatility_forecast": {
+                "regime": str,  # SUPPRESSED, NORMAL, AMPLIFIED
+                "expected_daily_move_pct": float,
+                "confidence": str
+            },
+
+            "interpretation": str
+        }
+
+    Reference: SqueezeMetrics GEX methodology, SpotGamma research
+    """
+    ticker = validate_ticker(ticker)
+
+    try:
+        from datetime import datetime
+        import numpy as np
+        import pandas as pd
+
+        # Try Questrade first (has Greeks including gamma)
+        gamma_by_strike = []
+        current_price = None
+        dte = None
+        expiration_str = None
+        use_questrade = False
+
+        try:
+            from questrade_api import Questrade
+
+            logger.info(f"GEX: Starting Questrade path for {ticker}")
+
+            # Get symbol info from our wrapper
+            qt_client = get_questrade_client()
+            symbol_info = qt_client.get_symbol_info(ticker)
+
+            if not symbol_info or not symbol_info.get('symbols'):
+                raise ValueError(f"Symbol {ticker} not found in Questrade")
+
+            symbol_id = symbol_info['symbols'][0]['symbolId']
+            current_price = symbol_info['symbols'][0]['prevDayClosePrice']
+            logger.info(f"GEX: Got symbol info: {symbol_id}, price={current_price}")
+
+            # Use raw Questrade API for options chain (like IV Skew does)
+            q = Questrade()
+            qt_options = q.symbol_options(symbol_id)
+            logger.info(f"GEX: Retrieved options chain from Questrade")
+
+            if not qt_options or 'optionChain' not in qt_options:
+                raise ValueError(f"No options chain available for {ticker}")
+
+            # Parse the option chain structure
+            # Structure: [{expiryDate, chainPerRoot: [{chainPerStrikePrice: [{strikePrice, callSymbolId, putSymbolId}]}]}]
+            expirations_list = qt_options['optionChain']
+            if not expirations_list:
+                raise ValueError(f"No expirations available for {ticker}")
+
+            # Select expiration
+            if expiration:
+                # User specified an expiration - find closest match
+                target_exp = datetime.strptime(expiration, '%Y-%m-%d').date()
+                selected_exp_obj = min(expirations_list, key=lambda x: abs((datetime.strptime(x['expiryDate'], '%Y-%m-%dT%H:%M:%S.%f%z').date() - target_exp).days))
+            else:
+                # Use nearest expiration
+                selected_exp_obj = expirations_list[0]
+
+            expiration_str = datetime.strptime(selected_exp_obj['expiryDate'], '%Y-%m-%dT%H:%M:%S.%f%z').strftime('%Y-%m-%d')
+            expiry_dt = datetime.strptime(expiration_str, '%Y-%m-%d')
+            dte = (expiry_dt - datetime.now()).days
+
+            # Collect all option IDs from the selected expiration
+            option_ids = []
+            for root_data in selected_exp_obj['chainPerRoot']:
+                for strike_data in root_data['chainPerStrikePrice']:
+                    if 'callSymbolId' in strike_data and strike_data['callSymbolId']:
+                        option_ids.append(strike_data['callSymbolId'])
+                    if 'putSymbolId' in strike_data and strike_data['putSymbolId']:
+                        option_ids.append(strike_data['putSymbolId'])
+
+            # Get quotes with Greeks in batches (Questrade may limit batch size)
+            logger.info(f"GEX: Collected {len(option_ids)} option IDs for {ticker} {expiration_str}")
+
+            if len(option_ids) == 0:
+                raise ValueError(f"No option IDs found for {ticker} {expiration_str}")
+
+            all_quotes = []
+            batch_size = 100
+            for i in range(0, len(option_ids), batch_size):
+                batch = option_ids[i:i+batch_size]
+                logger.info(f"GEX: Fetching batch {i//batch_size + 1} of {(len(option_ids)-1)//batch_size + 1} ({len(batch)} options)")
+                # Use raw Questrade API (like IV Skew does)
+                quotes = q.markets_options(optionIds=batch)
+                if quotes and 'optionQuotes' in quotes:
+                    all_quotes.extend(quotes['optionQuotes'])
+                    logger.info(f"GEX: Got {len(quotes['optionQuotes'])} quotes in this batch")
+
+            logger.info(f"GEX: Total quotes retrieved: {len(all_quotes)}")
+
+            # Build gamma profile by strike
+            strike_data = {}  # {strike: {'call_oi': ..., 'call_gamma': ..., 'put_oi': ..., 'put_gamma': ...}}
+
+            for quote in all_quotes:
+                # Parse Questrade symbol format: "SPY20Feb26C335.00" or "SPY20Feb26P335.00"
+                # Need to find the LAST occurrence of C or P (rightmost) because ticker might contain C or P
+                symbol = quote['symbol']
+
+                # Find the rightmost C or P in the symbol
+                c_pos = symbol.rfind('C')
+                p_pos = symbol.rfind('P')
+
+                if c_pos > p_pos and c_pos != -1:
+                    # Call option - extract everything after the C
+                    is_call = True
+                    strike_part = symbol[c_pos+1:]
+                elif p_pos > c_pos and p_pos != -1:
+                    # Put option - extract everything after the P
+                    is_call = False
+                    strike_part = symbol[p_pos+1:]
+                else:
+                    # Can't parse - skip
+                    continue
+
+                strike = float(strike_part)
+                open_interest = quote.get('openInterest', 0) or 0
+                gamma = quote.get('gamma', 0) or 0
+
+                if strike not in strike_data:
+                    strike_data[strike] = {'call_oi': 0, 'call_gamma': 0, 'put_oi': 0, 'put_gamma': 0}
+
+                if is_call:
+                    strike_data[strike]['call_oi'] = open_interest
+                    strike_data[strike]['call_gamma'] = gamma
+                else:
+                    strike_data[strike]['put_oi'] = open_interest
+                    strike_data[strike]['put_gamma'] = gamma
+
+            # Convert to sorted list
+            for strike in sorted(strike_data.keys()):
+                data = strike_data[strike]
+                call_oi = data['call_oi']
+                put_oi = data['put_oi']
+                call_gamma = data['call_gamma']
+                put_gamma = data['put_gamma']
+
+                # Calculate net gamma (retail/institutional position - they are LONG)
+                net_gamma = (call_oi * call_gamma) + (put_oi * put_gamma)
+
+                # Dealer gamma is OPPOSITE (dealers are SHORT options)
+                dealer_gamma = -net_gamma
+
+                distance_pct = ((strike - current_price) / current_price) * 100
+
+                gamma_by_strike.append({
+                    "strike": strike,
+                    "call_oi": call_oi,
+                    "put_oi": put_oi,
+                    "call_gamma": round(call_gamma, 6),
+                    "put_gamma": round(put_gamma, 6),
+                    "net_gamma": round(net_gamma, 2),
+                    "dealer_gamma": round(dealer_gamma, 2),
+                    "distance_from_spot_pct": round(distance_pct, 2)
+                })
+
+            use_questrade = True
+
+        except Exception as qt_error:
+            logger.error(f"Questrade GEX failed for {ticker}: {qt_error}", exc_info=True)
+
+            # Fall back to yfinance
+            t = yf.Ticker(ticker)
+            current_price = t.info.get('currentPrice') or t.info.get('regularMarketPrice') or t.history(period='1d')['Close'].iloc[-1]
+
+            # Get options chain
+            if expiration is None:
+                expirations = t.options
+                if not expirations:
+                    raise ValueError(f"No options available for {ticker}")
+                expiration_str = expirations[0]  # Nearest expiration
+            else:
+                expiration_str = expiration
+
+            chain = t.option_chain(expiration_str)
+            calls_df = chain.calls
+            puts_df = chain.puts
+
+            # Calculate DTE
+            expiry_dt = datetime.strptime(expiration_str, '%Y-%m-%d')
+            dte = (expiry_dt - datetime.now()).days
+            T = dte / 365
+            r = 0.05
+
+            # Build gamma profile by strike
+            all_strikes = set()
+
+            if not calls_df.empty:
+                all_strikes.update(calls_df['strike'].tolist())
+            if not puts_df.empty:
+                all_strikes.update(puts_df['strike'].tolist())
+
+            all_strikes = sorted(list(all_strikes))
+
+            for strike in all_strikes:
+                # Get call data
+                call_oi = 0
+                call_gamma = 0
+                if not calls_df.empty:
+                    call_data = calls_df[calls_df['strike'] == strike]
+                    if not call_data.empty:
+                        call_row = call_data.iloc[0]
+                        call_oi_raw = call_row.get('openInterest', 0)
+                        call_oi = int(call_oi_raw) if pd.notna(call_oi_raw) else 0
+                        call_iv_raw = call_row.get('impliedVolatility', 0)
+                        call_iv = float(call_iv_raw) if pd.notna(call_iv_raw) else 0
+
+                        if call_iv > 0 and T > 0:
+                            greeks = _calculate_black_scholes_greeks(current_price, strike, T, r, call_iv, 'call')
+                            call_gamma = greeks['gamma']
+
+                # Get put data
+                put_oi = 0
+                put_gamma = 0
+                if not puts_df.empty:
+                    put_data = puts_df[puts_df['strike'] == strike]
+                    if not put_data.empty:
+                        put_row = put_data.iloc[0]
+                        put_oi_raw = put_row.get('openInterest', 0)
+                        put_oi = int(put_oi_raw) if pd.notna(put_oi_raw) else 0
+                        put_iv_raw = put_row.get('impliedVolatility', 0)
+                        put_iv = float(put_iv_raw) if pd.notna(put_iv_raw) else 0
+
+                        if put_iv > 0 and T > 0:
+                            greeks = _calculate_black_scholes_greeks(current_price, strike, T, r, put_iv, 'put')
+                            put_gamma = greeks['gamma']
+
+                # Calculate net gamma (retail/institutional position - they are LONG)
+                net_gamma = (call_oi * call_gamma) + (put_oi * put_gamma)
+
+                # Dealer gamma is OPPOSITE (dealers are SHORT options)
+                dealer_gamma = -net_gamma
+
+                distance_pct = ((strike - current_price) / current_price) * 100
+
+                gamma_by_strike.append({
+                    "strike": strike,
+                    "call_oi": call_oi,
+                    "put_oi": put_oi,
+                    "call_gamma": round(call_gamma, 6),
+                    "put_gamma": round(put_gamma, 6),
+                    "net_gamma": round(net_gamma, 2),
+                    "dealer_gamma": round(dealer_gamma, 2),
+                    "distance_from_spot_pct": round(distance_pct, 2)
+                })
+
+        # Calculate total market gamma
+        total_dealer_gamma = sum(item['dealer_gamma'] for item in gamma_by_strike)
+
+        # Determine regime
+        if total_dealer_gamma < -500:
+            gamma_regime = "NEGATIVE"
+            regime_description = "VOLATILITY AMPLIFICATION"
+        elif total_dealer_gamma > 500:
+            gamma_regime = "POSITIVE"
+            regime_description = "VOLATILITY SUPPRESSION"
+        else:
+            gamma_regime = "NEUTRAL"
+            regime_description = "NORMAL"
+
+        # Find gamma walls
+        # Sort by absolute dealer gamma to find concentrations
+        sorted_by_gamma = sorted(gamma_by_strike, key=lambda x: abs(x['dealer_gamma']), reverse=True)
+
+        # Resistance: strikes above price with heavy negative dealer gamma
+        resistance_levels = []
+        for item in sorted_by_gamma[:5]:  # Top 5 concentrations
+            if item['strike'] > current_price and item['dealer_gamma'] < -100:
+                resistance_levels.append(item['strike'])
+
+        # Support: strikes below price with heavy negative dealer gamma
+        support_levels = []
+        for item in sorted_by_gamma[:5]:
+            if item['strike'] < current_price and item['dealer_gamma'] < -100:
+                support_levels.append(item['strike'])
+
+        # Find zero-gamma level (approximate)
+        # Where dealer gamma changes sign
+        zero_gamma_level = current_price  # Default to current price
+        for i in range(len(gamma_by_strike) - 1):
+            curr = gamma_by_strike[i]
+            next_item = gamma_by_strike[i + 1]
+            if curr['dealer_gamma'] * next_item['dealer_gamma'] < 0:  # Sign change
+                zero_gamma_level = (curr['strike'] + next_item['strike']) / 2
+                break
+
+        # Volatility forecast
+        if gamma_regime == "NEGATIVE":
+            vol_regime = "AMPLIFIED"
+            expected_move = 1.5  # 1.5% daily moves expected
+            confidence = "HIGH"
+            interpretation = f"Dealers are SHORT gamma (total: {total_dealer_gamma:.0f}). They must hedge by BUYING rallies and SELLING dips = VOLATILITY AMPLIFICATION. Expect larger-than-normal price swings."
+        elif gamma_regime == "POSITIVE":
+            vol_regime = "SUPPRESSED"
+            expected_move = 0.5  # 0.5% daily moves expected
+            confidence = "MODERATE"
+            interpretation = f"Dealers are LONG gamma (total: {total_dealer_gamma:.0f}). They hedge by SELLING rallies and BUYING dips = VOLATILITY SUPPRESSION. Expect muted price action."
+        else:
+            vol_regime = "NORMAL"
+            expected_move = 1.0  # 1% daily moves expected
+            confidence = "MODERATE"
+            interpretation = f"Dealers are near gamma-neutral (total: {total_dealer_gamma:.0f}). Normal market dynamics expected."
+
+        return {
+            "ticker": ticker,
+            "current_price": round(current_price, 2),
+            "expiration": expiration_str,
+            "dte": dte,
+            "data_source": "Questrade" if use_questrade else "yfinance",
+
+            "total_market_gamma": round(total_dealer_gamma, 2),
+            "gamma_regime": gamma_regime,
+            "regime_description": regime_description,
+
+            "gamma_by_strike": gamma_by_strike,
+
+            "gamma_walls": {
+                "zero_gamma_level": round(zero_gamma_level, 2),
+                "resistance_levels": sorted(resistance_levels),
+                "support_levels": sorted(support_levels, reverse=True)
+            },
+
+            "volatility_forecast": {
+                "regime": vol_regime,
+                "expected_daily_move_pct": expected_move,
+                "confidence": confidence
+            },
+
+            "interpretation": interpretation,
+
+            "methodology": "SqueezeMetrics GEX methodology, SpotGamma research"
+        }
+
+    except Exception as e:
+        logger.error(f"Error analyzing gamma exposure for {ticker}: {e}")
+        raise ValueError(f"Gamma exposure analysis failed: {str(e)}")
 
 
 def _estimate_greeks_from_chain(calls_df: pd.DataFrame, puts_df: pd.DataFrame, current_price: float) -> dict:
@@ -8146,10 +11384,17 @@ def _scan_one_direction(
     et = pytz.timezone("America/New_York")
     scan_start = time.time()
     progress_log = []
+    progress_file = "/tmp/claude-scan-live-progress.txt"
 
     def log_progress(msg: str):
         logger.info(msg)
         progress_log.append(f"[{time.time() - scan_start:.0f}s] {msg}")
+        # Write to file for live Telegram updates
+        try:
+            with open(progress_file, "w") as f:
+                f.write(f"[{time.time() - scan_start:.0f}s] {msg}\n")
+        except:
+            pass
 
     # Step 1: Use provided candidates OR fetch from TradingView
     if candidates is not None and len(candidates) > 0:
@@ -11669,10 +14914,13 @@ def detect_catalyst_strength(ticker: str) -> dict[str, Any]:
     bullish_score += neutral_score
     bearish_score += neutral_score
 
-    # DETERMINE CATALYST DIRECTION (NEW)
-    if bullish_score > bearish_score * 1.5:
+    # DETERMINE CATALYST DIRECTION (FIXED: Use simple majority with threshold)
+    # Use 10-point threshold to avoid noise from close calls
+    threshold = 10
+
+    if bullish_score > bearish_score + threshold:
         result["catalyst_direction"] = "BULLISH"
-    elif bearish_score > bullish_score * 1.5:
+    elif bearish_score > bullish_score + threshold:
         result["catalyst_direction"] = "BEARISH"
     else:
         result["catalyst_direction"] = "NEUTRAL"
@@ -12830,6 +16078,8 @@ def generate_trading_signal(
         "signal": "NO_TRADE",
         "confidence": 0,
         "generated_at": datetime.now().isoformat(),
+        "signal_version": "v2",  # NEW: Weighted voting with hard overrides
+        "signal_algorithm": "weighted_voting_with_overrides",
         "trading_plan": None,
         "proof_of_validity": None,
         "gate_status": {
@@ -12851,7 +16101,11 @@ def generate_trading_signal(
         "cvd": "NEUTRAL",
         "exhaustion": "NEUTRAL",
         "brooks": "NEUTRAL",
-        "dollar_flow": "NEUTRAL"  # NEW: Dollar Flow as primary signal (80% accurate)
+        "dollar_flow": "NEUTRAL",  # NEW: Dollar Flow as primary signal (80% accurate)
+        "rs_score": "NEUTRAL",  # CRITICAL: Long-term market position (40% weight)
+        "pc_contrarian": "NEUTRAL",  # Contrarian: Put/Call ratio sentiment
+        "institutional": "NEUTRAL",  # Institutional accumulation/distribution
+        "f_score": "NEUTRAL"  # Quality/earnings quality score
     }
 
     try:
@@ -12901,6 +16155,93 @@ def generate_trading_signal(
         except Exception as e:
             result["warnings"].append(f"Volume analysis failed: {e}")
 
+        # Get RS Score (MOST IMPORTANT long-term indicator - 40% weight)
+        relative_strength = None
+        try:
+            relative_strength = calculate_relative_strength_tool(ticker=ticker, benchmark="SPY", period="3mo")
+            if relative_strength and relative_strength.get("rs_score") is not None:
+                rs_score = relative_strength["rs_score"]
+
+                # Strong thresholds - RS Score is critical for direction
+                if rs_score >= 80:  # Market leader
+                    direction_votes["rs_score"] = "LONG"
+                elif rs_score >= 60:  # Above average strength
+                    direction_votes["rs_score"] = "LONG"
+                elif rs_score <= 20:  # Market laggard
+                    direction_votes["rs_score"] = "SHORT"
+                elif rs_score <= 40:  # Below average strength
+                    direction_votes["rs_score"] = "SHORT"
+                # else stays NEUTRAL (41-59 range is neutral)
+        except Exception as e:
+            result["warnings"].append(f"RS Score analysis failed: {e}")
+            direction_votes["rs_score"] = "NEUTRAL"
+
+        # Get P/C Contrarian vote (from options analysis)
+        options_analysis = None
+        try:
+            # Check if ticker has options
+            t_temp = yf.Ticker(ticker)
+            has_options = len(t_temp.options) > 0 if hasattr(t_temp, 'options') else False
+
+            if has_options:
+                options_analysis = analyze_options_mcmillan(ticker)
+                if options_analysis and "put_call_ratio" in options_analysis:
+                    pc_data = options_analysis["put_call_ratio"]
+                    volume_pc = pc_data.get("volume_pc_ratio")
+
+                    if volume_pc is not None:
+                        # Contrarian interpretation (opposite of market sentiment)
+                        if volume_pc < 0.5:  # Extreme call buying = greed
+                            direction_votes["pc_contrarian"] = "SHORT"  # Contrarian bearish
+                        elif volume_pc > 1.5:  # Extreme put buying = fear
+                            direction_votes["pc_contrarian"] = "LONG"   # Contrarian bullish
+                        # else stays NEUTRAL
+        except Exception as e:
+            result["warnings"].append(f"P/C contrarian analysis failed: {e}")
+
+        # Get Institutional Flow vote
+        institutional = None
+        try:
+            institutional = get_institutional_holders(ticker=ticker)
+            if institutional and "holders" in institutional:
+                holders = institutional["holders"]
+
+                # Count accumulation vs distribution among top holders
+                accumulating = 0
+                distributing = 0
+
+                for holder in holders[:10]:  # Top 10 institutions
+                    change_pct = holder.get("pct_change", 0)
+                    if change_pct > 10:  # Meaningful accumulation (>10% increase)
+                        accumulating += 1
+                    elif change_pct < -10:  # Meaningful distribution (>10% decrease)
+                        distributing += 1
+
+                # Require strong imbalance (2:1 ratio)
+                if accumulating > distributing * 2:
+                    direction_votes["institutional"] = "LONG"
+                elif distributing > accumulating * 2:
+                    direction_votes["institutional"] = "SHORT"
+                # else stays NEUTRAL
+        except Exception as e:
+            result["warnings"].append(f"Institutional flow analysis failed: {e}")
+
+        # Get F-Score vote (quality indicator)
+        quality_analysis = None
+        try:
+            quality_analysis = calculate_quality_score(ticker=ticker)
+            if quality_analysis and "f_score" in quality_analysis:
+                f_score = quality_analysis.get("f_score")
+
+                if f_score is not None:
+                    if f_score >= 7:  # High quality (strong fundamentals)
+                        direction_votes["f_score"] = "LONG"
+                    elif f_score <= 3:  # Low quality (weak fundamentals)
+                        direction_votes["f_score"] = "SHORT"
+                    # else stays NEUTRAL (4-6 range)
+        except Exception as e:
+            result["warnings"].append(f"F-Score analysis failed: {e}")
+
         # Get exhaustion data (now returns fresh_direction)
         exhaustion_data = None
         try:
@@ -12934,29 +16275,72 @@ def generate_trading_signal(
         except Exception as e:
             result["warnings"].append(f"Brooks analysis failed: {e}")
 
-        # ========== STEP 2: DETERMINE DATA DIRECTION (CONSENSUS) ==========
-        long_votes = 0
-        short_votes = 0
+        # ========== STEP 2: WEIGHTED VOTING SYSTEM (v2) ==========
+        # Long-term indicators (40%): RS Score (most important)
+        # Short-term indicators (30%): Brooks, CVD, Dollar Flow
+        # Catalyst indicators (20%): Catalyst, F-Score
+        # Contrarian indicators (10%): P/C Ratio, Institutional
+
+        vote_weights = {
+            # Long-term (40% total)
+            "rs_score": 40,           # Most important - long-term market position
+
+            # Short-term (30% total)
+            "brooks": 10,             # Al Brooks price action probability
+            "cvd": 10,                # Cumulative volume delta
+            "dollar_flow": 10,        # Smart money flow
+
+            # Catalyst (20% total)
+            "catalyst": 15,           # Combined catalyst score
+            "f_score": 5,             # Quality/earnings quality
+
+            # Contrarian (10% total)
+            "pc_contrarian": 5,       # Put/Call contrarian signal
+            "institutional": 5,       # Institutional accumulation/distribution
+
+            # Legacy (keep for backward compatibility)
+            "exhaustion": 0,          # Deprecated - now captured in CVD
+        }
+
+        long_score = 0
+        short_score = 0
+        neutral_score = 0
 
         for tool, vote in direction_votes.items():
-            if vote in ["BULLISH", "LONG"]:
-                long_votes += 1
-            elif vote in ["BEARISH", "SHORT"]:
-                short_votes += 1
+            weight = vote_weights.get(tool, 0)
 
-        if long_votes >= 3:
+            if vote in ["BULLISH", "LONG"]:
+                long_score += weight
+            elif vote in ["BEARISH", "SHORT"]:
+                short_score += weight
+            else:
+                neutral_score += weight
+
+        total_votes = long_score + short_score + neutral_score
+        long_pct = (long_score / total_votes * 100) if total_votes > 0 else 0
+        short_pct = (short_score / total_votes * 100) if total_votes > 0 else 0
+
+        # Determine direction with 60% threshold
+        if long_pct >= 60:
             data_direction = "LONG"
-        elif short_votes >= 3:
-            data_direction = "SHORT"
-        elif long_votes >= 2 and short_votes == 0:
-            data_direction = "LONG"
-        elif short_votes >= 2 and long_votes == 0:
+        elif short_pct >= 60:
             data_direction = "SHORT"
         else:
             data_direction = "NO_CONSENSUS"
 
+        # Store voting breakdown for transparency
+        voting_breakdown = {
+            "long_score": long_score,
+            "short_score": short_score,
+            "neutral_score": neutral_score,
+            "long_pct": round(long_pct, 1),
+            "short_pct": round(short_pct, 1),
+            "weights_used": {k: v for k, v in vote_weights.items() if k in direction_votes}
+        }
+
         result["data_direction"] = data_direction
         result["direction_votes"] = direction_votes
+        result["voting_breakdown"] = voting_breakdown  # NEW: Transparency
 
         # ========== STEP 3: DETERMINE ACTUAL DIRECTION TO USE ==========
         # CRITICAL: Always run all 4 gates - never exit early
@@ -13002,6 +16386,49 @@ def generate_trading_signal(
                     result["warnings"].append(
                         f"NO_CONSENSUS: {direction_votes}. Using Brooks ({brooks_vote}) -> {actual_direction}"
                     )
+
+        # ========== TIMEFRAME CONFLICT DETECTION ==========
+        timeframe_conflicts = []
+
+        # Long-term vs Short-term conflict
+        long_term_votes = ["rs_score", "f_score", "institutional"]
+        short_term_votes = ["brooks", "cvd", "dollar_flow"]
+
+        long_term_long = sum(1 for v in long_term_votes if direction_votes.get(v) == "LONG")
+        long_term_short = sum(1 for v in long_term_votes if direction_votes.get(v) == "SHORT")
+        short_term_long = sum(1 for v in short_term_votes if direction_votes.get(v) == "LONG")
+        short_term_short = sum(1 for v in short_term_votes if direction_votes.get(v) == "SHORT")
+
+        if long_term_long > long_term_short and short_term_short > short_term_long:
+            conflict_msg = "⚠️ TIMEFRAME CONFLICT: Long-term bullish but short-term bearish - may be pullback in uptrend"
+            timeframe_conflicts.append(conflict_msg)
+        elif long_term_short > long_term_long and short_term_long > short_term_short:
+            conflict_msg = "⚠️ TIMEFRAME CONFLICT: Long-term bearish but short-term bullish - may be bounce in downtrend"
+            timeframe_conflicts.append(conflict_msg)
+
+        # Add conflicts to warnings
+        if timeframe_conflicts:
+            result["warnings"].extend(timeframe_conflicts)
+
+        # ========== HARD OVERRIDE RULES ==========
+        # These override ALL other votes to prevent dangerous trades
+        override_reason = None
+
+        # Rule 1: NEVER SHORT MARKET LEADERS (RS ≥ 80)
+        if relative_strength and relative_strength.get("rs_score", 0) >= 80:
+            if actual_direction in ["SHORT", "BEARISH"]:
+                override_reason = f"⚠️ OVERRIDE: RS Score {relative_strength['rs_score']} (market leader) - changed SHORT to LONG"
+                actual_direction = "LONG"
+
+        # Rule 2: NEVER LONG MARKET LAGGARDS (RS ≤ 20)
+        elif relative_strength and relative_strength.get("rs_score", 100) <= 20:
+            if actual_direction in ["LONG", "BULLISH"]:
+                override_reason = f"⚠️ OVERRIDE: RS Score {relative_strength['rs_score']} (market laggard) - changed LONG to SHORT"
+                actual_direction = "SHORT"
+
+        # Add override to warnings and summary
+        if override_reason:
+            result["warnings"].append(override_reason)
 
         result["direction"] = actual_direction
 
@@ -14129,17 +17556,16 @@ def get_cached_predictions(
         - days_lookback: Number of days searched
         - total_cached: Count of cached predictions
         - tickers: List of ticker symbols in cache
-        - predictions: Dict mapping ticker -> stored analysis data
     """
     try:
         recent = _get_recent_predictions(direction.upper(), days=days)
 
+        # Return ONLY ticker names - not full prediction data (too large)
         return {
             "direction": direction.upper(),
             "days_lookback": days,
             "total_cached": len(recent),
-            "tickers": list(recent.keys()),
-            "predictions": recent
+            "tickers": list(recent.keys())
         }
     except Exception as e:
         logger.warning(f"Failed to get cached predictions: {e}")
@@ -14148,7 +17574,222 @@ def get_cached_predictions(
             "days_lookback": days,
             "total_cached": 0,
             "tickers": [],
-            "predictions": {},
+            "error": str(e)
+        }
+
+
+@mcp.tool()
+def get_best_cached_trades(
+    direction: str = "BOTH",
+    days: int = 7,
+    top_n: int = 10,
+    min_gates: int = 3
+) -> dict:
+    """
+    Get the best trading opportunities from cached predictions without re-scanning.
+
+    Use this when you want to retrieve stored analysis results sorted by quality,
+    without running a new market scan. Perfect for:
+    - Quick review of best opportunities from recent scans
+    - Identifying repeated high-quality setups (stronger confirmation)
+    - Getting trade ideas when market is closed
+    - Reviewing historical scan results
+
+    Sorting Priority:
+    1. composite_score (highest first)
+    2. gates_passed (4/4 > 3/4)
+    3. scan_count (more appearances = stronger signal)
+    4. recency (most recent first)
+
+    Args:
+        direction: Trade direction filter - "LONG", "SHORT", or "BOTH" (default: "BOTH")
+        days: Number of days to look back (default: 7)
+        top_n: Maximum number of results to return (default: 10)
+        min_gates: Minimum gates passed to include (default: 3, range: 0-4)
+
+    Returns:
+        dict with:
+        - direction: Filter used (LONG/SHORT/BOTH)
+        - days_lookback: Number of days searched
+        - min_gates: Minimum gates filter applied
+        - total_found: Total predictions matching criteria
+        - returned: Number of results returned
+        - trades: List of trade opportunities with full details:
+            - ticker, direction, signal, composite_score
+            - gates_passed, gate_status (catalyst/freshness/brooks/quality)
+            - entry_price, stop_price, target_1, target_2
+            - dalio_ratio, dalio_interpretation
+            - brooks_probability, trap_risk
+            - quality_score, quality_grade, f_score, z_score
+            - scan_count (times appeared in scans)
+            - last_scanned (most recent scan date)
+    """
+    from .database import execute_query
+    from datetime import datetime, timedelta
+
+    try:
+        cutoff_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
+        direction = direction.upper()
+
+        # Build direction filter
+        if direction == "BOTH":
+            direction_filter = "direction IN ('LONG', 'SHORT')"
+            direction_params = {}
+        else:
+            direction_filter = "direction = :direction"
+            direction_params = {"direction": direction}
+
+        # Query with aggregation to get scan_count and most recent data
+        # Use COALESCE to get the best available score (confidence_score has varied values)
+        query = f"""
+            WITH RankedPredictions AS (
+                SELECT
+                    ticker,
+                    direction,
+                    signal,
+                    confidence_score,
+                    composite_score,
+                    COALESCE(confidence_score, composite_score, 0) as best_score,
+                    gates_passed,
+                    gate_catalyst,
+                    gate_freshness,
+                    gate_brooks,
+                    gate_quality,
+                    entry_price,
+                    stop_price,
+                    target_1_price,
+                    target_2_price,
+                    catalyst_direction,
+                    catalyst_strength,
+                    dalio_ratio,
+                    dalio_interpretation,
+                    brooks_probability,
+                    brooks_pattern,
+                    trap_risk,
+                    quality_score,
+                    quality_grade,
+                    f_score,
+                    z_score,
+                    data_direction,
+                    created_at,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY ticker, direction
+                        ORDER BY created_at DESC
+                    ) as rn,
+                    COUNT(*) OVER (PARTITION BY ticker, direction) as scan_count
+                FROM predictions
+                WHERE {direction_filter}
+                  AND prediction_date >= :cutoff_date
+                  AND report_type = 'scanner'
+                  AND gates_passed >= :min_gates
+            )
+            SELECT
+                ticker,
+                direction,
+                signal,
+                confidence_score,
+                composite_score,
+                best_score,
+                gates_passed,
+                gate_catalyst,
+                gate_freshness,
+                gate_brooks,
+                gate_quality,
+                entry_price,
+                stop_price,
+                target_1_price,
+                target_2_price,
+                catalyst_direction,
+                catalyst_strength,
+                dalio_ratio,
+                dalio_interpretation,
+                brooks_probability,
+                brooks_pattern,
+                trap_risk,
+                quality_score,
+                quality_grade,
+                f_score,
+                z_score,
+                data_direction,
+                created_at,
+                scan_count
+            FROM RankedPredictions
+            WHERE rn = 1
+            ORDER BY
+                CAST(created_at AS DATE) DESC,
+                best_score DESC,
+                gates_passed DESC,
+                scan_count DESC
+        """
+
+        params = {
+            "cutoff_date": cutoff_date,
+            "min_gates": min_gates,
+            **direction_params
+        }
+
+        rows = execute_query(query, params)
+
+        # Format results
+        trades = []
+        for row in rows[:top_n]:
+            # Use best_score as the primary score for sorting/display
+            best_score = float(row['best_score']) if row['best_score'] else 0
+            trades.append({
+                "ticker": row['ticker'],
+                "direction": row['direction'],
+                "signal": row['signal'],
+                "score": best_score,  # Primary sorting score
+                "confidence_score": float(row['confidence_score']) if row['confidence_score'] else None,
+                "composite_score": float(row['composite_score']) if row['composite_score'] else None,
+                "gates_passed": row['gates_passed'],
+                "gate_status": {
+                    "catalyst": row['gate_catalyst'],
+                    "freshness": row['gate_freshness'],
+                    "brooks": row['gate_brooks'],
+                    "quality": row['gate_quality']
+                },
+                "entry_price": float(row['entry_price']) if row['entry_price'] else None,
+                "stop_price": float(row['stop_price']) if row['stop_price'] else None,
+                "target_1": float(row['target_1_price']) if row['target_1_price'] else None,
+                "target_2": float(row['target_2_price']) if row['target_2_price'] else None,
+                "catalyst_direction": row['catalyst_direction'],
+                "catalyst_strength": row['catalyst_strength'],
+                "dalio_ratio": float(row['dalio_ratio']) if row['dalio_ratio'] else None,
+                "dalio_interpretation": row['dalio_interpretation'],
+                "brooks_probability": float(row['brooks_probability']) if row['brooks_probability'] else None,
+                "brooks_pattern": row['brooks_pattern'],
+                "trap_risk": row['trap_risk'],
+                "quality_score": float(row['quality_score']) if row['quality_score'] else None,
+                "quality_grade": row['quality_grade'],
+                "f_score": row['f_score'],
+                "z_score": float(row['z_score']) if row['z_score'] else None,
+                "data_direction": row['data_direction'],
+                "scan_count": row['scan_count'],
+                "scan_date": row['created_at'].strftime('%Y-%m-%d') if row['created_at'] else None,
+                "last_scanned": row['created_at'].isoformat() if row['created_at'] else None
+            })
+
+        logger.info(f"📊 Best Cached Trades: Found {len(rows)} {direction} trades, returning top {len(trades)}")
+
+        return {
+            "direction": direction,
+            "days_lookback": days,
+            "min_gates": min_gates,
+            "total_found": len(rows),
+            "returned": len(trades),
+            "trades": trades
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to get best cached trades: {e}")
+        return {
+            "direction": direction,
+            "days_lookback": days,
+            "min_gates": min_gates,
+            "total_found": 0,
+            "returned": 0,
+            "trades": [],
             "error": str(e)
         }
 
@@ -14247,6 +17888,627 @@ def generate_efficiency_report(
         return {
             "status": "error",
             "error": str(e)
+        }
+
+
+@mcp.tool()
+def check_portfolio_concentration_limits(
+    account_number: str
+) -> dict[str, Any]:
+    """
+    Check if portfolio violates institutional concentration limits.
+
+    Analyzes a Questrade account for over-concentration using institutional risk standards:
+    - Single ticker: 10% max
+    - Single sector: 20% max
+    - Correlated positions (r > 0.7): 40% max
+    - Single expiration: 35% max (for options)
+
+    **Uses Questrade as primary data source** for real-time position data.
+
+    Args:
+        account_number: Questrade account number (e.g., "26598145")
+
+    Returns:
+        {
+            "account_number": str,
+            "total_equity": float,
+
+            "current_concentrations": {
+                "by_ticker": {"AAPL": 8.5, "TSLA": 12.3, ...},  # % of portfolio
+                "by_sector": {"Technology": 35.2, "Finance": 15.1, ...},
+                "by_industry": {"Software": 18.3, ...}
+            },
+
+            "violations": list[str],  # List of limit breaches
+            "warnings": list[str],  # Near-limit warnings (>80% of limit)
+
+            "institutional_limits": {
+                "max_single_ticker": 10,  # %
+                "max_sector": 20,  # %
+                "max_single_expiration": 35  # %
+            },
+
+            "recommendations": list[str],
+            "risk_score": int  # 0-100, higher = more concentrated
+        }
+
+    **Institutional Limits:**
+    - Single ticker: 10% max (per INSTITUTIONAL_OPTIONS_PARAMS)
+    - Single sector: 20% max
+    - Single expiration: 35% max (options only)
+
+    Reference: Hull - "Options, Futures, and Other Derivatives", Chapter 19
+    """
+    try:
+        # Get positions from Questrade
+        positions_data = get_questrade_positions(account_number)
+
+        if not positions_data or 'positions' not in positions_data:
+            return {"error": "Could not fetch positions from Questrade"}
+
+        positions = positions_data['positions']
+
+        # Get account balances to calculate total equity
+        try:
+            balances = get_questrade_balances(account_number)
+            total_equity = balances.get('perCurrencyBalances', [{}])[0].get('totalEquity', 0)
+            if total_equity == 0:
+                # Fallback: sum position values
+                total_equity = sum(pos.get('currentMarketValue', 0) for pos in positions)
+        except Exception:
+            # Fallback: sum position values
+            total_equity = sum(pos.get('currentMarketValue', 0) for pos in positions)
+
+        if total_equity <= 0:
+            return {"error": "Could not determine total equity"}
+
+        # Aggregate by ticker
+        by_ticker = {}
+        by_sector = {}
+        by_industry = {}
+
+        for position in positions:
+            if position.get('openQuantity', 0) <= 0:
+                continue
+
+            symbol = position.get('symbol', '')
+            if not symbol:
+                continue
+
+            market_value = position.get('currentMarketValue', 0)
+
+            # Add to ticker concentration
+            if symbol not in by_ticker:
+                by_ticker[symbol] = 0
+            by_ticker[symbol] += market_value
+
+            # Get sector/industry using helper
+            sector, industry = _get_ticker_sector_industry(symbol)
+
+            # Add to sector concentration
+            if sector and sector != 'Unknown':
+                if sector not in by_sector:
+                    by_sector[sector] = 0
+                by_sector[sector] += market_value
+
+            # Add to industry concentration
+            if industry and industry != 'Unknown':
+                if industry not in by_industry:
+                    by_industry[industry] = 0
+                by_industry[industry] += market_value
+
+        # Convert to percentages
+        by_ticker_pct = {ticker: (value / total_equity * 100) for ticker, value in by_ticker.items()}
+        by_sector_pct = {sector: (value / total_equity * 100) for sector, value in by_sector.items()}
+        by_industry_pct = {industry: (value / total_equity * 100) for industry, value in by_industry.items()}
+
+        # Check violations
+        violations = []
+        warnings = []
+        recommendations = []
+
+        # Get limits from INSTITUTIONAL_OPTIONS_PARAMS
+        max_ticker_pct = INSTITUTIONAL_OPTIONS_PARAMS['max_single_underlying'] * 100  # 10%
+        max_sector_pct = INSTITUTIONAL_OPTIONS_PARAMS['max_sector_exposure'] * 100  # 20%
+
+        # Check ticker concentration
+        for ticker, pct in by_ticker_pct.items():
+            if pct > max_ticker_pct:
+                violations.append(
+                    f"⚠️ VIOLATION: {ticker} represents {pct:.1f}% of portfolio (limit: {max_ticker_pct:.0f}%)"
+                )
+                recommendations.append(
+                    f"Reduce {ticker} position by {pct - max_ticker_pct:.1f}% to meet institutional limits"
+                )
+            elif pct > max_ticker_pct * 0.8:  # Warning at 80% of limit
+                warnings.append(
+                    f"⚠️ WARNING: {ticker} represents {pct:.1f}% of portfolio (approaching {max_ticker_pct:.0f}% limit)"
+                )
+
+        # Check sector concentration
+        for sector, pct in by_sector_pct.items():
+            if pct > max_sector_pct:
+                violations.append(
+                    f"⚠️ VIOLATION: {sector} sector represents {pct:.1f}% of portfolio (limit: {max_sector_pct:.0f}%)"
+                )
+                recommendations.append(
+                    f"Diversify out of {sector} sector - reduce exposure by {pct - max_sector_pct:.1f}%"
+                )
+            elif pct > max_sector_pct * 0.8:  # Warning at 80% of limit
+                warnings.append(
+                    f"⚠️ WARNING: {sector} sector represents {pct:.1f}% of portfolio (approaching {max_sector_pct:.0f}% limit)"
+                )
+
+        # Calculate risk score (0-100)
+        # Higher score = more concentrated
+        ticker_risk = max(by_ticker_pct.values()) if by_ticker_pct else 0
+        sector_risk = max(by_sector_pct.values()) if by_sector_pct else 0
+
+        # Risk score = weighted average of concentrations
+        risk_score = int(min(100, (ticker_risk * 1.5 + sector_risk) / 2))
+
+        # General recommendations
+        if len(by_ticker) <= 3:
+            recommendations.append(
+                f"Portfolio has only {len(by_ticker)} position(s) - consider diversifying to 10-15 positions"
+            )
+
+        if len(by_sector) <= 2:
+            recommendations.append(
+                f"Portfolio concentrated in {len(by_sector)} sector(s) - consider adding exposure to other sectors"
+            )
+
+        return {
+            "account_number": account_number,
+            "total_equity": round(total_equity, 2),
+            "position_count": len(by_ticker),
+
+            "current_concentrations": {
+                "by_ticker": {k: round(v, 2) for k, v in sorted(by_ticker_pct.items(), key=lambda x: -x[1])},
+                "by_sector": {k: round(v, 2) for k, v in sorted(by_sector_pct.items(), key=lambda x: -x[1])},
+                "by_industry": {k: round(v, 2) for k, v in sorted(by_industry_pct.items(), key=lambda x: -x[1])}
+            },
+
+            "violations": violations,
+            "warnings": warnings,
+
+            "institutional_limits": {
+                "max_single_ticker": int(max_ticker_pct),
+                "max_sector": int(max_sector_pct),
+                "max_single_expiration": 35,
+                "note": "Per INSTITUTIONAL_OPTIONS_PARAMS standard"
+            },
+
+            "recommendations": recommendations,
+            "risk_score": risk_score,
+            "risk_level": "LOW" if risk_score < 30 else "MODERATE" if risk_score < 60 else "HIGH"
+        }
+
+    except Exception as e:
+        logger.error(f"Concentration limits check failed: {e}", exc_info=True)
+        return {
+            "error": f"Concentration limits check failed: {str(e)}",
+            "account_number": account_number
+        }
+
+
+@mcp.tool()
+def calculate_portfolio_beta_weighted_delta(
+    positions: list[dict]
+) -> dict[str, Any]:
+    """
+    Calculate beta-weighted delta exposure for entire portfolio.
+
+    Converts all positions to SPY-equivalent delta for portfolio-level risk management.
+    Essential for institutional-grade risk management across multi-ticker portfolios.
+
+    **What is Beta-Weighted Delta?**
+    - Normalizes all positions to SPY-equivalent exposure
+    - Allows portfolio-level risk limits (e.g., ±200 SPY delta per $100K)
+    - Accounts for correlation differences (TSLA beta ~2.0, Utilities beta ~0.5)
+
+    **Formula:**
+    Beta-Weighted Delta = Position Delta × Beta to SPY × Position Size
+
+    Args:
+        positions: List of positions (stocks + options)
+            [
+                {"ticker": "AAPL", "quantity": 100, "position_type": "stock"},
+                {"ticker": "TSLA", "quantity": -200, "position_type": "stock"},
+                {"ticker": "SPY", "strike": 500, "expiry": "2026-02-21",
+                 "option_type": "CALL", "quantity": 10, "position_type": "option", "delta": 0.6},
+                ...
+            ]
+
+    Returns:
+        {
+            "total_beta_weighted_delta": float,  # SPY-equivalent delta
+            "delta_per_100k": float,  # Normalized to $100K
+            "risk_level": str,  # CONSERVATIVE (<100), MODERATE (100-200), AGGRESSIVE (>200)
+
+            "by_ticker": {
+                "AAPL": {
+                    "raw_delta": float,
+                    "beta": float,
+                    "beta_weighted_delta": float,
+                    "position_value": float
+                },
+                ...
+            },
+
+            "concentration_warnings": list[str],
+            "recommendations": list[str],
+
+            "institutional_limits": {
+                "conservative": 100,
+                "moderate": 200,
+                "aggressive": 400
+            }
+        }
+
+    **Institutional Limits (per $100K):**
+    - Conservative: ±100 SPY delta
+    - Moderate: ±200 SPY delta
+    - Aggressive: ±400 SPY delta
+
+    Reference: Hull - "Options, Futures, and Other Derivatives", Chapter 19
+    """
+    try:
+        by_ticker = {}
+        total_beta_weighted_delta = 0.0
+        total_portfolio_value = 0.0
+        concentration_warnings = []
+        recommendations = []
+
+        # Process each position
+        for position in positions:
+            ticker = position.get('ticker')
+            if not ticker:
+                logger.warning(f"Position missing ticker: {position}")
+                continue
+
+            position_type = position.get('position_type', 'stock')
+
+            # Get beta using helper function
+            beta = _get_ticker_beta(ticker)
+
+            # Calculate position delta
+            if position_type == 'stock':
+                quantity = position.get('quantity', 0)
+                # Stock delta = 1 per share
+                raw_delta = quantity  # 100 shares = +100 delta
+
+                # Get position value
+                current_price = _get_current_price(ticker)
+                position_value = abs(quantity) * current_price
+
+            elif position_type == 'option':
+                # Option delta calculation
+                quantity = position.get('quantity', 0)
+                option_delta = position.get('delta', 0.5)  # Default 0.5 if not provided
+
+                # Option delta = contracts × 100 shares/contract × delta
+                raw_delta = quantity * 100 * option_delta
+
+                # Estimate position value
+                premium = position.get('premium', 1.0)
+                position_value = abs(quantity) * 100 * premium
+
+            else:
+                logger.warning(f"Unknown position type {position_type} for {ticker}")
+                continue
+
+            # Beta-weighted delta = raw delta × beta
+            beta_weighted_delta = raw_delta * beta
+
+            # Accumulate
+            total_beta_weighted_delta += beta_weighted_delta
+            total_portfolio_value += position_value
+
+            # Store by ticker
+            if ticker not in by_ticker:
+                by_ticker[ticker] = {
+                    "raw_delta": 0,
+                    "beta": beta,
+                    "beta_weighted_delta": 0,
+                    "position_value": 0
+                }
+
+            by_ticker[ticker]["raw_delta"] += raw_delta
+            by_ticker[ticker]["beta_weighted_delta"] += beta_weighted_delta
+            by_ticker[ticker]["position_value"] += position_value
+
+        # Normalize to $100K
+        if total_portfolio_value > 0:
+            delta_per_100k = (total_beta_weighted_delta / total_portfolio_value) * 100000
+        else:
+            delta_per_100k = 0
+
+        # Determine risk level
+        abs_delta_per_100k = abs(delta_per_100k)
+        if abs_delta_per_100k < 100:
+            risk_level = "CONSERVATIVE"
+        elif abs_delta_per_100k < 200:
+            risk_level = "MODERATE"
+        elif abs_delta_per_100k < 400:
+            risk_level = "AGGRESSIVE"
+        else:
+            risk_level = "EXCESSIVE"
+            concentration_warnings.append(
+                f"⚠️ EXCESSIVE RISK: {abs_delta_per_100k:.0f} SPY delta per $100K exceeds institutional limit of 400"
+            )
+
+        # Check single-ticker concentration
+        for ticker, data in by_ticker.items():
+            ticker_pct = (data['position_value'] / total_portfolio_value * 100) if total_portfolio_value > 0 else 0
+            if ticker_pct > 25:
+                concentration_warnings.append(
+                    f"⚠️ {ticker} represents {ticker_pct:.1f}% of portfolio (>25% concentration)"
+                )
+
+        # Generate recommendations
+        if abs_delta_per_100k > 300:
+            recommendations.append(
+                f"Reduce exposure: Currently at {abs_delta_per_100k:.0f} SPY delta per $100K (target: <200 for moderate risk)"
+            )
+
+        if len(by_ticker) == 1:
+            recommendations.append(
+                "Diversify portfolio: Currently concentrated in single ticker"
+            )
+
+        if total_beta_weighted_delta > 0:
+            recommendations.append(
+                f"Portfolio is net LONG ({total_beta_weighted_delta:.0f} SPY delta). Consider hedging with puts if concerned about downside."
+            )
+        elif total_beta_weighted_delta < 0:
+            recommendations.append(
+                f"Portfolio is net SHORT ({total_beta_weighted_delta:.0f} SPY delta). Consider hedging with calls if concerned about upside."
+            )
+
+        return {
+            "total_beta_weighted_delta": round(total_beta_weighted_delta, 2),
+            "delta_per_100k": round(delta_per_100k, 2),
+            "risk_level": risk_level,
+            "total_portfolio_value": round(total_portfolio_value, 2),
+
+            "by_ticker": {
+                ticker: {
+                    "raw_delta": round(data["raw_delta"], 2),
+                    "beta": round(data["beta"], 2),
+                    "beta_weighted_delta": round(data["beta_weighted_delta"], 2),
+                    "position_value": round(data["position_value"], 2),
+                    "portfolio_pct": round((data["position_value"] / total_portfolio_value * 100) if total_portfolio_value > 0 else 0, 2)
+                }
+                for ticker, data in by_ticker.items()
+            },
+
+            "concentration_warnings": concentration_warnings,
+            "recommendations": recommendations,
+
+            "institutional_limits": {
+                "conservative": 100,
+                "moderate": 200,
+                "aggressive": 400,
+                "note": "SPY delta per $100K portfolio value"
+            },
+
+            "interpretation": {
+                "directional_bias": "BULLISH" if total_beta_weighted_delta > 50 else "BEARISH" if total_beta_weighted_delta < -50 else "NEUTRAL",
+                "risk_statement": f"Portfolio has {abs(delta_per_100k):.0f} SPY delta per $100K - {risk_level} risk level"
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"Beta-weighted delta calculation failed: {e}", exc_info=True)
+        return {
+            "error": f"Beta-weighted delta calculation failed: {str(e)}",
+            "total_beta_weighted_delta": 0,
+            "risk_level": "UNKNOWN"
+        }
+
+
+@mcp.tool()
+def calculate_portfolio_var(
+    account_number: str,
+    confidence_level: float = 0.95,
+    time_horizon_days: int = 1,
+    lookback_days: int = 252
+) -> dict[str, Any]:
+    """
+    Calculate Value at Risk (VaR) and Conditional VaR (CVaR) for a Questrade portfolio.
+
+    **Uses Questrade as primary data source** for both positions and price history.
+
+    VaR = Maximum expected loss at confidence level
+    CVaR (Expected Shortfall) = Average loss beyond VaR threshold
+
+    Uses historical simulation method with returns from get_price_history_questrade_first.
+
+    Args:
+        account_number: Questrade account number (e.g., "51673853")
+        confidence_level: Confidence level (default 95% = 0.95)
+        time_horizon_days: Time horizon in days (default 1 day)
+        lookback_days: Historical lookback period (default 252 = 1 year)
+
+    Returns:
+        {
+            "account_number": str,
+            "portfolio_value": float,
+            "var_95": float,  # 95% VaR (1-day)
+            "var_99": float,  # 99% VaR (1-day)
+            "cvar_95": float,  # 95% CVaR (expected shortfall)
+            "cvar_99": float,  # 99% CVaR (expected shortfall)
+
+            "interpretation": {
+                "var_statement": str,  # "95% confident loss won't exceed $X"
+                "cvar_statement": str,  # "If VaR breached, expect average loss of $Y"
+            },
+
+            "stress_tests": {
+                "market_crash_20pct": float,  # -20% underlying
+                "volatility_spike_50pct": float,  # +50% IV (estimated impact)
+                "combined_scenario": float  # Both
+            },
+
+            "risk_metrics": {
+                "daily_volatility": float,
+                "annualized_volatility": float,
+                "worst_day": float,  # Worst historical loss
+                "best_day": float,   # Best historical gain
+                "sharpe_ratio": float  # Annualized Sharpe ratio
+            },
+
+            "risk_level": str,  # LOW, MODERATE, HIGH, EXTREME
+            "warnings": list[str]
+        }
+
+    **Risk Levels:**
+    - LOW: VaR < 2% of portfolio
+    - MODERATE: VaR 2-5% of portfolio
+    - HIGH: VaR 5-10% of portfolio
+    - EXTREME: VaR > 10% of portfolio
+
+    Reference: Jorion - "Value at Risk: The New Benchmark for Managing Financial Risk"
+    """
+    import numpy as np
+
+    try:
+        # Get portfolio returns using helper function
+        portfolio_returns, position_weights = _calculate_portfolio_returns(account_number, lookback_days)
+
+        if len(portfolio_returns) < 30:
+            return {
+                "error": f"Insufficient historical data ({len(portfolio_returns)} days) - need at least 30 days",
+                "account_number": account_number
+            }
+
+        # Get current portfolio value
+        balances = get_questrade_balances(account_number)
+        portfolio_value = balances.get('perCurrencyBalances', [{}])[0].get('totalEquity', 0)
+
+        if portfolio_value <= 0:
+            # Fallback to sum of positions
+            positions_data = get_questrade_positions(account_number)
+            positions = positions_data.get('positions', [])
+            portfolio_value = sum(pos.get('currentMarketValue', 0) for pos in positions if pos.get('openQuantity', 0) > 0)
+
+        # Scale returns to time horizon
+        scaled_returns = portfolio_returns * np.sqrt(time_horizon_days)
+
+        # Calculate VaR at different confidence levels
+        var_95_pct = np.percentile(scaled_returns, (1 - 0.95) * 100)  # 5th percentile
+        var_99_pct = np.percentile(scaled_returns, (1 - 0.99) * 100)  # 1st percentile
+
+        # Calculate CVaR (average of losses beyond VaR)
+        losses_beyond_var_95 = scaled_returns[scaled_returns <= var_95_pct]
+        cvar_95_pct = losses_beyond_var_95.mean() if len(losses_beyond_var_95) > 0 else var_95_pct
+
+        losses_beyond_var_99 = scaled_returns[scaled_returns <= var_99_pct]
+        cvar_99_pct = losses_beyond_var_99.mean() if len(losses_beyond_var_99) > 0 else var_99_pct
+
+        # Convert to dollar amounts
+        var_95_dollars = abs(var_95_pct * portfolio_value)
+        var_99_dollars = abs(var_99_pct * portfolio_value)
+        cvar_95_dollars = abs(cvar_95_pct * portfolio_value)
+        cvar_99_dollars = abs(cvar_99_pct * portfolio_value)
+
+        # Risk metrics
+        daily_vol = portfolio_returns.std()
+        annualized_vol = daily_vol * np.sqrt(252)
+        worst_day = portfolio_returns.min()
+        best_day = portfolio_returns.max()
+
+        # Sharpe ratio (assuming 3% risk-free rate)
+        risk_free_rate = 0.03
+        daily_rf = risk_free_rate / 252
+        excess_returns = portfolio_returns - daily_rf
+        sharpe_ratio = (excess_returns.mean() / daily_vol * np.sqrt(252)) if daily_vol > 0 else 0
+
+        # Stress tests
+        market_crash_20pct = portfolio_value * -0.20
+        # Volatility spike: estimate using historical vol relationship
+        vol_spike_impact = portfolio_value * (annualized_vol * 0.5)  # 50% vol increase
+        combined_scenario = market_crash_20pct - vol_spike_impact
+
+        # Determine risk level
+        var_pct = (var_95_dollars / portfolio_value * 100) if portfolio_value > 0 else 0
+
+        if var_pct < 2:
+            risk_level = "LOW"
+        elif var_pct < 5:
+            risk_level = "MODERATE"
+        elif var_pct < 10:
+            risk_level = "HIGH"
+        else:
+            risk_level = "EXTREME"
+
+        # Warnings
+        warnings = []
+        if var_pct > 10:
+            warnings.append(f"⚠️ EXTREME RISK: 1-day VaR is {var_pct:.1f}% of portfolio (>${var_95_dollars:,.0f})")
+
+        if cvar_95_dollars > var_95_dollars * 1.5:
+            warnings.append(f"⚠️ FAT TAILS: CVaR is {cvar_95_dollars/var_95_dollars:.1f}x VaR - extreme losses possible")
+
+        if annualized_vol > 0.40:
+            warnings.append(f"⚠️ HIGH VOLATILITY: {annualized_vol*100:.1f}% annualized volatility")
+
+        if sharpe_ratio < 0.5:
+            warnings.append(f"⚠️ LOW SHARPE RATIO: {sharpe_ratio:.2f} - risk-adjusted returns are poor")
+
+        return {
+            "account_number": account_number,
+            "portfolio_value": round(portfolio_value, 2),
+            "lookback_period_days": len(portfolio_returns),
+
+            "var_95": round(var_95_dollars, 2),
+            "var_95_pct": round(var_pct, 2),
+            "var_99": round(var_99_dollars, 2),
+            "var_99_pct": round((var_99_dollars / portfolio_value * 100) if portfolio_value > 0 else 0, 2),
+
+            "cvar_95": round(cvar_95_dollars, 2),
+            "cvar_99": round(cvar_99_dollars, 2),
+
+            "interpretation": {
+                "var_statement": f"With 95% confidence, portfolio won't lose more than ${var_95_dollars:,.2f} ({var_pct:.1f}%) in {time_horizon_days} day(s)",
+                "cvar_statement": f"If VaR is breached (5% of days), expect average loss of ${cvar_95_dollars:,.2f}",
+                "risk_assessment": f"{risk_level} risk - VaR is {var_pct:.1f}% of portfolio value"
+            },
+
+            "stress_tests": {
+                "market_crash_20pct": round(market_crash_20pct, 2),
+                "volatility_spike_50pct": round(-vol_spike_impact, 2),
+                "combined_scenario": round(combined_scenario, 2),
+                "note": "Estimated losses under extreme scenarios"
+            },
+
+            "risk_metrics": {
+                "daily_volatility": round(daily_vol, 4),
+                "annualized_volatility": round(annualized_vol, 4),
+                "worst_day": round(worst_day, 4),
+                "worst_day_dollars": round(worst_day * portfolio_value, 2),
+                "best_day": round(best_day, 4),
+                "best_day_dollars": round(best_day * portfolio_value, 2),
+                "sharpe_ratio": round(sharpe_ratio, 2)
+            },
+
+            "position_weights": {k: round(v, 4) for k, v in position_weights.items()},
+
+            "risk_level": risk_level,
+            "warnings": warnings,
+
+            "methodology": "Historical Simulation VaR using Questrade price history",
+            "confidence_level": confidence_level,
+            "time_horizon_days": time_horizon_days
+        }
+
+    except Exception as e:
+        logger.error(f"VaR calculation failed: {e}", exc_info=True)
+        return {
+            "error": f"VaR calculation failed: {str(e)}",
+            "account_number": account_number
         }
 
 

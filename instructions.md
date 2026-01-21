@@ -91,9 +91,23 @@ The server provides **47 tools** for comprehensive financial analysis.
 
 ### Core Data Tools (No Analytical Weight)
 
+**⚠️ CRITICAL: DATA SOURCE PRIORITY**
+
+**ALWAYS use Questrade API first for real-time data:**
+
+0. **`get_questrade_quotes(symbols=["TICKER"])`** ⭐ **USE FIRST FOR CURRENT PRICE**
+   - **REAL-TIME** quotes with no delay
+   - Bid/Ask spread (critical for options and tight entries)
+   - Pre-market/After-hours activity
+   - Live volume and VWAP
+   - Use for: Current price, entry/exit timing, pre-market analysis
+   - **Priority:** ALWAYS call this FIRST when user asks for price or analysis
+
 1. **`get_ticker_data(ticker, max_news=10)`**
    - Comprehensive stock overview: metrics, news, recommendations
-   - Use for: Company info, recent catalysts
+   - **Falls back to Yahoo Finance** (delayed 15-20 minutes)
+   - Use for: Company info, fundamentals, historical context
+   - **NOT for current price** - use get_questrade_quotes instead
 
 2. **`get_price_history(ticker, period="1y")`**
    - Historical OHLCV data for chart analysis
@@ -118,6 +132,10 @@ The server provides **47 tools** for comprehensive financial analysis.
 6b. **`detect_catalyst_strength(ticker)`** ⭐⚠️ **MANDATORY - VERIFICATION SYSTEM**
    - **REAL MONEY PROTECTION**: Every catalyst is verified before trading
    - Returns: unified catalyst assessment with verification status
+   - **⚠️ INCLUDES UNUSUAL OPTIONS ACTIVITY ACROSS ALL EXPIRATIONS**
+     - Scans ENTIRE options chain for unusual flow (all DTE ranges)
+     - May show activity on different expirations than `analyze_options_mcmillan()`
+     - **NOT a contradiction**: This tool finds ANY unusual activity, McMillan analyzes SPECIFIC optimal DTE
    - **Key Fields:**
      - `catalyst_direction`: BULLISH / BEARISH / NEUTRAL
      - `catalyst_strength`: STRONG / MODERATE / WEAK / NONE
@@ -143,6 +161,11 @@ The server provides **47 tools** for comprehensive financial analysis.
    - **McMillan Options Strategy Analysis** (Phase 3 - 13.4% weight)
    - Comprehensive institutional-grade options analysis using Lawrence McMillan's methodology
    - **DIRECTION-INDEPENDENT**: Provides pure analytical data, does NOT assume direction
+   - **⚠️ CRITICAL: EXPIRATION-SPECIFIC ANALYSIS**
+     - Analyzes options at **TARGET DTE** (default 30-45 days out)
+     - Does NOT scan all expirations - looks at optimal entry timeframe only
+     - If you see OI=0 or Volume=0, this means THE SPECIFIC EXPIRATION analyzed has no liquidity
+     - **NOT a contradiction if `detect_unusual_options_activity()` shows different data**
    - Returns:
      - **IV Analysis**: TRUE IV Rank/Percentile using actual options IV (not HV!)
        - `iv_rank`: (Current Options IV - 52w Low) / (52w High - 52w Low) × 100
@@ -335,8 +358,11 @@ The server provides **47 tools** for comprehensive financial analysis.
 Execute in order (see COMPREHENSIVE_INSTITUTIONAL_FRAMEWORK.md for details):
 
 ```python
+# PHASE 0: Real-Time Context (ALWAYS FIRST) ⭐
+get_questrade_quotes(symbols=[ticker])  # Real-time price, bid/ask, pre-market activity
+
 # PHASE 1: Fundamentals (19.6%)
-get_ticker_data(ticker, max_news=10)
+get_ticker_data(ticker, max_news=10)  # Fundamentals, news, earnings (delayed is OK here)
 get_financial_statements(ticker, statement_types=["income","balance","cash"])
 calculate_fundamental_scores_tool(ticker)  # F-Score, Z-Score
 
@@ -698,8 +724,10 @@ Every data point must show its source: `**RSI:** 73.78 [analyze_technical]`
 ---
 
 **ALWAYS:**
+✓ Use get_questrade_quotes() FIRST for current price (real-time, pre-market, bid/ask)
+✓ Reserve get_ticker_data() for fundamentals/news only (NOT current price)
 ✓ Generate COMPREHENSIVE report by default (unless user requests concise)
-✓ Follow 10-phase order (Phases 1-7 → Brooks → Historical → Final)
+✓ Follow 10-phase order (Phase 0 Real-Time → Phases 1-7 → Brooks → Historical → Final)
 ✓ Run detect_catalyst_strength() in Phase 2 (MANDATORY - 15.2% weight) ⭐ **WITH VERIFICATION**
 ✓ Check verification_rate >= 50% before proceeding with trade recommendation
 ✓ Report verified_catalysts and unverified_catalysts in every analysis
@@ -721,6 +749,8 @@ Every data point must show its source: `**RSI:** 73.78 [analyze_technical]`
 ✓ Include McMillan strategy recommendation in reports
 
 **NEVER:**
+✗ Use get_ticker_data() for current price (15-20 min delayed) - use get_questrade_quotes()
+✗ Report stale prices to user - always get real-time data first
 ✗ Trade on UNVERIFIED catalysts (check verification_summary first)
 ✗ Trade on OLD NEWS (>3 days) - Already priced in
 ✗ Ignore requires_manual_verification flag - Warn user if True
@@ -981,6 +1011,134 @@ The weekly report shows:
 
 ---
 
+## ⚠️ OPTIONS DATA INTERPRETATION - AVOIDING CONFUSION
+
+**CRITICAL: Understanding Why Tools Show Different Data**
+
+### The Confusion: "You said OI=0 but then showed 1,243 volume!"
+
+This happens because different tools analyze different parts of the options chain:
+
+| Tool | What It Analyzes | Example |
+|------|------------------|---------|
+| `analyze_options_mcmillan()` | **SPECIFIC EXPIRATION** (30-45 DTE optimal) | Analyzes Feb 27, 2026 expiry only |
+| `detect_unusual_options_activity()` | **ALL EXPIRATIONS** (scans entire chain) | Finds activity on Jan 30, 2026 expiry |
+
+**Result:** McMillan says "OI=0" (for Feb 27 expiry) while UOA says "Volume=1,243" (for Jan 30 expiry) - **BOTH ARE CORRECT, DIFFERENT EXPIRATIONS!**
+
+---
+
+### How to Interpret Apparent Conflicts
+
+#### Scenario 1: McMillan Shows No Liquidity, UOA Shows Activity
+
+**What happened:**
+```
+analyze_options_mcmillan(ticker, holding_period_days=45)
+→ Analyzes Feb 27, 2026 expiry (45 DTE)
+→ Returns: OI=0, Volume=1, "Poor liquidity"
+
+detect_unusual_options_activity(ticker)
+→ Scans ALL expirations
+→ Finds: Jan 30, 2026 $350 call with 1,243 volume
+```
+
+**Interpretation:**
+- ✅ **The 45 DTE options (Feb 27) have NO liquidity** - McMillan is correct
+- ✅ **The 10 DTE options (Jan 30) have UNUSUAL activity** - UOA is correct
+- ⚠️ **BOTH statements are true, different expirations**
+
+**Trading Implication:**
+- Check **WHICH expiration** has the unusual activity
+- If it's near earnings (like Jan 30 expiry the day after Jan 29 earnings):
+  - This is a **speculative earnings bet**
+  - **HIGH RISK** - binary outcome, IV crush
+  - **DO NOT mirror** this trade unless you're experienced with earnings plays
+- If the optimal DTE (45 days) has no liquidity:
+  - **Trade the stock instead of options**
+  - OR check other expirations manually (30 DTE, 60 DTE)
+
+#### Scenario 2: Unusual Activity Before Earnings
+
+**Red Flag Example (ETN):**
+```
+Earnings: Jan 29, 2026
+Unusual Activity: Jan 30, 2026 $350 call (1 day after earnings)
+Volume: 1,243 contracts (59.2x Vol/OI ratio)
+```
+
+**What this means:**
+- Smart money is making a **1-day post-earnings bet**
+- Stock must move above $350 by Jan 30 expiry to profit
+- **Extreme IV crush** after earnings announcement
+- **Not recommended for retail traders**
+
+**Action:**
+1. ✅ **Acknowledge the smart money flow** (it's real activity)
+2. ✅ **Note the earnings catalyst** (Jan 29, day before expiry)
+3. ❌ **DO NOT recommend trading this specific expiry** (too speculative)
+4. ✅ **Recommend stock or later expirations** (Feb/Mar with 30-60 DTE)
+
+---
+
+### Best Practice: Multi-Expiration Liquidity Check
+
+**When McMillan shows poor liquidity, manually check other expirations:**
+
+```python
+# McMillan said "no liquidity at 45 DTE"
+# Check manually:
+get_options(ticker)  # Get full chain
+
+# Look for:
+# - 30 DTE expiration (monthly cycle)
+# - 60 DTE expiration (next monthly)
+# - Earnings-adjacent expirations (if applicable)
+```
+
+**Report Format:**
+```markdown
+**Options Liquidity Assessment:**
+
+| Expiration | DTE | OI | Volume | Spread | Status |
+|------------|-----|----|----|--------|--------|
+| Feb 27, 2026 | 45 | 0 | 1 | N/A | ❌ No liquidity (McMillan target) |
+| Jan 30, 2026 | 10 | 21 | 1,243 | 5% | ⚠️ Unusual activity (earnings play) |
+| Mar 21, 2026 | 68 | 150 | 85 | 3% | ✅ Tradeable alternative |
+
+**Recommendation:**
+- ❌ Avoid 45 DTE (Feb 27) - No liquidity
+- ⚠️ Avoid 10 DTE (Jan 30) - Earnings speculation (IV crush risk)
+- ✅ Consider 68 DTE (Mar 21) - Acceptable liquidity, post-earnings
+- ✅ **OR trade the stock** - Best liquidity, avoid options complexity
+```
+
+---
+
+### Documentation Rules to Prevent Confusion
+
+**When writing reports, ALWAYS specify which expiration:**
+
+❌ **BAD (Confusing):**
+```
+Options Liquidity: Grade F (OI=0, Volume=1)
+Unusual Activity: YES - 1,243 volume
+```
+
+✅ **GOOD (Clear):**
+```
+Options Liquidity (45 DTE - Feb 27): Grade F (OI=0, Volume=1)
+Unusual Activity (10 DTE - Jan 30): YES - 1,243 volume on $350 call
+
+**Interpretation:** The optimal 45 DTE expiration has NO liquidity.
+Unusual activity detected on 10 DTE expiration (1 day after earnings).
+This is a speculative earnings bet, NOT recommended.
+
+**Recommendation:** Trade the stock, not options.
+```
+
+---
+
 ## OPTIONS WISDOM (Institutional Trading Rules)
 
 **Source:** McMillan "Options as a Strategic Investment" + TastyTrade Research
@@ -1032,6 +1190,105 @@ The weekly report shows:
 - **Open Interest ≥ 100** contracts
 - **Volume ≥ 50** daily average
 - Wide spreads = hidden cost, low OI = can't exit when needed
+
+---
+
+### Expected Moves & Standard Deviation (Strike Selection) ⭐ NEW
+
+**Purpose:** Calculate probability-based price ranges to select optimal strikes for credit/debit spreads.
+
+#### Formula: Expected Move Calculation
+
+**Expected Move = Current Price × IV × √(DTE / 365)**
+
+Where:
+- **Current Price:** Stock price at trade entry
+- **IV:** Implied Volatility (from ATM options, expressed as decimal, e.g., 30% = 0.30)
+- **DTE:** Days To Expiration (typically 45 for optimal entry)
+
+#### Standard Deviation Ranges
+
+| Standard Deviation | Probability Range | Options Delta | Strike Distance | Use Case |
+|-------------------|-------------------|---------------|-----------------|----------|
+| **1 SD** | 68% | ~16Δ | Price ± 1 SD | **OPTIMAL credit spread short strike** ⭐ |
+| **2 SD** | 95% | ~5Δ | Price ± 2 SD | Too far OTM (low premium) |
+| **ATM** | 50% | ~50Δ | Current price | Maximum theta (aggressive) |
+
+#### Why 16-Delta (1 SD) is Optimal
+
+**TastyTrade Research Findings:**
+
+| Strike Selection | Delta | Win Rate | Premium Collected | Expected Value | Verdict |
+|-----------------|-------|----------|------------------|----------------|---------|
+| **ATM (50Δ)** | 50Δ | 50% | $3.00 | Negative | ❌ Coin flip, too risky |
+| **1 SD (16Δ)** | 16Δ | **84%** | **$1.00** | **POSITIVE** | ✅ **OPTIMAL** |
+| **2 SD (5Δ)** | 5Δ | 95% | $0.30 | Negative | ❌ Too safe, poor premium |
+
+**Key Insight:** 16-delta strikes provide the **best risk-adjusted returns** over time:
+- **84% win rate** (high probability, but not excessive)
+- **Good premium collection** (4-5% of spread width typical)
+- **Positive expected value** when combined with 45 DTE entry + 50% profit target
+
+**Why 2 SD (5Δ) Fails:**
+- Despite 95% win rate, the **5% losses are HUGE** relative to tiny premiums collected
+- Example: Collect $0.30 premium 19 times ($5.70), lose $10 once = Net loss $4.30
+- Expected Value: (0.95 × $0.30) - (0.05 × $10) = $0.285 - $0.50 = **-$0.215** (negative)
+
+**Why 1 SD (16Δ) Works:**
+- 84% win rate with reasonable losses when wrong
+- Example: Collect $1.00 premium 5 times ($5.00), lose $4.00 once = Net profit $1.00
+- Expected Value: (0.84 × $1.00) - (0.16 × $4.00) = $0.84 - $0.64 = **+$0.20** (positive)
+
+#### Example Calculation (Real Trade Setup)
+
+**Stock:** AAPL @ $228
+**IV:** 30% (from ATM options)
+**Entry:** 45 DTE
+**Direction:** BULLISH (want Bull Put Credit Spread)
+
+**Step 1: Calculate 1 SD Expected Move**
+```
+Expected Move = $228 × 0.30 × √(45/365)
+              = $228 × 0.30 × 0.352
+              = $24.09
+```
+
+**Step 2: Calculate 1 SD Price Range**
+```
+Lower 1 SD = $228 - $24.09 = $203.91
+Upper 1 SD = $228 + $24.09 = $252.09
+
+68% probability stock stays within $203.91 - $252.09
+84% probability stock stays above $203.91 (16Δ put)
+```
+
+**Step 3: Construct Bull Put Credit Spread**
+```
+Sell: 16Δ put @ $204 strike (1 SD below)
+Buy:  5Δ put @ $195 strike (protection)
+Credit: $1.00 per share = $100 per contract
+Max Loss: $9 width - $1 credit = $8.00 = $800
+Probability of Profit: 84%
+Return on Risk: $1.00 / $9.00 = 11.1% in 45 days
+```
+
+**Step 4: Exit Plan**
+- **Close at 50% profit:** Buy back spread when it reaches $0.50 (88% win rate historically)
+- **Roll at 21 DTE:** If untested, roll to next month for additional credit
+- **Let expire if breached:** No stop losses - assignment at $204 is acceptable
+
+#### Quick Reference: Strike Selection by Timeframe
+
+| DTE | 1 SD Factor | Example (AAPL @ $228, 30% IV) | 16Δ Short Strike |
+|-----|-------------|-------------------------------|------------------|
+| 7 | × 0.139 | ±$9.50 | $218 or $238 |
+| 30 | × 0.287 | ±$19.62 | $208 or $248 |
+| **45** | **× 0.352** | **±$24.09** | **$204 or $252** ⭐ |
+| 90 | × 0.498 | ±$34.04 | $194 or $262 |
+
+**Key Takeaway:** Always use **16-delta (1 SD)** for credit spread short strikes at **45 DTE** - this is the institutional standard backed by TastyTrade's extensive research showing optimal risk-adjusted returns.
+
+---
 
 ### Strategy Selection Matrix
 

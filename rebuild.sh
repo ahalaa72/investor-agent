@@ -27,6 +27,7 @@ echo ""
 echo "3. Starting new container..."
 docker run -d --name investor-agent-mcp \
   -v ~/.questrade.json:/root/.questrade.json \
+  -v /tmp:/tmp \
   --env-file .env \
   investor-agent-mcp || {
     echo "ERROR: Failed to start container!"

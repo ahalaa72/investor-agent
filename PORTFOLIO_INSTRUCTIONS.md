@@ -157,6 +157,11 @@ Say "go" or "next" to continue, or ask questions.
 
 ```python
 # ═══════════════════════════════════════════════════════════
+# PHASE 0: REAL-TIME CONTEXT (ALWAYS FIRST) ⭐
+# ═══════════════════════════════════════════════════════════
+quotes = get_questrade_quotes(symbols=[symbol])  # Real-time price, bid/ask, P&L update
+
+# ═══════════════════════════════════════════════════════════
 # GATE 1: CATALYST LIFECYCLE
 # ═══════════════════════════════════════════════════════════
 catalyst = detect_catalyst_strength(symbol)  # Is catalyst still valid?
@@ -470,6 +475,158 @@ GATES HOLDING: X/4
 | HIGH IV (>60%) | LONG stock | Sell covered calls | Called away | Collect expensive premium |
 | HIGH IV (>60%) | LONG stock + want protection | Protective collar (sell call + buy put) | Net zero or credit | Free protection |
 | MEDIUM (30-60%) | LONG stock | Hold stock only OR covered call | Depends | Standard approach |
+
+---
+
+#### 📊 EXPECTED MOVES & STANDARD DEVIATION FOR POSITION ⭐ NEW
+
+**Purpose:** Calculate probability-based price ranges to select optimal strikes for covered calls, protective puts, and spreads.
+
+**Formula:** Expected Move = Current Price × IV × √(DTE / 365)
+
+**STANDARD DEVIATION RANGES:**
+
+| Timeframe | DTE | 1 SD Move (68% prob) | 1 SD Range | 2 SD Move (95% prob) | 2 SD Range |
+|-----------|-----|---------------------|------------|---------------------|------------|
+| **Weekly** | 7 | ±$X.XX | $XXX.XX - $XXX.XX | ±$X.XX | $XXX.XX - $XXX.XX |
+| **Monthly** | 30 | ±$X.XX | $XXX.XX - $XXX.XX | ±$X.XX | $XXX.XX - $XXX.XX |
+| **45 DTE** | 45 | ±$X.XX | $XXX.XX - $XXX.XX | ±$X.XX | $XXX.XX - $XXX.XX |
+| **Quarterly** | 90 | ±$X.XX | $XXX.XX - $XXX.XX | ±$X.XX | $XXX.XX - $XXX.XX |
+
+**PROBABILITY-BASED STRIKE SELECTION FOR PORTFOLIO:**
+
+| Delta | Standard Deviation | Probability OTM | Strike Price | Use Case for LONG Position |
+|-------|-------------------|-----------------|--------------|---------------------------|
+| **50Δ** | 0 SD (ATM) | 50% | $XXX.XX | Maximum theta (covered calls) |
+| **30Δ** | ~0.5 SD | 70% | $XXX.XX | Moderate covered call premium |
+| **16Δ** | ~1 SD | 84% | $XXX.XX | **Optimal covered call strike** ⭐ |
+| **10Δ** | ~1.5 SD | 90% | $XXX.XX | Conservative covered call |
+| **5Δ** | ~2 SD | 95% | $XXX.XX | Very unlikely to be called away |
+
+**WHY 16-DELTA (1 SD) IS OPTIMAL FOR COVERED CALLS:**
+
+| Strike Selection | Delta | Prob OTM | Premium | Expected Value | Recommendation |
+|-----------------|-------|----------|---------|----------------|----------------|
+| ATM (50Δ) | 50Δ | 50% | $3.00 | Good premium, high assignment risk | ⚠️ Too aggressive |
+| 1 SD (16Δ) | 16Δ | 84% | $1.00 | **Best risk-adjusted return** | ✅ **OPTIMAL** |
+| 2 SD (5Δ) | 5Δ | 95% | $0.30 | Safe but low income | ❌ Too conservative |
+
+**Example for Existing Position:**
+```
+Current Stock Price: $228
+IV: 30%
+DTE: 45 days
+Shares Owned: 100
+
+1 SD Move = $228 × 0.30 × √(45/365) = $24.09
+1 SD Upper Range: $252 (68% probability stock stays below)
+
+Optimal Covered Call Strike: $252 (16Δ)
+- 84% probability of keeping premium + stock
+- Reasonable premium collection (~$1.00/share = $100)
+- If assigned at $252: $24 gain + $100 premium = $124 total profit (54% return)
+```
+
+**For Protective Puts:**
+- Use **16Δ put** (1 SD below) for cost-effective protection
+- Stock must drop >1 SD before protection kicks in
+- Cheaper premium than ATM puts, reasonable protection
+
+#### 📋 HOW TO CALCULATE & POPULATE EXPECTED MOVES FOR PORTFOLIO POSITIONS
+
+**Step 1: Extract Data from analyze_options_mcmillan()**
+```python
+options = analyze_options_mcmillan(symbol)
+current_price = options["current_price"]
+iv = options["iv_analysis"]["current_iv"]  # Decimal (e.g., 0.30 for 30%)
+```
+
+**Step 2: Calculate Expected Moves for Each Timeframe**
+```python
+import math
+
+# Pre-calculated square root factors for efficiency
+sqrt_factors = {
+    7: 0.1387,    # √(7/365) for weekly
+    30: 0.2867,   # √(30/365) for monthly
+    45: 0.3514,   # √(45/365) for 45 DTE
+    90: 0.4965    # √(90/365) for quarterly
+}
+
+# Calculate 1 SD and 2 SD moves for each timeframe
+expected_moves = {}
+for dte, factor in sqrt_factors.items():
+    move_1sd = current_price * iv * factor
+    move_2sd = 2 * move_1sd
+
+    expected_moves[dte] = {
+        "1sd_move": round(move_1sd, 2),
+        "1sd_low": round(current_price - move_1sd, 2),
+        "1sd_high": round(current_price + move_1sd, 2),
+        "2sd_move": round(move_2sd, 2),
+        "2sd_low": round(current_price - move_2sd, 2),
+        "2sd_high": round(current_price + move_2sd, 2)
+    }
+```
+
+**Step 3: Find 16Δ Strikes for Portfolio Strategies**
+```python
+# For LONG positions (covered calls):
+# 16Δ call strike ≈ current_price + 1SD_move (45 DTE)
+strike_16delta_call = round(current_price + expected_moves[45]["1sd_move"], 0)
+
+# For protective puts:
+# 16Δ put strike ≈ current_price - 1SD_move (45 DTE)
+strike_16delta_put = round(current_price - expected_moves[45]["1sd_move"], 0)
+```
+
+**Step 4: Populate Expected Moves Table**
+```markdown
+| Timeframe | DTE | 1 SD Move (68% prob) | 1 SD Range | 2 SD Move (95% prob) | 2 SD Range |
+|-----------|-----|---------------------|------------|---------------------|------------|
+| **Weekly** | 7 | ±${expected_moves[7]["1sd_move"]} | ${expected_moves[7]["1sd_low"]} - ${expected_moves[7]["1sd_high"]} | ±${expected_moves[7]["2sd_move"]} | ${expected_moves[7]["2sd_low"]} - ${expected_moves[7]["2sd_high"]} |
+| **Monthly** | 30 | ±${expected_moves[30]["1sd_move"]} | ${expected_moves[30]["1sd_low"]} - ${expected_moves[30]["1sd_high"]} | ±${expected_moves[30]["2sd_move"]} | ${expected_moves[30]["2sd_low"]} - ${expected_moves[30]["2sd_high"]} |
+| **45 DTE** | 45 | ±${expected_moves[45]["1sd_move"]} | ${expected_moves[45]["1sd_low"]} - ${expected_moves[45]["1sd_high"]} | ±${expected_moves[45]["2sd_move"]} | ${expected_moves[45]["2sd_low"]} - ${expected_moves[45]["2sd_high"]} |
+| **Quarterly** | 90 | ±${expected_moves[90]["1sd_move"]} | ${expected_moves[90]["1sd_low"]} - ${expected_moves[90]["1sd_high"]} | ±${expected_moves[90]["2sd_move"]} | ${expected_moves[90]["2sd_low"]} - ${expected_moves[90]["2sd_high"]} |
+```
+
+**Step 5: Populate Probability-Based Strike Selection Table**
+```markdown
+| Delta | Standard Deviation | Probability OTM | Strike Price | Use Case for LONG Position |
+|-------|-------------------|-----------------|--------------|---------------------------|
+| **50Δ** | 0 SD (ATM) | 50% | ${round(current_price, 2)} | Maximum theta (covered calls) |
+| **30Δ** | ~0.5 SD | 70% | ${round(current_price + 0.5 * expected_moves[45]["1sd_move"], 2)} | Moderate covered call premium |
+| **16Δ** | ~1 SD | 84% | ${strike_16delta_call} | **Optimal covered call strike** ⭐ |
+| **10Δ** | ~1.5 SD | 90% | ${round(current_price + 1.5 * expected_moves[45]["1sd_move"], 2)} | Conservative covered call |
+| **5Δ** | ~2 SD | 95% | ${round(current_price + expected_moves[45]["2sd_move"], 2)} | Very unlikely to be called away |
+```
+
+**Example Output for Existing Position (AAPL @ $228, IV = 30%, 100 shares):**
+
+**Standard Deviation Ranges:**
+| Timeframe | DTE | 1 SD Move (68% prob) | 1 SD Range | 2 SD Move (95% prob) | 2 SD Range |
+|-----------|-----|---------------------|------------|---------------------|------------|
+| **Weekly** | 7 | ±$9.49 | $218.51 - $237.49 | ±$18.98 | $209.02 - $246.98 |
+| **Monthly** | 30 | ±$19.61 | $208.39 - $247.61 | ±$39.22 | $188.78 - $267.22 |
+| **45 DTE** | 45 | ±$24.04 | $203.96 - $252.04 | ±$48.08 | $179.92 - $276.08 |
+| **Quarterly** | 90 | ±$33.96 | $194.04 - $261.96 | ±$67.92 | $160.08 - $295.92 |
+
+**Optimal Strike Selection:**
+| Delta | Standard Deviation | Probability OTM | Strike Price | Use Case for LONG Position |
+|-------|-------------------|-----------------|--------------|---------------------------|
+| **50Δ** | 0 SD (ATM) | 50% | $228.00 | Maximum theta (covered calls) |
+| **30Δ** | ~0.5 SD | 70% | $240.00 | Moderate covered call premium |
+| **16Δ** | ~1 SD | 84% | **$252.00** | **Optimal covered call strike** ⭐ |
+| **10Δ** | ~1.5 SD | 90% | $264.00 | Conservative covered call |
+| **5Δ** | ~2 SD | 95% | $276.00 | Very unlikely to be called away |
+
+**Covered Call Trade Plan (16Δ):**
+- Sell 1 contract of $252 call @ $1.00 premium
+- Collect $100 total premium
+- If stock stays below $252 (84% probability): Keep stock + $100 profit
+- If assigned at $252: $24 capital gain + $100 premium = $124 profit (54% return on risk)
+
+---
 
 **🎯 RECOMMENDED STRATEGY FOR THIS POSITION:**
 

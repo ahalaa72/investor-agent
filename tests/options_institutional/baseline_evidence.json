@@ -1,0 +1,38 @@
+{
+  "assessment_date": "2026-01-18 23:33:49",
+  "capabilities": {
+    "analyze_options_mcmillan": true,
+    "generate_options_trade_plan": true,
+    "explicit_strategy_construction": true,
+    "position_greeks": true,
+    "iv_skew_analysis": false,
+    "term_structure_analysis": false,
+    "vanna_calculation": false,
+    "charm_calculation": false,
+    "gamma_exposure_analysis": false,
+    "beta_weighted_delta": false,
+    "concentration_limits": false,
+    "var_calculation": false
+  },
+  "summary": {
+    "total_features": 12,
+    "working_features": 4,
+    "missing_features": 8,
+    "completion_percentage": 33.3
+  },
+  "missing_features": [
+    "iv_skew_analysis",
+    "term_structure_analysis",
+    "vanna_calculation",
+    "charm_calculation",
+    "gamma_exposure_analysis",
+    "beta_weighted_delta",
+    "concentration_limits",
+    "var_calculation"
+  ],
+  "institutional_gap": {
+    "iv_surface_analysis": true,
+    "advanced_greeks": true,
+    "portfolio_risk": true
+  }
+}

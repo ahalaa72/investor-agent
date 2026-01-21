@@ -56,6 +56,9 @@ Fast analysis with bullet points for data, detailed Al Brooks, McMillan Options,
 - **Score: XX/100** → XX.X pts
 
 ### Phase 3: McMillan Options Strategy (13.4%) - [BULLISH/BEARISH/NEUTRAL] [✓/✗]
+
+⚠️ **NOTE:** `analyze_options_mcmillan()` analyzes **ONE SPECIFIC EXPIRATION** (30-45 DTE optimal). If liquidity appears poor but `detect_unusual_options_activity()` shows volume, they're analyzing **DIFFERENT EXPIRATIONS** - both can be correct!
+
 - IV Rank: XX% / IV Percentile: XX% [analyze_options_mcmillan]
   - Divergence: [ALIGNED / DIVERGENT: recent spike vs historical norm]
 - P/C Ratio: X.XX [analyze_options_mcmillan]
@@ -65,6 +68,8 @@ Fast analysis with bullet points for data, detailed Al Brooks, McMillan Options,
   - Reliability: [HIGH (near expiry + high OI) / MEDIUM / LOW (early cycle)]
 - Smart Money: [BULLISH/BEARISH/MIXED/NO_SIGNAL] [analyze_options_mcmillan]
 - **Strategy:** [Bull Put Spread / Long Call / Iron Condor / etc.] [analyze_options_mcmillan]
+- **Liquidity (XX DTE - [DATE]):** [Grade + specific expiration analyzed]
+  - If unusual activity detected on DIFFERENT expiration → **NOTE THE DIFFERENCE**
 
 **Greeks (ATM):** [analyze_options_mcmillan.greeks_assessment]
 | Greek | Call | Put | Signal |
@@ -76,6 +81,19 @@ Fast analysis with bullet points for data, detailed Al Brooks, McMillan Options,
 
 - **Greeks Source:** [questrade / yfinance_estimated]
 - **Position Risk:** [Theta-positive/negative], [Vega-long/short], [Gamma-stable/explosive]
+
+**📊 EXPECTED MOVES & STANDARD DEVIATION:** ⭐ NEW
+| Timeframe | 1 SD (68%) | 2 SD (95%) | Strike Selection |
+|-----------|------------|------------|------------------|
+| Weekly (7d) | ±$X.XX | ±$X.XX | 16Δ: $XXX (84% OTM) |
+| Monthly (30d) | ±$X.XX | ±$X.XX | 16Δ: $XXX (84% OTM) |
+| 45 DTE | ±$X.XX | ±$X.XX | 16Δ: $XXX (84% OTM) ⭐ |
+
+**Why 16-Delta (1 SD) is Optimal:** 84% win rate + reasonable premium = best risk-adjusted returns (TastyTrade)
+- **2 SD (5Δ):** 95% win rate BUT low premium (negative expected value)
+- **1 SD (16Δ):** 84% win rate + good premium (**POSITIVE expected value**) ✅
+- **ATM (50Δ):** 50% win rate (coin flip, avoid)
+
 - **Score: XX/100** → XX.X pts
 
 ---

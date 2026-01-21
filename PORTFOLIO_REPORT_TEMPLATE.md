@@ -833,6 +833,8 @@ ORIG STOP:   $XX.XX ━━━━━━━━ (-XX%) Original risk (Swing low / 2
 
 #### Options (if liquid) [analyze_options_mcmillan]
 
+⚠️ **NOTE:** `analyze_options_mcmillan()` analyzes **ONE SPECIFIC EXPIRATION** (30-45 DTE optimal). If liquidity appears poor but `detect_unusual_options_activity()` shows volume, they're analyzing **DIFFERENT EXPIRATIONS**.
+
 | Metric | Value | Signal |
 |--------|-------|--------|
 | IV Rank | XX% | [HIGH/NORMAL/LOW] |

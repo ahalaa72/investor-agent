@@ -60,6 +60,158 @@ You are a **Professional Market Analyst** specializing in **Al Brooks price acti
 
 ## NEW: DB CACHING OPTIMIZATION (January 2026)
 
+### Available DB Cache Tools
+
+| Tool | Purpose | When to Use |
+|------|---------|-------------|
+| `get_cached_predictions(direction, days)` | Get list of cached tickers | BEFORE scanning - skip repeated analysis |
+| `get_best_cached_trades(direction, days, top_n, min_gates)` | Get best trades from cache sorted by score | **WITHOUT scanning** - quick review of opportunities |
+
+---
+
+### New Tool: `get_best_cached_trades(direction, days, top_n, min_gates)`
+
+**Use this when you want best trading opportunities WITHOUT running a new scan.**
+
+Perfect for:
+- Quick review of best opportunities from recent scans
+- Getting trade ideas when market is closed
+- Identifying repeated high-quality setups (stronger confirmation via `scan_count`)
+- Reviewing historical scan results
+
+```python
+# Get top 10 LONG trades with 4/4 gates from last 7 days
+result = get_best_cached_trades(direction="LONG", days=7, top_n=10, min_gates=4)
+
+# Get top 5 SHORT trades with 3+ gates
+result = get_best_cached_trades(direction="SHORT", days=7, top_n=5, min_gates=3)
+
+# Get both LONG and SHORT trades
+result = get_best_cached_trades(direction="BOTH", days=7, top_n=10, min_gates=3)
+```
+
+**Parameters:**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `direction` | "BOTH" | "LONG", "SHORT", or "BOTH" |
+| `days` | 7 | Days to look back |
+| `top_n` | 10 | Max results to return |
+| `min_gates` | 3 | Minimum gates passed (0-4) |
+
+**Returns:**
+```json
+{
+  "direction": "LONG",
+  "days_lookback": 7,
+  "min_gates": 4,
+  "total_found": 51,
+  "returned": 5,
+  "trades": [
+    {
+      "ticker": "HLNE",
+      "direction": "LONG",
+      "signal": "STRONG_BUY",
+      "composite_score": 91.0,
+      "gates_passed": 4,
+      "gate_status": {"catalyst": "PASS", "freshness": "PASS", "brooks": "PASS", "quality": "PASS"},
+      "entry_price": 146.01,
+      "stop_price": 140.17,
+      "target_1": 154.77,
+      "target_2": 160.61,
+      "dalio_ratio": 1.0651,
+      "dalio_interpretation": "STRONG_BULLISH",
+      "brooks_probability": 60.0,
+      "trap_risk": "LOW",
+      "quality_score": 85.0,
+      "quality_grade": "A",
+      "f_score": 8,
+      "z_score": 6.78,
+      "scan_count": 3,
+      "last_scanned": "2026-01-14T04:06:12"
+    }
+  ]
+}
+```
+
+**Sorting Priority:**
+1. `composite_score` DESC (highest first)
+2. `gates_passed` DESC (4/4 > 3/4)
+3. `scan_count` DESC (more appearances = stronger signal)
+4. `last_scanned` DESC (most recent first)
+
+**Key Field: `scan_count`**
+- Shows how many times ticker appeared in scans
+- Higher count = stronger confirmation (setup keeps appearing)
+- `scan_count: 3` means ticker passed validation 3 separate times
+
+---
+
+## Signal Sanity Checks (Post-Generation)
+
+After `generate_trading_signal()` returns, verify signal integrity:
+
+### Critical Rules (v2 Algorithm):
+
+1. **Never Short Leaders:** If RS Score ≥ 80, signal must be LONG/BUY/HOLD
+   - Market leaders should NEVER be shorted
+   - Override triggered if SHORT signal generated for RS ≥ 80
+   - Warning: "⚠️ OVERRIDE: RS Score {score} (market leader) - changed SHORT to LONG"
+
+2. **Never Long Laggards:** If RS Score ≤ 20, signal must be SHORT/SELL/HOLD
+   - Market laggards should NEVER be longed
+   - Override triggered if LONG signal generated for RS ≤ 20
+   - Warning: "⚠️ OVERRIDE: RS Score {score} (market laggard) - changed LONG to SHORT"
+
+3. **Timeframe Alignment:** Check for long-term vs short-term conflicts
+   - Long-term indicators: rs_score, f_score, institutional
+   - Short-term indicators: brooks, cvd, dollar_flow
+   - Warning: "⚠️ TIMEFRAME CONFLICT: Long-term bullish but short-term bearish"
+   - Interpretation: May be pullback in uptrend (or bounce in downtrend)
+
+4. **Catalyst Consistency:** Catalyst direction should align with signal direction
+   - LONG signal should have BULLISH or NEUTRAL catalyst
+   - SHORT signal should have BEARISH or NEUTRAL catalyst
+   - Conflict indicates misalignment between fundamentals and technicals
+
+### Validation Checklist:
+
+```python
+def validate_signal(result):
+    """Sanity check signal before trading."""
+    rs_score = result.get("relative_strength", {}).get("rs_score")
+    direction = result.get("direction")
+    signal = result.get("signal")
+
+    # Rule 1: Never short leaders
+    if rs_score and rs_score >= 80:
+        assert direction == "LONG", f"RS {rs_score} but direction is {direction}"
+
+    # Rule 2: Never long laggards
+    if rs_score and rs_score <= 20:
+        assert direction == "SHORT", f"RS {rs_score} but direction is {direction}"
+
+    # Rule 3: Check for timeframe conflicts in warnings
+    warnings = result.get("warnings", [])
+    has_conflict = any("TIMEFRAME CONFLICT" in w for w in warnings)
+    if has_conflict:
+        print(f"⚠️ {signal} has timeframe conflict - review carefully")
+
+    # Rule 4: Check signal version
+    version = result.get("signal_version", "v1")
+    if version == "v1":
+        print("⚠️ Using old algorithm (v1) - consider regenerating")
+```
+
+### If Sanity Checks Fail:
+
+- **Automatic Override:** Hard overrides (RS ≥80/≤20) are automatic - signal already corrected
+- **Manual Review:** Timeframe conflicts require trader judgment
+- **Flag for Review:** Catalyst conflicts may indicate fundamental shift
+- **Regenerate Signal:** If signal_version is "v1", regenerate to use v2 algorithm
+
+---
+
 ### New Tool: `get_cached_predictions(direction, days)`
 
 **Use this FIRST before scanning to identify repeated tickers that can be skipped.**
@@ -344,8 +496,11 @@ User specifies a ticker to analyze:
 ### Step 1: Gather Data for All Sections
 
 ```python
+# PHASE 0: Real-Time Context (ALWAYS FIRST) ⭐
+get_questrade_quotes(symbols=[ticker])    # Real-time price, bid/ask, pre-market activity
+
 # SECTION A: Company Overview + Quality
-get_ticker_data(ticker)                   # Company info, fundamentals, news
+get_ticker_data(ticker)                   # Company info, fundamentals, news (delayed OK)
 calculate_quality_score(ticker)           # NEW: Unified quality (F-Score, Z-Score, ROE, margins)
 
 # SECTION B: Catalyst Verification (MANDATORY GATE)
@@ -732,11 +887,106 @@ Scanner suggested {direction} but data votes suggest {opposite}.
 
 ---
 
+### 📊 EXPECTED MOVES & STANDARD DEVIATION (NEW) ⭐
+
+**Purpose:** Calculate probability-based price ranges and optimal strike selection using implied volatility.
+
+**Formula:** Expected Move = Current Price × IV × √(DTE / 365)
+
+**Standard Deviation Ranges:**
+
+| Timeframe | DTE | Calculation | Probability | Use Case |
+|-----------|-----|-------------|-------------|----------|
+| **1 SD** | 45 | Price × IV × √(45/365) | 68% | **16-delta strikes (84% OTM)** ⭐ |
+| **2 SD** | 45 | 2 × (Price × IV × √(45/365)) | 95% | 5-delta strikes (95% OTM) |
+
+**Probability-Based Strike Selection:**
+
+| Delta | Standard Deviation | Probability OTM | Win Rate | Premium | Expected Value |
+|-------|-------------------|-----------------|----------|---------|----------------|
+| **50Δ (ATM)** | 0 SD | 50% | 50% | High | Negative (coin flip) ❌ |
+| **30Δ** | ~0.5 SD | 70% | 70% | Moderate | Neutral |
+| **16Δ (1 SD)** | ~1 SD | **84%** | **84%** | **Good** | **POSITIVE** ✅ |
+| **10Δ** | ~1.5 SD | 90% | 90% | Low | Neutral |
+| **5Δ (2 SD)** | ~2 SD | 95% | 95% | Very Low | Negative (low premium) ❌ |
+
+**Why 16-Delta (1 SD) is Optimal:**
+
+**TastyTrade Research Findings:**
+- **84% win rate** - High probability of success
+- **Good premium collection** - Not too far OTM
+- **Positive expected value** - Best risk-adjusted returns
+- **Manageable losses** - When wrong, loss is defined and acceptable
+
+**2 SD (5-Delta) Problem:**
+- 95% win rate sounds great BUT...
+- Premium is too low (~$0.30)
+- When you lose (5% of time), loss is large (spread width - $0.30)
+- **Negative expected value** over time
+
+**Example Calculation:**
+```
+Stock: $228
+IV: 30%
+DTE: 45
+
+1 SD Move = $228 × 0.30 × √(45/365) = $228 × 0.30 × 0.352 = $24.09
+1 SD Range: $203.91 to $252.09 (68% probability)
+
+2 SD Move = 2 × $24.09 = $48.18
+2 SD Range: $179.82 to $276.18 (95% probability)
+
+Optimal Strike Selection:
+- Sell 16Δ put at $204 (1 SD) = 84% probability of profit ✅
+- Buy 5Δ put at $180 (2 SD) = protection
+- Collect $1.00 premium for $24 risk = 4.2% return with 84% win rate
+```
+
+**Report Template Addition:**
+```markdown
+**📊 EXPECTED MOVES (Standard Deviation):**
+- **1 SD (68% prob):** $XXX - $XXX (±$XX.XX)
+- **2 SD (95% prob):** $XXX - $XXX (±$XX.XX)
+- **Optimal Strike (16Δ):** $XXX (84% OTM probability) ⭐
+```
+
+---
+
+### ⚠️ OPTIONS DATA INTERPRETATION - AVOIDING CONFUSION
+
+**CRITICAL: Understanding Why Tools Show Different Data**
+
+Different tools analyze different parts of the options chain:
+
+| Tool | What It Analyzes | Example |
+|------|------------------|---------|
+| `analyze_options_mcmillan()` | **ONE SPECIFIC EXPIRATION** (30-45 DTE optimal) | Feb 27, 2026 expiry only |
+| `detect_unusual_options_activity()` | **ALL EXPIRATIONS** (scans entire chain) | Jan 30, 2026 expiry |
+
+**Why This Matters:**
+- McMillan may show "OI=0, Volume=1" for the 45 DTE expiration
+- UOA may find "Volume=1,243" on a different expiration (e.g., earnings week)
+- **BOTH ARE CORRECT** - they're analyzing different expirations!
+
+**Red Flag: Unusual Activity Before Earnings**
+
+If unusual activity appears on expiration within 7 days of earnings:
+- ⚠️ This is a **speculative earnings bet** (high risk, IV crush)
+- ❌ **DO NOT recommend** for scanner candidates (too speculative)
+- ✅ **Note the smart money flow** but recommend stock trade instead
+
+**When Reporting Conflicts, ALWAYS Specify Expiration:**
+
+❌ **BAD:** "Liquidity Grade F, but unusual activity detected"
+✅ **GOOD:** "Liquidity (45 DTE - Feb 27): Grade F | Unusual Activity (10 DTE - Jan 30): 1,243 volume (earnings play, not recommended)"
+
+---
+
 ### 📊 OPTIMAL OPTIONS STRATEGY (Risk-Managed)
 
 **Purpose:** Select IV-based options strategy with defined risk for scanner candidates.
 
-**Source:** `analyze_options_mcmillan()` for IV environment
+**Source:** `analyze_options_mcmillan()` for IV environment + 1 SD calculation for strike selection
 
 **Strategy Selection Matrix:**
 

@@ -358,6 +358,8 @@ Largest Bet:        [Description of biggest position]
 
 **Options Analysis:** [analyze_options_mcmillan]
 
+⚠️ **IMPORTANT:** `analyze_options_mcmillan()` analyzes **ONE SPECIFIC EXPIRATION** (30-45 DTE optimal). If liquidity appears poor but `detect_unusual_options_activity()` shows volume, they're analyzing **DIFFERENT EXPIRATIONS** - both can be correct! Always specify which expiration when reporting data.
+
 #### IV Environment
 - **Current IV:** XX.X%
 - **IV Rank:** XX% [HIGH >70 sell premium / LOW <30 buy premium / NORMAL 30-70]
@@ -368,6 +370,97 @@ Largest Bet:        [Description of biggest position]
   - Rank HIGH + Percentile LOW = Recent spike → Watch for mean reversion
   - Rank LOW + Percentile HIGH = Unusual compression → Potential breakout
 - **Environment:** [HIGH_IV / LOW_IV / NORMAL_IV]
+
+#### Expected Moves & Standard Deviation ⭐ NEW
+**📊 PROBABILITY-BASED STRIKE SELECTION:**
+
+| Timeframe | DTE | 1 SD Move (68%) | 2 SD Move (95%) | 16Δ Strike (84% OTM) |
+|-----------|-----|-----------------|-----------------|----------------------|
+| Weekly | 7 | ±$X.XX | ±$X.XX | $XXX |
+| Monthly | 30 | ±$X.XX | ±$X.XX | $XXX |
+| 45 DTE | 45 | ±$X.XX | ±$X.XX | $XXX ⭐ |
+
+**Formula:** Expected Move = Price × IV × √(DTE/365)
+
+**Why 16-Delta (1 SD) is Optimal:**
+- **16Δ = ~1 SD = 84% win rate** with reasonable premium ✅
+- **5Δ = ~2 SD = 95% win rate** BUT low premium (negative EV) ❌
+- **50Δ = ATM = 50% win rate** (coin flip, avoid) ❌
+
+**TastyTrade Research:** 16-delta strikes = **best risk-adjusted returns** over time.
+
+---
+
+#### 📋 HOW TO CALCULATE & POPULATE EXPECTED MOVES
+
+**Step 1: Extract Data from analyze_options_mcmillan()**
+```python
+mcmillan = analyze_options_mcmillan(ticker)
+current_price = mcmillan["current_price"]
+iv = mcmillan["iv_analysis"]["current_iv"]  # Decimal (e.g., 0.30 for 30%)
+```
+
+**Step 2: Calculate Expected Moves for Each Timeframe**
+```python
+import math
+
+# Pre-calculated square root factors
+sqrt_factors = {
+    7: 0.1387,    # √(7/365) for weekly
+    30: 0.2867,   # √(30/365) for monthly
+    45: 0.3514,   # √(45/365) for 45 DTE
+    90: 0.4965    # √(90/365) for quarterly
+}
+
+# Calculate 1 SD and 2 SD moves for each timeframe
+expected_moves = {}
+for dte, factor in sqrt_factors.items():
+    move_1sd = current_price * iv * factor
+    move_2sd = 2 * move_1sd
+
+    expected_moves[dte] = {
+        "1sd_move": round(move_1sd, 2),
+        "1sd_range": f"${round(current_price - move_1sd, 2)} - ${round(current_price + move_1sd, 2)}",
+        "2sd_move": round(move_2sd, 2),
+        "2sd_range": f"${round(current_price - move_2sd, 2)} - ${round(current_price + move_2sd, 2)}"
+    }
+```
+
+**Step 3: Find 16Δ Strikes (Approximate)**
+```python
+# For scanner candidates (no specific position):
+# 16Δ call strike ≈ current_price + 1SD_move (45 DTE)
+# 16Δ put strike ≈ current_price - 1SD_move (45 DTE)
+
+strike_16delta_call = round(current_price + expected_moves[45]["1sd_move"], 0)
+strike_16delta_put = round(current_price - expected_moves[45]["1sd_move"], 0)
+
+# For SHORT candidates, use put strike; for LONG candidates, use call strike
+```
+
+**Step 4: Populate the Table**
+```markdown
+| Timeframe | DTE | 1 SD Move (68%) | 2 SD Move (95%) | 16Δ Strike (84% OTM) |
+|-----------|-----|-----------------|-----------------|----------------------|
+| Weekly | 7 | ±${expected_moves[7]["1sd_move"]} | ±${expected_moves[7]["2sd_move"]} | ${strike_weekly} |
+| Monthly | 30 | ±${expected_moves[30]["1sd_move"]} | ±${expected_moves[30]["2sd_move"]} | ${strike_monthly} |
+| 45 DTE | 45 | ±${expected_moves[45]["1sd_move"]} | ±${expected_moves[45]["2sd_move"]} | ${strike_16delta} ⭐ |
+```
+
+**Example Output (AAPL @ $228, IV = 30%):**
+```markdown
+| Timeframe | DTE | 1 SD Move (68%) | 2 SD Move (95%) | 16Δ Strike (84% OTM) |
+|-----------|-----|-----------------|-----------------|----------------------|
+| Weekly | 7 | ±$9.49 | ±$18.98 | $238 (call) / $218 (put) |
+| Monthly | 30 | ±$19.61 | ±$39.22 | $248 (call) / $208 (put) |
+| 45 DTE | 45 | ±$24.04 | ±$48.08 | $252 (call) / $204 (put) ⭐ |
+```
+
+**Direction-Specific Strike Selection:**
+- **LONG candidates:** Show call strikes (upside protection for covered calls)
+- **SHORT candidates:** Show put strikes (downside protection for short puts)
+
+---
 
 #### Put/Call Analysis
 - **Volume P/C Ratio:** X.XX
