@@ -528,8 +528,60 @@ if scanner_direction != data_direction and data_direction != "NO_CONSENSUS":
 
 **generate_trading_signal() now returns:**
 - `data_direction`: What the data consensus suggests
-- `direction_votes`: How each tool voted
+- `direction_votes`: How each tool voted (9 indicators)
+- `voting_breakdown`: Weighted vote scores and percentages
+- `signal_version`: Algorithm version ("v2" = weighted voting with overrides)
 - `direction_conflict`: Boolean flag if scanner vs data conflict
+
+### **⭐ NEW: Weighted Voting System (v2 Algorithm)**
+
+**Direction votes now weighted by importance (NOT simple majority):**
+
+| Indicator | Weight | Category | Vote Meaning |
+|-----------|--------|----------|--------------|
+| **rs_score** | 40% | Long-term | Market position vs SPY (80+ = leader, never short) |
+| **brooks** | 10% | Short-term | Al Brooks Always-In direction |
+| **cvd** | 10% | Short-term | Cumulative Volume Delta trend |
+| **dollar_flow** | 10% | Short-term | Smart money flow ($10M+ threshold) |
+| **catalyst** | 15% | Catalyst | Combined catalyst direction |
+| **f_score** | 5% | Catalyst | Quality score (≥7 LONG, ≤3 SHORT) |
+| **pc_contrarian** | 5% | Contrarian | Put/Call ratio (>1.5 fear = LONG) |
+| **institutional** | 5% | Contrarian | Top 10 institutional flow |
+| **exhaustion** | 0% | Deprecated | Now captured in CVD |
+
+**Direction Determination:**
+- `long_pct ≥ 60%` → LONG
+- `short_pct ≥ 60%` → SHORT
+- Otherwise → NO_CONSENSUS
+
+**Hard Override Rules (CRITICAL):**
+1. **RS Score ≥ 80**: ALWAYS LONG (never short market leaders)
+2. **RS Score ≤ 20**: ALWAYS SHORT (never long market laggards)
+
+**Example (CMRE):**
+```json
+{
+  "direction_votes": {
+    "rs_score": "LONG",        // RS=99 → 40 points LONG
+    "catalyst": "BULLISH",     // → 15 points LONG
+    "pc_contrarian": "LONG",   // P/C=6.83 → 5 points LONG
+    "brooks": "SHORT",         // → 10 points SHORT
+    "dollar_flow": "BEARISH"   // → 10 points SHORT
+  },
+  "voting_breakdown": {
+    "long_score": 60,   // 40+15+5 = 60
+    "short_score": 20,  // 10+10 = 20
+    "long_pct": 60.0,   // 60/(60+20+20) = 60%
+    "short_pct": 20.0
+  },
+  "data_direction": "LONG",  // 60% threshold met
+  "signal_version": "v2"
+}
+```
+
+**Timeframe Conflict Detection:**
+- Long-term (rs_score, f_score, institutional) vs Short-term (brooks, cvd, dollar_flow)
+- Warning: "⚠️ TIMEFRAME CONFLICT: Long-term bullish but short-term bearish"
 
 ---
 

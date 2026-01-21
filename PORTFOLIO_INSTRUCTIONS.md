@@ -29,6 +29,13 @@ Most traders only analyze at entry. Winners continuously validate:
 | `analyze_competitors` | Monitor sector leadership | Still the leader or laggard? |
 | `generate_trading_signal` | 4-Gate validation for HOLD/TRIM | Portfolio action signal |
 
+**⭐ NEW: Signal v2 Algorithm (Weighted Voting)**
+- Uses 9 weighted indicators instead of simple majority
+- **RS Score (40% weight)** - Most important: Never short leaders (RS≥80)
+- Hard overrides prevent dangerous trades (never short leaders, never long laggards)
+- Detects timeframe conflicts (long-term vs short-term disagreement)
+- Check `signal_version: "v2"` in results for new algorithm
+
 ---
 
 ## 4-GATE PORTFOLIO VALIDATION
@@ -867,6 +874,8 @@ strike_16delta_put = round(current_price - expected_moves[45]["1sd_move"], 0)
 │  ACTION: [STRONG_HOLD / HOLD / TRIM XX% / CLOSE]           │
 │  CONFIDENCE: XX/100                                         │
 │  GATES: X/4 holding                                         │
+│  DIRECTION: [LONG/SHORT] (XX% weighted vote)                │
+│  SIGNAL VERSION: v2 (weighted voting with overrides)        │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -876,10 +885,12 @@ strike_16delta_put = round(current_price - expected_moves[45]["1sd_move"], 0)
 | Exhaustion | [LOW/MODERATE/HIGH] |
 | Al Brooks | [SUPPORTS/NEUTRAL/OPPOSES] |
 | Quality | [STRONG/STABLE/DECLINING] |
+| **RS Score** | **[LEADER≥80 / AVERAGE / LAGGARD≤20]** ⭐ |
 | Insider Flow | [BULLISH/NEUTRAL/BEARISH] |
 | Options Flow | [BULLISH/NEUTRAL/BEARISH] |
 | Sector Rank | [LEADER/MID-PACK/LAGGARD] |
 | **Combined** | **[ALIGNED/MIXED/OPPOSED]** |
+| **Timeframe** | **[ALIGNED / CONFLICT DETECTED]** ⭐ |
 
 **Rationale:** [2-3 sentence explanation of the action recommendation]
 
