@@ -675,6 +675,51 @@ Scanner/Analysis suggests **[DIRECTION]** but data votes suggest **[OPPOSITE]**.
 
 ---
 
+## 📊 POSITION MANAGEMENT (Phase 4 - NEW) ⭐
+
+**⚠️ For EXISTING options positions only** - Skip if opening NEW position.
+
+**Daily Position Check:** `evaluate_options_position_management()`
+
+**📊 MANAGEMENT RULES (Priority Order):**
+
+| Rule | Trigger | Action | Urgency |
+|------|---------|--------|---------|
+| **1. Profit Target** | P&L ≥ 50% max profit | CLOSE | IMMEDIATE |
+| **2. 21 DTE** | DTE ≤ 21 (profitable) | CLOSE | WITHIN_3_DAYS |
+| **2. 21 DTE** | DTE ≤ 21 (losing) | ROLL | WITHIN_3_DAYS |
+| **3. Direction Flip** | Brooks Always-In flips | CLOSE | IMMEDIATE |
+| **4. Tested Position** | Price breaches strike + DTE ≤ 7 | CLOSE | IMMEDIATE |
+| **5. Earnings** | Earnings < 7 days | CLOSE | IMMEDIATE |
+
+**Example Output:**
+```
+Action: CLOSE
+Reason: ✅ 50% PROFIT TARGET HIT (50.0% of max profit)
+Urgency: IMMEDIATE
+P&L: $315 (50.0% of $630 max)
+Days in Trade: 10
+DTE: 30
+Recommendation: Close now - TastyTrade shows 88% win rate at 50%
+```
+
+**Portfolio Greeks:** `get_portfolio_greeks_dashboard()`
+```
+Total Delta: +142.3 (BULLISH bias)
+Total Theta: +$12.45/day (collecting premium)
+Total Vega: -156.8 (want IV down)
+Total Gamma: -2.34 (short gamma risk)
+
+Risk Assessment:
+  ✅ Positive theta - time decay in your favor
+  ⚠️ Short gamma - hedge near strikes
+  ⚠️ Short vega - vulnerable to IV expansion
+```
+
+**Reference:** TastyTrade (88% win rate at 50%) + McMillan Chapter 36
+
+---
+
 ## PHASE 8: AL BROOKS PRICE ACTION (19.6%) ⭐ CRITICAL
 
 ### A. Always-In Direction
@@ -1113,7 +1158,7 @@ find_similar_historical_setups(
 Store prediction when:
 - Trading signal is generated (STRONG_BUY, BUY, WATCH, SELL, STRONG_SELL)
 - Entry price, stop loss, and targets are defined
-- All 4 gates have been evaluated
+- All 5 gates have been evaluated
 
 ### Storage Command
 
@@ -1138,7 +1183,8 @@ store_trading_prediction(
 | **Dalio Metrics** | dalio_ratio, dalio_interpretation, cumulative_dollar_flow, sustainability_score |
 | **Gate 3 (Brooks)** | always_in_direction, pattern, trap_risk, brooks_probability |
 | **Gate 4 (Quality)** | f_score, z_score, quality_grade, quality_score |
-| **Options** | iv_rank, iv_percentile, put_call_ratio, recommended_strategy |
+| **Gate 5 (Options Tradability)** | liquidity_tier, iv_environment, earnings_proximity, options_tradable |
+| **Options Details** | iv_rank, iv_percentile, put_call_ratio, recommended_strategy |
 | **Historical** | historical_setups_found, historical_success_rate, avg_achievement |
 | **Score** | composite_score, gates_passed |
 
