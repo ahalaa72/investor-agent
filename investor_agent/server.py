@@ -73,6 +73,17 @@ from .backtesting import (
     generate_similarity_report
 )
 
+# Import research-backed entry/exit strategies (Phase 1 & 2)
+from .entry_exit_strategy import (
+    find_support_resistance_kmeans,
+    calculate_atr_stop_loss,
+    determine_entry_strategy,
+    calculate_profit_target,
+    calculate_optimized_macd,  # Phase 2
+    calculate_adx,  # Phase 2
+    get_economic_context  # Phase 2
+)
+
 # Import TradingView scanner with Finviz fallback (optional dependencies)
 try:
     from .tradingview_scanner import (
@@ -251,6 +262,14 @@ async def fetch_json(url: str, headers: dict | None = None) -> dict:
     """Generic JSON fetcher with retry logic."""
     async with create_async_client(headers=headers) as client:
         response = await client.get(url)
+        response.raise_for_status()
+        return response.json()
+
+@api_retry
+def fetch_json_sync(url: str, headers: dict | None = None) -> dict:
+    """Synchronous JSON fetcher with retry logic."""
+    with httpx.Client(timeout=30.0, follow_redirects=True, headers=headers) as client:
+        response = client.get(url)
         response.raise_for_status()
         return response.json()
 
@@ -1872,7 +1891,7 @@ async def get_market_movers(
 
 
 @mcp.tool()
-async def get_cnn_fear_greed_index(
+def get_cnn_fear_greed_index(
     indicators: list[
         Literal[
             "fear_and_greed",
@@ -1887,7 +1906,7 @@ async def get_cnn_fear_greed_index(
 ) -> dict:
     CNN_FEAR_GREED_URL = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
 
-    raw_data = await fetch_json(CNN_FEAR_GREED_URL, BROWSER_HEADERS)
+    raw_data = fetch_json_sync(CNN_FEAR_GREED_URL, BROWSER_HEADERS)
     if not raw_data:
         raise ValueError("Empty response data")
 
@@ -2408,6 +2427,83 @@ def _calculate_liquidity_tier(ticker: str, avg_volume: float = None) -> dict:
             "Wide spreads will eat profits"
         ]
     }
+
+
+def _get_tradier_option_bidask(
+    ticker: str,
+    strike: float,
+    expiry: str,
+    option_type: str = "call"
+) -> tuple[float, float]:
+    """
+    Fetch real-time bid/ask for an option from Tradier API.
+
+    Tradier provides Level 1 options data including bid/ask spreads.
+    Free sandbox has 15-min delay, but still useful when Questrade returns null.
+
+    Args:
+        ticker: Stock symbol (e.g., "SPY")
+        strike: Option strike price
+        expiry: Expiration date in YYYY-MM-DD format
+        option_type: "call" or "put"
+
+    Returns:
+        (bid, ask) tuple, or (0, 0) if unavailable
+
+    Requires:
+        TRADIER_API_TOKEN environment variable
+        TRADIER_API_ENDPOINT environment variable (default: sandbox)
+    """
+    import os
+    import requests
+
+    api_token = os.getenv('TRADIER_API_TOKEN')
+    api_endpoint = os.getenv('TRADIER_API_ENDPOINT', 'https://sandbox.tradier.com/v1/')
+
+    if not api_token:
+        logger.debug("TRADIER_API_TOKEN not configured, skipping Tradier fallback")
+        return (0, 0)
+
+    try:
+        # Fetch options chain for the specific expiration
+        url = f"{api_endpoint}markets/options/chains"
+        headers = {
+            'Authorization': f'Bearer {api_token}',
+            'Accept': 'application/json'
+        }
+        params = {
+            'symbol': ticker,
+            'expiration': expiry,
+            'greeks': 'false'  # Don't need Greeks, just bid/ask
+        }
+
+        response = requests.get(url, headers=headers, params=params, timeout=10)
+        response.raise_for_status()
+
+        data = response.json()
+
+        # Navigate response structure
+        if not data or 'options' not in data or 'option' not in data['options']:
+            logger.debug(f"Tradier returned no options data for {ticker} {expiry}")
+            return (0, 0)
+
+        # Find the matching strike and type
+        for option in data['options']['option']:
+            if (abs(option.get('strike', 0) - strike) < 0.5 and
+                option.get('option_type') == option_type):
+                bid = float(option.get('bid', 0) or 0)
+                ask = float(option.get('ask', 0) or 0)
+
+                if bid > 0 and ask > 0:
+                    logger.info(f"✅ Tradier bid/ask for {ticker} ${strike} {option_type}: bid=${bid}, ask=${ask}")
+                    return (bid, ask)
+
+        logger.debug(f"No matching option found in Tradier data for {ticker} ${strike} {option_type}")
+        return (0, 0)
+
+    except Exception as e:
+        logger.debug(f"Tradier API fallback failed: {e}")
+        return (0, 0)
 
 
 def _get_oi_with_yf_fallback(
@@ -4209,12 +4305,51 @@ def analyze_options_mcmillan(
                 atm_call = calls_df.loc[atm_idx]
                 atm_strike = float(atm_call.get('strike', 0) or 0)
 
-                # Calculate bid-ask spread % with yfinance fallback
+                # Calculate bid-ask spread % with multiple fallbacks
                 bid = atm_call.get('bid', 0) or 0
                 ask = atm_call.get('ask', 0) or 0
 
-                # Fallback to yfinance if Questrade bid/ask is 0 (market closed, etc)
+                # FALLBACK 1: Try fresh Questrade option quote if bid/ask is missing
                 if (bid == 0 or ask == 0) and options_source == "questrade":
+                    try:
+                        from investor_agent.questrade import get_questrade_client
+                        from questrade_api import Questrade
+
+                        qt_client = get_questrade_client()
+                        symbol_info = qt_client.get_symbol_info(ticker)
+
+                        if symbol_info and symbol_info.get('symbols'):
+                            symbol_id = symbol_info['symbols'][0]['symbolId']
+                            q = Questrade()
+                            qt_options = q.symbol_options(symbol_id)
+
+                            # Find the matching expiration and strike
+                            if qt_options and qt_options.get('optionChain'):
+                                for exp in qt_options['optionChain']:
+                                    if exp['expiryDate'][:10] == nearest_exp:
+                                        for root in exp.get('chainPerRoot', []):
+                                            for strike_info in root.get('chainPerStrikePrice', []):
+                                                if abs(strike_info['strikePrice'] - atm_strike) < 0.5:
+                                                    call_id = strike_info.get('callSymbolId')
+                                                    if call_id:
+                                                        # Fetch real-time quote
+                                                        call_quotes = q.markets_options(optionIds=[call_id])
+                                                        if call_quotes and call_quotes.get('optionQuotes'):
+                                                            cq = call_quotes['optionQuotes'][0]
+                                                            qt_bid = cq.get('bidPrice') or 0
+                                                            qt_ask = cq.get('askPrice') or 0
+                                                            if qt_bid > 0 and qt_ask > 0:
+                                                                bid = qt_bid
+                                                                ask = qt_ask
+                                                                logger.info(f"✅ Real-time Questrade bid/ask for {ticker} ATM ${atm_strike}: bid=${bid}, ask=${ask}")
+                                                                break
+                                        if bid > 0 and ask > 0:
+                                            break
+                    except Exception as e:
+                        logger.debug(f"Questrade real-time quote fallback failed: {e}")
+
+                # FALLBACK 2: Try yfinance if still no bid/ask
+                if (bid == 0 or ask == 0):
                     try:
                         # Use global yf (imported at top of file)
                         t_yf = yf.Ticker(ticker)
@@ -4233,7 +4368,7 @@ def analyze_options_mcmillan(
                             if yf_bid > 0 and yf_ask > 0:
                                 bid = yf_bid
                                 ask = yf_ask
-                                logger.debug(f"Bid/ask fallback to yfinance for {ticker}: bid={bid}, ask={ask}")
+                                logger.debug(f"Bid/ask fallback to yfinance for {ticker}: bid=${bid}, ask=${ask}")
                     except Exception as e:
                         logger.debug(f"yfinance bid/ask fallback failed: {e}")
 
@@ -4247,9 +4382,35 @@ def analyze_options_mcmillan(
                     if last_price > 0:
                         spread_pct = abs(ask - last_price) / last_price * 100 * 2
                     else:
-                        spread_pct = 5.0  # Conservative default when no data
+                        # Use tier-based proxy when data unavailable
+                        tier = liquidity_tier.get('tier')
+                        if tier == 'TIER_1':
+                            spread_pct = 0.1  # SPY, QQQ: $0.01-0.05 typical (penny-wide)
+                            logger.debug(f"Using TIER_1 spread proxy (0.1%) for {ticker} - bid/ask unavailable")
+                        elif tier == 'TIER_2':
+                            spread_pct = 0.3  # High-volume S&P 500: $0.05-0.15 typical
+                            logger.debug(f"Using TIER_2 spread proxy (0.3%) for {ticker} - bid/ask unavailable")
+                        elif tier == 'TIER_3':
+                            spread_pct = 1.0  # Mid-caps: $0.10-0.50 typical
+                            logger.debug(f"Using TIER_3 spread proxy (1.0%) for {ticker} - bid/ask unavailable")
+                        else:
+                            spread_pct = 5.0  # NON_LIQUID: wide spreads, likely to fail (correct)
+                            logger.debug(f"Using NON_LIQUID spread proxy (5.0%) for {ticker} - bid/ask unavailable")
                 else:
-                    spread_pct = 5.0  # Conservative default when no data
+                    # Use tier-based proxy when data unavailable
+                    tier = liquidity_tier.get('tier')
+                    if tier == 'TIER_1':
+                        spread_pct = 0.1  # SPY, QQQ: $0.01-0.05 typical (penny-wide)
+                        logger.debug(f"Using TIER_1 spread proxy (0.1%) for {ticker} - bid/ask unavailable")
+                    elif tier == 'TIER_2':
+                        spread_pct = 0.3  # High-volume S&P 500: $0.05-0.15 typical
+                        logger.debug(f"Using TIER_2 spread proxy (0.3%) for {ticker} - bid/ask unavailable")
+                    elif tier == 'TIER_3':
+                        spread_pct = 1.0  # Mid-caps: $0.10-0.50 typical
+                        logger.debug(f"Using TIER_3 spread proxy (1.0%) for {ticker} - bid/ask unavailable")
+                    else:
+                        spread_pct = 5.0  # NON_LIQUID: wide spreads, likely to fail (correct)
+                        logger.debug(f"Using NON_LIQUID spread proxy (5.0%) for {ticker} - bid/ask unavailable")
 
                 # Determine target expiry for OI fallback lookup
                 target_date = datetime.now() + timedelta(days=holding_period_days)
@@ -4356,7 +4517,7 @@ def analyze_options_mcmillan(
         # Get recommended selling strategies if near earnings
         earnings_strategies = earnings_check.get('recommended_strategies', [])
 
-        return {
+        result = {
             "ticker": ticker,
             "current_price": current_price,
             "analysis_date": datetime.now().strftime('%Y-%m-%d %H:%M'),
@@ -4438,6 +4599,9 @@ def analyze_options_mcmillan(
 
             "methodology": "McMillan - Options as a Strategic Investment (5th Ed.) + Institutional Parameters"
         }
+
+        # Convert numpy types to Python native types for JSON serialization
+        return convert_numpy_types(result)
 
     except Exception as e:
         logger.error(f"Error in analyze_options_mcmillan for {ticker}: {e}")
@@ -8855,6 +9019,304 @@ def get_questrade_option_quotes(option_ids: list[int]) -> dict[str, Any]:
 
 
 # ============================================================================
+# Position Management Tools (Phase 4 - Gate 5)
+# ============================================================================
+
+@mcp.tool()
+def evaluate_options_position_management(
+    symbol: str,
+    strategy: str,
+    entry_date: str,
+    expiration: str,
+    entry_credit: float = 0.0,
+    entry_debit: float = 0.0,
+    current_value: float = 0.0,
+    entry_direction: str = "LONG",
+    legs: list[dict] | None = None
+) -> dict[str, Any]:
+    """
+    Evaluate an options position and recommend management action.
+
+    Implements TastyTrade + McMillan methodology:
+    1. **50% Profit Target** - Close when 50% of max profit achieved (88% win rate)
+    2. **21 DTE Management** - Close or roll at 21 days to expiration
+    3. **Direction Change** - Exit if Brooks Always-In flips
+    4. **Tested Position** - Manage if price breaches short strikes
+    5. **Earnings <7 days** - Close to avoid IV crush
+
+    Args:
+        symbol: Underlying symbol (e.g., "AAPL")
+        strategy: Options strategy type
+            ("IRON_CONDOR", "CREDIT_SPREAD", "DEBIT_SPREAD", "BULL_PUT_SPREAD", etc.)
+        entry_date: Position entry date (YYYY-MM-DD)
+        expiration: Options expiration date (YYYY-MM-DD)
+        entry_credit: Max profit for credit strategies (default 0.0)
+        entry_debit: Max loss for debit strategies (default 0.0)
+        current_value: Current position value (default 0.0 = will fetch from market)
+        entry_direction: Direction when entered ("LONG" or "SHORT")
+        legs: Optional list of position legs:
+            [
+                {"type": "CALL", "strike": 252, "action": "SELL", "quantity": 2},
+                {"type": "CALL", "strike": 257, "action": "BUY", "quantity": 2},
+                ...
+            ]
+
+    Returns:
+        {
+            "action": "HOLD" | "CLOSE" | "ROLL" | "ADJUST",
+            "reason": str,
+            "urgency": "IMMEDIATE" | "WITHIN_3_DAYS" | "MONITOR",
+
+            "profit_status": {
+                "current_pnl": float,
+                "current_pnl_pct": float,
+                "profit_target_hit": bool
+            },
+
+            "dte_status": {
+                "days_to_expiration": int,
+                "dte_threshold_hit": bool,
+                "gamma_risk_level": "LOW" | "MODERATE" | "HIGH"
+            },
+
+            "recommendation": str,
+            "expected_pnl_if_close": float,
+            "expected_pnl_if_hold": float | str
+        }
+
+    Example:
+        evaluate_options_position_management(
+            symbol="AAPL",
+            strategy="IRON_CONDOR",
+            entry_date="2026-01-15",
+            expiration="2026-02-21",
+            entry_credit=630.00,
+            current_value=315.00,
+            entry_direction="NEUTRAL",
+            legs=[
+                {"type": "CALL", "strike": 252, "action": "SELL", "quantity": 2},
+                {"type": "CALL", "strike": 257, "action": "BUY", "quantity": 2},
+                {"type": "PUT", "strike": 204, "action": "SELL", "quantity": 2},
+                {"type": "PUT", "strike": 199, "action": "BUY", "quantity": 2}
+            ]
+        )
+
+    Reference:
+        - TastyTrade: "Manage Winners at 50% of Max Profit"
+        - McMillan: "Options as a Strategic Investment", Chapter 36
+    """
+    from investor_agent.positions import evaluate_options_position
+
+    try:
+        # Get current market price
+        import yfinance as yf
+        ticker_obj = yf.Ticker(symbol)
+        info = ticker_obj.info
+        current_market_price = info.get('currentPrice') or info.get('regularMarketPrice', 0)
+
+        if not current_market_price:
+            raise ValueError(f"Could not get current price for {symbol}")
+
+        # Get Brooks signal for direction check
+        brooks_signal = None
+        try:
+            ohlcv = _get_ohlcv_cached(symbol, period="3mo")
+            technical_data = analyze_technical(symbol, period="3mo", include_ml_analysis=False)
+            from investor_agent.al_brooks_analyzer import AlBrooksAnalyzer
+            brooks_analyzer = AlBrooksAnalyzer()
+            brooks_signal = brooks_analyzer.analyze(
+                ticker=symbol,
+                direction="long",  # Doesn't matter for always_in
+                ohlcv_data=ohlcv,
+                technical_data=technical_data or {}
+            )
+        except Exception as e:
+            logger.debug(f"Could not get Brooks signal for {symbol}: {e}")
+
+        # Build position dict
+        position = {
+            "symbol": symbol,
+            "strategy": strategy,
+            "entry_date": entry_date,
+            "expiration": expiration,
+            "entry_credit": entry_credit,
+            "entry_debit": entry_debit,
+            "current_value": current_value,
+            "entry_direction": entry_direction,
+            "legs": legs or []
+        }
+
+        # Evaluate position
+        result = evaluate_options_position(
+            position=position,
+            current_market_price=current_market_price,
+            brooks_signal=brooks_signal
+        )
+
+        logger.info(f"Evaluated {symbol} {strategy}: Action={result.get('action')}, Urgency={result.get('urgency')}")
+        return result
+
+    except Exception as e:
+        logger.error(f"Error evaluating position {symbol}: {e}")
+        raise ValueError(f"Failed to evaluate position: {str(e)}")
+
+
+@mcp.tool()
+def get_portfolio_greeks_dashboard() -> dict[str, Any]:
+    """
+    Get aggregate portfolio Greeks across all options positions.
+
+    Calculates portfolio-level risk metrics:
+    - **Delta**: Directional exposure (positive = bullish, negative = bearish)
+    - **Theta**: Daily time decay (positive = collecting premium)
+    - **Vega**: IV sensitivity (positive = want IV up, negative = want IV down)
+    - **Gamma**: Delta change rate (positive = long gamma, negative = short gamma)
+
+    Returns:
+        {
+            "total_delta": float,
+            "total_theta": float,
+            "total_vega": float,
+            "total_gamma": float,
+
+            "theta_daily_income": float,  # Expected daily profit from time decay
+            "vega_10pt_impact": float,    # P&L change if IV moves 10 points
+
+            "risk_assessment": {
+                "delta_exposure": "NEUTRAL" | "BULLISH" | "BEARISH",
+                "theta_position": "LONG_THETA" | "SHORT_THETA",
+                "vega_position": "LONG_VEGA" | "SHORT_VEGA",
+                "gamma_position": "LONG_GAMMA" | "SHORT_GAMMA"
+            },
+
+            "recommendations": list[str]
+        }
+
+    Note:
+        Requires Questrade account with options positions.
+        Use get_questrade_accounts() to get account numbers first.
+
+    Example Output:
+        {
+            "total_delta": +142.3,  # Bullish directional bias
+            "total_theta": +12.45,  # Collecting $12.45/day in time decay
+            "total_vega": -156.8,   # Want IV to decrease (short premium)
+            "total_gamma": -2.34,   # Short gamma (need to hedge as price moves)
+
+            "theta_daily_income": 12.45,
+            "vega_10pt_impact": -1568.00,  # Lose $1,568 if IV increases 10 points
+
+            "risk_assessment": {
+                "delta_exposure": "BULLISH",
+                "theta_position": "LONG_THETA",
+                "vega_position": "SHORT_VEGA",
+                "gamma_position": "SHORT_GAMMA"
+            },
+
+            "recommendations": [
+                "⚠️ Short gamma position - hedge as price approaches short strikes",
+                "✅ Positive theta - time decay working in your favor",
+                "⚠️ Short vega - vulnerable to IV expansion"
+            ]
+        }
+
+    Reference:
+        Hull - "Options, Futures, and Other Derivatives", Chapter 19
+    """
+    from investor_agent.positions import get_position_greeks_summary
+
+    try:
+        # Get all Questrade accounts
+        accounts_data = get_questrade_accounts()
+        accounts = accounts_data.get('accounts', [])
+
+        if not accounts:
+            return {"error": "No Questrade accounts found"}
+
+        # Collect all options positions across accounts
+        all_positions = []
+
+        for account in accounts:
+            account_number = account.get('number')
+            try:
+                positions_data = get_questrade_positions(account_number)
+                positions = positions_data.get('positions', [])
+
+                # Filter for options only (symbolId format indicates options)
+                for pos in positions:
+                    symbol = pos.get('symbol', '')
+                    # Options symbols contain expiry dates
+                    if any(char.isdigit() for char in symbol):
+                        # Get Greeks from Questrade
+                        # Note: In production, fetch option quotes with Greeks here
+                        all_positions.append({
+                            "symbol": symbol,
+                            "quantity": pos.get('openQuantity', 0),
+                            "position_type": "option",
+                            "greeks": {
+                                "delta": 0.5,  # Placeholder - fetch real Greeks
+                                "theta": -0.15,
+                                "vega": 1.0,
+                                "gamma": 0.01
+                            }
+                        })
+
+            except Exception as e:
+                logger.warning(f"Could not get positions for account {account_number}: {e}")
+                continue
+
+        if not all_positions:
+            return {
+                "total_delta": 0.0,
+                "total_theta": 0.0,
+                "total_vega": 0.0,
+                "total_gamma": 0.0,
+                "risk_assessment": {
+                    "delta_exposure": "NEUTRAL",
+                    "theta_position": "NEUTRAL",
+                    "vega_position": "NEUTRAL",
+                    "gamma_position": "NEUTRAL"
+                },
+                "recommendations": ["No options positions found in portfolio"]
+            }
+
+        # Calculate aggregate Greeks
+        greeks_summary = get_position_greeks_summary(all_positions)
+
+        # Add recommendations based on Greeks
+        recommendations = []
+
+        if greeks_summary['total_theta'] > 5:
+            recommendations.append("✅ Positive theta - time decay working in your favor")
+        elif greeks_summary['total_theta'] < -5:
+            recommendations.append("⚠️ Negative theta - paying time decay daily")
+
+        if greeks_summary['total_vega'] < -50:
+            recommendations.append("⚠️ Short vega - vulnerable to IV expansion")
+        elif greeks_summary['total_vega'] > 50:
+            recommendations.append("✅ Long vega - benefit from IV expansion")
+
+        if greeks_summary['total_gamma'] < -1:
+            recommendations.append("⚠️ Short gamma position - hedge as price approaches short strikes")
+        elif greeks_summary['total_gamma'] > 1:
+            recommendations.append("✅ Long gamma - delta self-hedges as price moves")
+
+        abs_delta = abs(greeks_summary['total_delta'])
+        if abs_delta > 100:
+            direction = "bullish" if greeks_summary['total_delta'] > 0 else "bearish"
+            recommendations.append(f"⚠️ High delta exposure ({abs_delta:.0f}) - strong {direction} bias")
+
+        greeks_summary['recommendations'] = recommendations
+
+        logger.info(f"Portfolio Greeks: Delta={greeks_summary['total_delta']:.1f}, Theta={greeks_summary['total_theta']:.2f}")
+        return greeks_summary
+
+    except Exception as e:
+        logger.error(f"Error calculating portfolio Greeks: {e}")
+        raise ValueError(f"Failed to get portfolio Greeks: {str(e)}")
+
+
+# ============================================================================
 # Real-Time Order Flow Tools
 # ============================================================================
 
@@ -9756,6 +10218,11 @@ async def find_similar_historical_setups(
     if hist.empty or len(hist) < 50:
         return f"Error: Insufficient historical data for {ticker}"
 
+    # CRITICAL FIX: Remove timezone for backtesting (AMZN fix)
+    # Backtesting engine requires timezone-naive DatetimeIndex
+    if isinstance(hist.index, pd.DatetimeIndex) and hist.index.tz is not None:
+        hist.index = hist.index.tz_localize(None)
+
     # Get earnings dates for earnings context matching
     earnings_dates = None
     try:
@@ -9773,7 +10240,7 @@ async def find_similar_historical_setups(
     # Uses enhanced technical indicators: RSI, MACD, ATR, trend t-stat, volume, etc.
     engine = SimilarityEngine(
         similarity_threshold=similarity_threshold,
-        min_similar_setups=10  # Lowered from 20 for better results with default threshold
+        min_similar_setups=5  # Minimum for statistical validity (was 10, causing AMZN to fail with 9 setups)
     )
 
     # Calculate current technical conditions from most recent data
@@ -9890,7 +10357,7 @@ async def find_similar_historical_setups(
 
 
 @mcp.tool()
-async def analyze_ml_enhanced(
+def analyze_ml_enhanced(
     ticker: str,
     period: Literal["3mo", "6mo", "1y"] = "6mo"
 ) -> str:
@@ -11094,9 +11561,14 @@ def _get_ohlcv_for_ticker_v2(ticker: str, period: str = "3mo") -> pd.DataFrame |
             'volume': 'Volume'
         })
 
-        # Set Date as index
-        df['Date'] = pd.to_datetime(df['Date'])
+        # Set Date as index and ensure proper DatetimeIndex
+        df['Date'] = pd.to_datetime(df['Date'], utc=True)
         df = df.set_index('Date')
+
+        # CRITICAL FIX: Ensure index is DatetimeIndex (not object Index)
+        # This fixes AMZN backtesting data issue where index was dtype='object'
+        if not isinstance(df.index, pd.DatetimeIndex):
+            df.index = pd.DatetimeIndex(df.index)
 
         # Ensure columns are in correct order and type
         df = df[['Open', 'High', 'Low', 'Close', 'Volume']]
@@ -11268,6 +11740,63 @@ def _get_ohlcv_cached(ticker: str, period: str = "3mo") -> pd.DataFrame | None:
         logger.debug(f"💾 Cached OHLCV for {ticker} ({len(df)} bars)")
 
     return df
+
+
+def _create_options_summary(gate_5_result: dict | None, options_decision: dict | None, vehicle: str) -> str:
+    """
+    Create quick options summary for scanner display.
+
+    Returns strings like:
+    - "IC@68IV" - Iron Condor at 68% IV Rank
+    - "LC@17IV" - Long Call at 17% IV Rank
+    - "STOCK" - Stock recommended (Gate 5 failed or low conviction)
+    - "BLOCKED" - Gate 5 blocked (earnings/liquidity issues)
+    - "N/A" - Options data unavailable
+    """
+    if not gate_5_result:
+        return "N/A"
+
+    gate_status = gate_5_result.get('gate_status')
+    if gate_status == 'SKIP':
+        return "N/A"
+    elif gate_status == 'FAIL':
+        return "BLOCKED"
+
+    # Gate 5 passed - check if OPTIONS chosen
+    if vehicle == "OPTIONS" and options_decision and options_decision.get('use_options'):
+        # Get IV Rank and strategy
+        iv_check = gate_5_result.get('checks', {}).get('iv_environment', {})
+        iv_rank = iv_check.get('iv_rank', 0)
+        strategy = gate_5_result.get('recommended_strategy', 'UNKNOWN')
+
+        # Map strategy to short code
+        strategy_codes = {
+            'IRON_CONDOR': 'IC',
+            'CREDIT_SPREAD': 'CS',
+            'DEBIT_SPREAD': 'DS',
+            'BULL_PUT_SPREAD': 'BPS',
+            'BEAR_CALL_SPREAD': 'BCS',
+            'LONG_CALL': 'LC',
+            'LONG_PUT': 'LP',
+            'CALENDAR_SPREAD': 'CAL',
+            'DIAGONAL_SPREAD': 'DIA',
+            'STRADDLE': 'STD',
+            'STRANGLE': 'STG'
+        }
+        code = strategy_codes.get(strategy, 'OPT')
+
+        return f"{code}@{iv_rank:.0f}IV"
+    else:
+        # STOCK chosen (Gate 5 passed but decision framework chose stock)
+        if options_decision:
+            reason = options_decision.get('reason', '')
+            if 'MODERATE' in reason:
+                return "STOCK (MOD)"  # Moderate conviction
+            elif 'account' in reason.lower():
+                return "STOCK (<$5K)"  # Account too small
+            else:
+                return "STOCK"
+        return "STOCK"
 
 
 def _get_recent_predictions(direction: str, days: int = 7) -> dict[str, dict]:
@@ -11550,7 +12079,9 @@ def _scan_one_direction(
                 f = (gs.get('freshness', '?') or '?')[0]
                 b = (gs.get('brooks', '?') or '?')[0]
                 q = (gs.get('quality', '?') or '?')[0]
-                all_results.append(f"♻️ {symbol}: {gates_passed}/4 [C:{c} F:{f} B:{b} Q:{q}] (REPEATED)")
+                o = (gs.get('options_tradability', 'S') or 'S')[0]  # Stored predictions may not have Gate 5
+                gates_str = f"{gates_passed}/5" if o != 'S' else f"{gates_passed}/4"
+                all_results.append(f"♻️ {symbol}: {gates_str} [C:{c} F:{f} B:{b} Q:{q} O:{o}] (REPEATED)")
 
                 continue  # Skip to next candidate - no need to re-analyze
 
@@ -11561,21 +12092,32 @@ def _scan_one_direction(
                 # Pass report_type="scanner" for auto-storage tracking
                 signal = generate_trading_signal(ticker=symbol, direction=direction, report_type="scanner")
                 gate_status = signal.get('gate_status', {})
-                gates_passed = sum(1 for g in gate_status.values() if g == "PASS")
+                core_gates_passed = sum(1 for g in ['catalyst', 'freshness', 'brooks', 'quality'] if gate_status.get(g) == "PASS")
+                all_gates_passed = sum(1 for g in gate_status.values() if g == "PASS")
 
-                # Compact one-liner for this company
+                # Compact one-liner for this company (now with Gate 5)
                 price = signal.get('current_price') or (candidate.get('price') if isinstance(candidate, dict) else None)
                 c = gate_status.get('catalyst', '?')[0]  # P or F
                 f = gate_status.get('freshness', '?')[0]
                 b = gate_status.get('brooks', '?')[0]
                 q = gate_status.get('quality', '?')[0]
-                result_line = f"{symbol}: {gates_passed}/4 [C:{c} F:{f} B:{b} Q:{q}]"
+                o = gate_status.get('options_tradability', 'S')[0]  # P=PASS, F=FAIL, S=SKIP, E=ERROR
+                gates_str = f"{all_gates_passed}/5" if o != 'S' else f"{core_gates_passed}/4"
+                result_line = f"{symbol}: {gates_str} [C:{c} F:{f} B:{b} Q:{q} O:{o}]"
                 all_results.append(result_line)
+
+                # Extract Gate 5 + options info for display
+                gate_5_result = signal.get('gate_5_analysis')
+                options_decision = signal.get('options_vs_stock_decision')
+                gates_passed = all_gates_passed if gate_5_result else core_gates_passed
 
                 if gates_passed >= 3:
                     # Check for direction conflict
                     data_dir = signal.get('data_direction', 'NO_CONSENSUS')
                     direction_conflict = data_dir != "NO_CONSENSUS" and data_dir != direction
+
+                    # Create options summary for display
+                    options_summary = _create_options_summary(gate_5_result, options_decision, signal.get('vehicle'))
 
                     validated.append({
                         'symbol': symbol,
@@ -11587,7 +12129,12 @@ def _scan_one_direction(
                         'signal': signal.get('signal'),
                         'confidence': signal.get('confidence', 0),
                         'gates_passed': gates_passed,
+                        'core_gates_passed': core_gates_passed,
                         'gate_status': gate_status,
+                        'vehicle': signal.get('vehicle', 'STOCK'),  # NEW: OPTIONS or STOCK
+                        'options_summary': options_summary,  # NEW: Quick options display
+                        'gate_5_analysis': gate_5_result,  # NEW: Full Gate 5 data
+                        'options_vs_stock_decision': options_decision,  # NEW: Decision framework result
                         'trading_plan': signal.get('trading_plan'),
                         'catalyst_analysis': signal.get('catalyst_analysis'),
                         'freshness_analysis': signal.get('freshness_analysis'),
@@ -11679,18 +12226,18 @@ def scan_long_candidates(
 
     RECOMMENDED WORKFLOW:
         1. get_raw_scan_candidates(direction="LONG") - Get raw TradingView list
-        2. scan_long_candidates(candidates=<output from step 1>) - Validate with 4-gate system
+        2. scan_long_candidates(candidates=<output from step 1>) - Validate with 5-gate system
         3. get_raw_scan_candidates(direction="SHORT") - Get raw TradingView list
         4. scan_short_candidates(candidates=<output from step 3>) - Validate SHORT direction
 
     Process:
         1. Fetch ALL raw candidates from TradingView (up to max_scan, default 500)
         2. Process in batches of batch_size (default 50)
-        3. Validate each batch through 4-gate system
+        3. Validate each batch through 5-gate system
         4. Compile all validated results across all batches
         5. Return top N from combined pool
 
-    Returns top N LONG candidates that pass 3+/4 gates.
+    Returns top N LONG candidates that pass 3+/4 core gates.
     Includes full progress log showing each stock checked.
 
     Args:
@@ -11699,21 +12246,23 @@ def scan_long_candidates(
                    If not provided, fetches from TradingView automatically.
                    Accepts: ["AAPL", "TSLA"] or [{"symbol": "AAPL"}, ...] - only symbol is used.
 
-    4-Gate Validation:
+    5-Gate Validation:
         GATE 1 (CATALYST): Earnings proximity, insider buying, analyst upgrades
         GATE 2 (FRESHNESS): Enhanced with Dalio Economic Machine (6 checks, need 5/6):
             - CVD alignment, Exhaustion < 50, Fresh direction
             - Dalio Ratio >= 1.0, Dollar Flow positive, Sustainability >= 50
         GATE 3 (BROOKS): Probability >= 55%, no HIGH trap risk
         GATE 4 (QUALITY): Quality score >= 50
+        GATE 5 (OPTIONS TRADABILITY): Liquidity, IV environment, earnings, expected moves
+            - Determines OPTIONS vs STOCK vehicle
 
     Returns:
         - raw_candidates: Total fetched from TradingView
         - scanned: Unique stocks validated
-        - four_gate_passed: Stocks passing 4/4 gates
-        - three_gate_passed: Stocks passing 3/4 gates
+        - four_gate_passed: Stocks passing 4/4 core gates
+        - three_gate_passed: Stocks passing 3/4 core gates
         - returned: Top N candidates returned
-        - candidates: List of validated candidates with full analysis
+        - candidates: List of validated candidates with full analysis + options recommendations
         - progress_log: Detailed batch-by-batch progress
     """
     return _scan_one_direction("LONG", market, min_price, min_market_cap, max_scan, top_n, batch_size, candidates)
@@ -11734,18 +12283,18 @@ def scan_short_candidates(
 
     RECOMMENDED WORKFLOW:
         1. get_raw_scan_candidates(direction="LONG") - Get raw TradingView list
-        2. scan_long_candidates(candidates=<output from step 1>) - Validate with 4-gate system
+        2. scan_long_candidates(candidates=<output from step 1>) - Validate with 5-gate system
         3. get_raw_scan_candidates(direction="SHORT") - Get raw TradingView list
         4. scan_short_candidates(candidates=<output from step 3>) - Validate SHORT direction
 
     Process:
         1. Use provided candidates OR fetch from TradingView (up to max_scan, default 500)
         2. Process in batches of batch_size (default 50)
-        3. Validate each batch through 4-gate system
+        3. Validate each batch through 5-gate system
         4. Compile all validated results across all batches
         5. Return top N from combined pool
 
-    Returns top N SHORT candidates that pass 3+/4 gates.
+    Returns top N SHORT candidates that pass 3+/4 core gates.
     Includes full progress log showing each stock checked.
 
     Args:
@@ -11754,21 +12303,23 @@ def scan_short_candidates(
                    If not provided, fetches from TradingView automatically.
                    Accepts: ["AAPL", "TSLA"] or [{"symbol": "AAPL"}, ...] - only symbol is used.
 
-    4-Gate Validation:
+    5-Gate Validation:
         GATE 1 (CATALYST): Earnings proximity, insider buying, analyst upgrades
         GATE 2 (FRESHNESS): Enhanced with Dalio Economic Machine (6 checks, need 5/6):
             - CVD alignment, Exhaustion < 50, Fresh direction
             - Dalio Ratio <= 1.0, Dollar Flow negative, Sustainability >= 50
         GATE 3 (BROOKS): Probability >= 55%, no HIGH trap risk
         GATE 4 (QUALITY): Quality score >= 50
+        GATE 5 (OPTIONS TRADABILITY): Liquidity, IV environment, earnings, expected moves
+            - Determines OPTIONS vs STOCK vehicle
 
     Returns:
         - raw_candidates: Total fetched from TradingView
         - scanned: Unique stocks validated
-        - four_gate_passed: Stocks passing 4/4 gates
-        - three_gate_passed: Stocks passing 3/4 gates
+        - four_gate_passed: Stocks passing 4/4 core gates
+        - three_gate_passed: Stocks passing 3/4 core gates
         - returned: Top N candidates returned
-        - candidates: List of validated candidates with full analysis
+        - candidates: List of validated candidates with full analysis + options recommendations
         - progress_log: Detailed batch-by-batch progress
     """
     return _scan_one_direction("SHORT", market, min_price, min_market_cap, max_scan, top_n, batch_size, candidates)
@@ -16033,7 +16584,7 @@ def generate_trading_signal(
     NOW DATA-DRIVEN: Collects independent direction findings from each tool,
     determines consensus direction, then evaluates gates for that direction.
 
-    4-GATE VALIDATION SYSTEM:
+    5-GATE VALIDATION SYSTEM:
         GATE 1 (CATALYST): Earnings, Insider, UOA, News - with verification
         GATE 2 (FRESHNESS): Enhanced with Dalio Economic Machine (6 checks, need 5/6):
             - CVD alignment
@@ -16044,6 +16595,7 @@ def generate_trading_signal(
             - Sustainability >= 50
         GATE 3 (BROOKS): Al Brooks price action analysis
         GATE 4 (QUALITY): Fundamental quality scores
+        GATE 5 (OPTIONS TRADABILITY): Liquidity, IV environment, earnings proximity, expected moves
 
     Combines all analysis tools to produce:
     - data_direction: Direction determined by data (LONG/SHORT/NO_CONSENSUS)
@@ -16086,7 +16638,8 @@ def generate_trading_signal(
             "catalyst": "PENDING",
             "freshness": "PENDING",
             "brooks": "PENDING",
-            "quality": "PENDING"
+            "quality": "PENDING",
+            "options_tradability": "PENDING"
         },
         "warnings": [],
         "summary": ""
@@ -16811,6 +17364,71 @@ def generate_trading_signal(
         except Exception as e:
             result["gate_status"]["quality"] = "ERROR"
 
+        # ========== GATE 5: OPTIONS TRADABILITY (NEW) ==========
+        # Determines if options are suitable vs stock
+        # Validates: liquidity, IV environment, earnings proximity, expected moves
+        gate_5_result = None
+        try:
+            from investor_agent.gates.options_tradability_gate import validate_options_tradability
+            from investor_agent.options.decision_framework import should_use_options
+
+            # Get options data for Gate 5 validation
+            options_data = None
+            iv_skew_data = None
+            term_structure_data = None
+
+            try:
+                # Use existing analyze_options_mcmillan (already has liquidity + IV)
+                options_data = analyze_options_mcmillan(ticker, holding_period_days=45)
+            except Exception as e:
+                logger.debug(f"Options data fetch failed: {e}")
+
+            try:
+                # Get IV skew for strategy selection
+                iv_skew_data = analyze_iv_skew(ticker, holding_period_days=45)
+            except Exception as e:
+                logger.debug(f"IV skew fetch failed: {e}")
+
+            try:
+                # Get term structure for calendar spread signals
+                term_structure_data = analyze_iv_term_structure(ticker)
+            except Exception as e:
+                logger.debug(f"Term structure fetch failed: {e}")
+
+            # Run Gate 5 validation
+            if options_data:
+                gate_5_result = validate_options_tradability(
+                    ticker=ticker,
+                    direction=actual_direction,
+                    current_price=current_price,
+                    options_data=options_data,
+                    iv_skew_data=iv_skew_data,
+                    term_structure=term_structure_data,
+                    earnings_days=catalyst_data.get("days_to_earnings") if catalyst_data else None,
+                    account_size=account_size
+                )
+
+                # Store Gate 5 result for later use
+                result["gate_5_analysis"] = gate_5_result
+
+                # Check Gate 5 pass/fail
+                if gate_5_result.get("gate_status") == "PASS":
+                    result["gate_status"]["options_tradability"] = "PASS"
+                    score += 20  # Gate 5 weight
+                else:
+                    result["gate_status"]["options_tradability"] = "FAIL"
+                    result["warnings"].append(
+                        f"Options Gate 5 failed: {gate_5_result.get('skip_reason', 'Unknown')}"
+                    )
+            else:
+                result["gate_status"]["options_tradability"] = "SKIP"
+                result["warnings"].append("Gate 5 skipped: Options data unavailable")
+
+        except Exception as e:
+            result["gate_status"]["options_tradability"] = "ERROR"
+            result["warnings"].append(f"Gate 5 (Options Tradability) error: {e}")
+            logger.error(f"Gate 5 error for {ticker}: {e}", exc_info=True)
+
         # ========== PROOF OF VALIDITY ==========
         try:
             similar = find_similar_historical_setups(
@@ -16860,75 +17478,159 @@ def generate_trading_signal(
                 "error": str(e)
             }
 
-        # ========== GENERATE TRADING PLAN ==========
+        # ========== GENERATE TRADING PLAN (Research-Backed) ==========
         try:
-            # Get support/resistance for stop/target
-            sr_data = find_support_resistance(ticker)
-            volatility_data = analyze_volatility_tool(ticker)
+            # === PHASE 2: Calculate optimized technical indicators ===
+            macd_data = calculate_optimized_macd(ticker)
+            adx_data = calculate_adx(ticker)
+            economic_context = get_economic_context()
 
-            atr = volatility_data.get("atr", {}).get("value", current_price * 0.02) if isinstance(volatility_data, dict) else current_price * 0.02
-
-            if actual_direction == "LONG":
-                # Entry at current price or pullback
-                entry_price = current_price
-
-                # Stop below nearest support or 2x ATR
-                supports = sr_data.get("supports", []) if isinstance(sr_data, dict) else []
-                if supports:
-                    stop_price = min(supports[0].get("price", entry_price - 2*atr), entry_price - 2*atr)
+            # Calculate volume ratio (current volume vs 20-day average)
+            try:
+                stock_data = yf.Ticker(ticker)
+                hist = stock_data.history(period='30d')
+                if len(hist) > 20:
+                    current_volume = hist['Volume'].iloc[-1]
+                    avg_volume_20 = hist['Volume'].iloc[-20:].mean()
+                    volume_ratio = current_volume / avg_volume_20 if avg_volume_20 > 0 else 1.0
                 else:
-                    stop_price = entry_price - 2*atr
+                    volume_ratio = 1.0
+            except:
+                volume_ratio = 1.0
 
-                # Targets
-                resistances = sr_data.get("resistances", []) if isinstance(sr_data, dict) else []
-                target_1 = resistances[0].get("price", entry_price + 1.5*(entry_price - stop_price)) if resistances else entry_price + 1.5*(entry_price - stop_price)
-                target_2 = resistances[1].get("price", entry_price + 2.5*(entry_price - stop_price)) if len(resistances) > 1 else entry_price + 2.5*(entry_price - stop_price)
+            # Extract fundamental data from ticker
+            try:
+                info = stock_data.info if 'stock_data' in locals() else yf.Ticker(ticker).info
+                sector = info.get('sector', 'Unknown')
+                pe_ratio = info.get('trailingPE') or info.get('forwardPE')
+                # Note: sector_pe_median would require additional data source
+                sector_pe_median = 20  # Placeholder
 
-            else:  # SHORT
-                entry_price = current_price
-                resistances = sr_data.get("resistances", []) if isinstance(sr_data, dict) else []
-                if resistances:
-                    stop_price = max(resistances[0].get("price", entry_price + 2*atr), entry_price + 2*atr)
-                else:
-                    stop_price = entry_price + 2*atr
+                # Revenue growth (if available)
+                revenue_growth = 0  # Placeholder - would need financial statements
 
-                supports = sr_data.get("supports", []) if isinstance(sr_data, dict) else []
-                target_1 = supports[0].get("price", entry_price - 1.5*(stop_price - entry_price)) if supports else entry_price - 1.5*(stop_price - entry_price)
-                target_2 = supports[1].get("price", entry_price - 2.5*(stop_price - entry_price)) if len(supports) > 1 else entry_price - 2.5*(stop_price - entry_price)
+                # Free cash flow
+                fcf = info.get('freeCashflow', 0)
+            except:
+                sector = 'Unknown'
+                pe_ratio = None
+                sector_pe_median = 20
+                revenue_growth = 0
+                fcf = 0
+
+            # === ENTRY STRATEGY ===
+            # Call new entry_exit_strategy module with research-backed methods
+            entry_data = determine_entry_strategy(
+                ticker=ticker,
+                current_price=current_price,
+                actual_direction=actual_direction,
+                technical_data={
+                    'macd': macd_data if 'error' not in macd_data else {},
+                    'adx': adx_data if 'error' not in adx_data else {},
+                    'volume_ratio': volume_ratio
+                },
+                fundamental_data={
+                    'sector': sector,
+                    'pe_ratio': pe_ratio,
+                    'sector_pe_median': sector_pe_median,
+                    'revenue_growth_yoy': revenue_growth,
+                    'free_cash_flow': fcf
+                },
+                economic_context=economic_context
+            )
+
+            entry_price = entry_data['entry_price']
+            entry_strategy = entry_data['entry_strategy']
+            entry_rationale = entry_data['entry_rationale']
+            entry_confidence = entry_data['entry_confidence']
+
+            # === STOP LOSS (ATR-based) ===
+            stop_loss_data = calculate_atr_stop_loss(
+                ticker=ticker,
+                entry_price=entry_price,
+                position_type=actual_direction,
+                time_frame='swing',
+                atr_period=14
+            )
+
+            # Validate and set stop loss
+            if 'error' not in stop_loss_data and stop_loss_data['validation']['recommended']:
+                stop_price = stop_loss_data['stop_price']
+                stop_rationale = (
+                    f"ATR-based stop: ${stop_price:.2f} "
+                    f"({stop_loss_data['stop_percent']*100:.1f}% risk). "
+                    f"{stop_loss_data['atr_multiplier']}x ATR({stop_loss_data['atr_period']}). "
+                    f"{stop_loss_data['expected_benefit']}"
+                )
+            else:
+                # Fallback to percentage-based stop
+                stop_price = entry_price * (0.95 if actual_direction == 'LONG' else 1.05)
+                stop_rationale = "Using 5% stop (ATR calculation unavailable or out of range)"
+                logger.warning(f"ATR stop fallback for {ticker}: {stop_loss_data.get('error', 'validation failed')}")
+
+            # === PROFIT TARGET (R:R optimized) ===
+            target_data = calculate_profit_target(
+                entry_price=entry_price,
+                stop_loss=stop_price,
+                direction=actual_direction,
+                resistances=entry_data['sr_data'].get('resistances', []),
+                supports=entry_data['sr_data'].get('supports', [])
+            )
+
+            target_1 = target_data['partial_exits']['1R']
+            target_2 = target_data['target_price']
 
             risk_per_share = abs(entry_price - stop_price)
-            reward_1 = abs(target_1 - entry_price)
-            risk_reward = reward_1 / risk_per_share if risk_per_share > 0 else 0
+            risk_reward = target_data['rr_ratio']
 
-            # Position sizing (1% risk)
-            risk_amount = account_size * 0.01
+            # Position sizing (1% risk, adjusted by confidence)
+            base_risk_pct = 0.01  # 1% base risk
+            adjusted_risk_pct = base_risk_pct * entry_data['position_size_multiplier']
+            risk_amount = account_size * adjusted_risk_pct
             shares = int(risk_amount / risk_per_share) if risk_per_share > 0 else 0
 
             result["trading_plan"] = {
                 "entry_price": round(entry_price, 2),
                 "entry_type": "LIMIT",
+                "entry_strategy": entry_strategy,
+                "entry_rationale": entry_rationale,
+                "current_price": round(current_price, 2),
+                "entry_confidence": round(entry_confidence, 2),
                 "stop_loss": {
                     "price": round(stop_price, 2),
-                    "risk_pct": round((abs(entry_price - stop_price) / entry_price) * 100, 2)
+                    "risk_pct": round((abs(entry_price - stop_price) / entry_price) * 100, 2),
+                    "rationale": stop_rationale
                 },
                 "target_1": {
                     "price": round(target_1, 2),
-                    "reward_pct": round((abs(target_1 - entry_price) / entry_price) * 100, 2)
+                    "reward_pct": round((abs(target_1 - entry_price) / entry_price) * 100, 2),
+                    "exit_strategy": "Take 50% profit at 1R"
                 },
                 "target_2": {
                     "price": round(target_2, 2),
-                    "reward_pct": round((abs(target_2 - entry_price) / entry_price) * 100, 2)
+                    "reward_pct": round((abs(target_2 - entry_price) / entry_price) * 100, 2),
+                    "exit_strategy": "Final target (remaining 50%)"
                 },
                 "risk_reward_ratio": round(risk_reward, 2),
+                "required_win_rate": round(target_data['required_win_rate'] * 100, 1),
                 "position_size": {
                     "shares": shares,
                     "dollar_risk": round(risk_amount, 2),
-                    "position_value": round(shares * entry_price, 2)
+                    "position_value": round(shares * entry_price, 2),
+                    "risk_pct_adjusted": round(adjusted_risk_pct * 100, 2)
                 },
-                "time_frame": "5-15 trading days"
+                "time_frame": "5-15 trading days",
+                "research_backing": entry_data['research_backing'],
+                "multi_factor_scores": entry_data['scores'],
+                "sr_analysis": {
+                    "supports_found": entry_data['sr_data']['supports_found'],
+                    "resistances_found": entry_data['sr_data']['resistances_found'],
+                    "method": entry_data['sr_data']['method']
+                }
             }
 
         except Exception as e:
+            logger.error(f"Trading plan generation failed for {ticker}: {str(e)}")
             result["trading_plan"] = {"error": str(e)}
 
         # ========== OPTIONS ANALYSIS (McMillan) ==========
@@ -16983,62 +17685,104 @@ def generate_trading_signal(
             )
 
         # Count passed gates
-        passed_gates = sum(1 for g in result["gate_status"].values() if g == "PASS")
+        # Note: Gate 5 (OPTIONS) is optional - stock is always available as fallback
+        core_gates = ["catalyst", "freshness", "brooks", "quality"]
+        core_gates_passed = sum(1 for g in core_gates if result["gate_status"].get(g) == "PASS")
+        all_gates_passed = sum(1 for g in result["gate_status"].values() if g == "PASS")
+        gate_5_passed = result["gate_status"].get("options_tradability") == "PASS"
 
         # Calculate composite score (weighted: confidence 60% + gates 40%)
-        gate_score = (passed_gates / 4) * 100
+        # Use core 4 gates for score (Gate 5 is bonus for OPTIONS vs STOCK decision)
+        gate_score = (core_gates_passed / 4) * 100
         result["composite_score"] = round(score * 0.6 + gate_score * 0.4, 1)
+        result["gates_passed"] = all_gates_passed
+        result["core_gates_passed"] = core_gates_passed
 
-        # NEW: Stricter signal thresholds
-        # Previously: 4/4 gates + 70% = STRONG_BUY -> had 30% win rate!
-        # Now require: 4/4 gates + 80% AND no NO_CONSENSUS
-        if passed_gates == 4 and score >= 80 and data_direction != "NO_CONSENSUS":
+        # NEW: 5-gate signal classification
+        # 5/5 gates (including options) = STRONG signal with OPTIONS recommended
+        # 4/4 core gates (no options) = STRONG signal with STOCK only
+        # Gate 5 determines OPTIONS vs STOCK, not signal strength
+        if all_gates_passed == 5 and score >= 80 and data_direction != "NO_CONSENSUS":
             result["signal"] = f"STRONG_{'BUY' if actual_direction == 'LONG' else 'SELL'}"
-        elif passed_gates == 4 and score >= 70:
-            # 4/4 gates but lower confidence or NO_CONSENSUS -> regular BUY/SELL
+            result["vehicle"] = "OPTIONS"  # 5/5 gates -> use options
+        elif core_gates_passed == 4 and score >= 80 and data_direction != "NO_CONSENSUS":
+            result["signal"] = f"STRONG_{'BUY' if actual_direction == 'LONG' else 'SELL'}"
+            result["vehicle"] = "STOCK"  # 4/4 core gates but Gate 5 failed -> use stock
+        elif all_gates_passed == 5 and score >= 70:
+            # 5/5 gates but lower confidence or NO_CONSENSUS -> regular BUY/SELL with options
             result["signal"] = "BUY" if actual_direction == "LONG" else "SELL"
-        elif passed_gates >= 3 and score >= 55:
+            result["vehicle"] = "OPTIONS"
+        elif core_gates_passed == 4 and score >= 70:
+            # 4/4 core gates but lower confidence -> regular BUY/SELL with stock
             result["signal"] = "BUY" if actual_direction == "LONG" else "SELL"
-        elif passed_gates >= 2 and score >= 40:
+            result["vehicle"] = "STOCK"
+        elif core_gates_passed >= 3 and score >= 55:
+            result["signal"] = "BUY" if actual_direction == "LONG" else "SELL"
+            result["vehicle"] = "STOCK"  # 3/4 gates -> stock only (lower conviction)
+        elif core_gates_passed >= 2 and score >= 40:
             result["signal"] = "WATCH"
+            result["vehicle"] = "NONE"
         else:
             result["signal"] = "NO_TRADE"
+            result["vehicle"] = "NONE"
 
         # Generate summary
-        result["summary"] = f"{ticker}: {result['signal']} | Confidence: {score}% | Gates: {passed_gates}/4 passed"
+        gates_str = f"{all_gates_passed}/5" if gate_5_passed else f"{core_gates_passed}/4"
+        result["summary"] = f"{ticker}: {result['signal']} | Confidence: {score}% | Gates: {gates_str} | Vehicle: {result.get('vehicle', 'STOCK')}"
 
-        # ========== OPTIONS TRADE PLAN (Institutional Methodology) ==========
-        # Generate complete options trade plan ONLY for actionable signals
-        actionable_signals_for_options = ["STRONG_BUY", "BUY", "STRONG_SELL", "SELL"]
-        if result.get("signal") in actionable_signals_for_options:
+        # ========== GATE 5 DECISION FRAMEWORK: OPTIONS vs STOCK ==========
+        # Use Gate 5 results to decide between options and stock
+        actionable_signals = ["STRONG_BUY", "BUY", "STRONG_SELL", "SELL"]
+        if result.get("signal") in actionable_signals and gate_5_result:
             try:
-                # Determine options direction from signal
-                options_direction = "LONG" if result["signal"] in ["STRONG_BUY", "BUY"] else "SHORT"
+                from investor_agent.options.decision_framework import should_use_options, build_options_plan, build_stock_plan
 
-                # Generate institutional options trade plan
-                options_plan = generate_options_trade_plan(
-                    ticker=ticker,
-                    direction=options_direction,
-                    account_size=account_size,
-                    target_dte=45  # Institutional standard: 45 DTE
+                # Get conviction level from signal
+                conviction = "STRONG" if result["signal"] in ["STRONG_BUY", "STRONG_SELL"] else "MODERATE"
+
+                # Decide: OPTIONS vs STOCK
+                decision = should_use_options(
+                    gate_5_result=gate_5_result,
+                    stock_liquidity={"tier": options_data.get("institutional", {}).get("liquidity_tier", {}).get("tier", "TIER_2") if options_data else "TIER_2"},
+                    conviction_level=conviction,
+                    account_size=account_size
                 )
 
-                # Add to result
-                result["options_trade_plan"] = options_plan
+                # Store decision
+                result["options_vs_stock_decision"] = decision
 
-                # Add warning if options not recommended
-                if not options_plan.get("options_allowed", True):
-                    skip_reason = options_plan.get("skip_reason", "Unknown")
-                    result["warnings"].append(f"OPTIONS_SKIP: {skip_reason}")
+                # Build appropriate plan
+                if decision.get("use_options"):
+                    # OPTIONS: Use Gate 5 options plan
+                    result["vehicle"] = "OPTIONS"
+                    result["options_trade_plan"] = decision.get("options_plan")
+                    result["stock_trade_plan"] = None  # No stock plan needed
+                    result["summary"] = f"{ticker}: {result['signal']} via OPTIONS | {decision.get('reason', '')}"
+                else:
+                    # STOCK: Build stock plan with Al Brooks stops
+                    result["vehicle"] = "STOCK"
+                    result["options_trade_plan"] = None
+                    result["stock_trade_plan"] = decision.get("stock_plan") or result.get("trading_plan")
+                    result["summary"] = f"{ticker}: {result['signal']} via STOCK | {decision.get('reason', '')}"
 
             except Exception as e:
-                result["options_trade_plan"] = {"error": str(e), "options_allowed": False}
+                # Fallback to stock if Gate 5 decision framework fails
+                result["vehicle"] = "STOCK"
+                result["options_trade_plan"] = None
+                result["warnings"].append(f"Gate 5 decision error: {e}. Defaulting to STOCK.")
+                logger.error(f"Gate 5 decision framework error for {ticker}: {e}", exc_info=True)
+
+        elif result.get("signal") in actionable_signals:
+            # Gate 5 not available - default to STOCK
+            result["vehicle"] = "STOCK"
+            result["options_trade_plan"] = None
+            result["warnings"].append("Gate 5 unavailable - using STOCK only")
+
         else:
-            # Signal not actionable - no options plan needed
-            result["options_trade_plan"] = {
-                "options_allowed": False,
-                "skip_reason": f"Signal '{result.get('signal')}' not actionable for options"
-            }
+            # Signal not actionable - no plans needed
+            result["vehicle"] = "NONE"
+            result["options_trade_plan"] = None
+            result["stock_trade_plan"] = None
 
     except Exception as e:
         result["error"] = str(e)

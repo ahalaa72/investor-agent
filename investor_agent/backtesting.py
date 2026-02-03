@@ -136,10 +136,16 @@ class SimilarityEngine:
             lookback_periods = len(historical_data)
 
         # Determine minimum forward days needed
+        # Always need 20 days for legacy outcomes (5d, 10d, 20d)
+        # Even when holding_period_days is specified for target achievement
+        min_forward_days_legacy = 20
+
         if target_return_pct is not None and holding_period_days is not None:
-            min_forward_days = holding_period_days
+            min_forward_days_target = holding_period_days
+            # Take maximum to ensure we have enough data for BOTH legacy and target
+            min_forward_days = max(min_forward_days_legacy, min_forward_days_target)
         else:
-            min_forward_days = 20  # Default for legacy outcomes
+            min_forward_days = min_forward_days_legacy
 
         # Search window: last N periods
         search_data = historical_data.iloc[-lookback_periods:]
@@ -748,13 +754,18 @@ class SimilarityEngine:
         idx: int
     ) -> Dict[str, float]:
         """Calculate forward returns at different horizons"""
+        import logging
+        logger = logging.getLogger(__name__)
+
         if 'Close' not in data.columns:
+            logger.warning(f"No 'Close' column in data for idx={idx}")
             return {'5d': 0.0, '10d': 0.0, '20d': 0.0}
 
         entry_price = data['Close'].iloc[idx]
 
         # Handle NaN or zero entry price
         if pd.isna(entry_price) or entry_price == 0:
+            logger.warning(f"Invalid entry price at idx={idx}: {entry_price}")
             return {'5d': 0.0, '10d': 0.0, '20d': 0.0}
 
         outcomes = {}
@@ -764,12 +775,20 @@ class SimilarityEngine:
                 exit_price = data['Close'].iloc[idx + horizon]
                 # Handle NaN exit price
                 if pd.isna(exit_price):
+                    logger.warning(f"NaN exit price at idx={idx}, horizon={horizon}")
                     outcomes[f'{horizon}d'] = 0.0
                 else:
                     ret = (exit_price / entry_price - 1)
                     # Handle NaN result (shouldn't happen but defensive)
-                    outcomes[f'{horizon}d'] = float(ret) if not pd.isna(ret) else 0.0
+                    if pd.isna(ret):
+                        logger.warning(f"NaN return calculated: entry={entry_price}, exit={exit_price}, idx={idx}, horizon={horizon}")
+                        outcomes[f'{horizon}d'] = 0.0
+                    else:
+                        outcomes[f'{horizon}d'] = float(ret)
+                        if idx < 5:  # Debug log for first few setups
+                            logger.info(f"DEBUG: idx={idx}, horizon={horizon}d, entry={entry_price:.2f}, exit={exit_price:.2f}, return={ret*100:.2f}%")
             else:
+                logger.warning(f"Not enough data: idx={idx}, horizon={horizon}, len(data)={len(data)}, need={idx+horizon}")
                 outcomes[f'{horizon}d'] = 0.0
 
         return outcomes
