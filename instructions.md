@@ -290,7 +290,9 @@ The server provides **47 tools** for comprehensive financial analysis.
     - **Phase 8 ONLY - CONFIRMATION, NOT WEIGHTED (0%)**
     - Finds historical situations matching current conditions
     - Returns: Similar setups count, success rate, avg return, p-value, confidence intervals
-    - If low setups: Note "LIMITED DATA - Use with caution"
+    - **UPDATED (Jan 2026):** `min_similar_setups` reduced from 10 to 5 for better statistical coverage
+    - **Fixed:** AMZN backtesting bug where 9 setups returned 0.00% (now works correctly)
+    - If low setups (5-9): Note "LIMITED DATA but statistically valid"
     - Shows success rate % to VALIDATE analysis, doesn't influence score
 
 21. **`validate_strategy_robustness(ticker, n_trials=100)`** ⭐
@@ -350,6 +352,55 @@ The server provides **47 tools** for comprehensive financial analysis.
 29. **`get_crypto_fear_greed_index()`**
     - Crypto market sentiment 0-100
     - Use only for crypto analysis (NOT for stocks)
+
+---
+
+### Position Management Tools (Phase 4 - NEW) ⭐
+
+30. **`evaluate_options_position_management(...)`** ⭐ **POSITION LIFECYCLE**
+    - Evaluates options positions and recommends management actions
+    - Implements TastyTrade + McMillan methodology:
+      1. **50% Profit Target** - Close when 50% of max profit achieved (88% win rate)
+      2. **21 DTE Management** - Close or roll at 21 days to expiration
+      3. **Direction Change** - Exit if Brooks Always-In flips
+      4. **Tested Position** - Manage if price breaches short strikes
+      5. **Earnings <7 days** - Close to avoid IV crush
+    - **Parameters:**
+      - `symbol`: Ticker (e.g., "AAPL")
+      - `strategy`: "IRON_CONDOR", "CREDIT_SPREAD", "DEBIT_SPREAD", etc.
+      - `entry_date`: "YYYY-MM-DD"
+      - `expiration`: "YYYY-MM-DD"
+      - `entry_credit`: Max profit for credit strategies
+      - `entry_debit`: Max loss for debit strategies
+      - `current_value`: Current position value
+      - `entry_direction`: "LONG" or "SHORT"
+      - `legs`: List of position legs with strikes/actions
+    - **Returns:**
+      - `action`: "HOLD" | "CLOSE" | "ROLL" | "ADJUST"
+      - `urgency`: "IMMEDIATE" | "WITHIN_3_DAYS" | "MONITOR"
+      - `profit_status`: P&L, profit target hit
+      - `dte_status`: Days to expiration, gamma risk
+      - `tested_status`: Assignment risk assessment
+      - `recommendation`: Detailed action plan
+    - **Use for:** Managing existing options positions
+    - **Reference:** TastyTrade research + McMillan Chapter 36
+
+31. **`get_portfolio_greeks_dashboard()`** ⭐ **PORTFOLIO RISK**
+    - Aggregate portfolio Greeks across all options positions
+    - Calculates portfolio-level risk metrics:
+      - **Delta**: Directional exposure (bullish/bearish)
+      - **Theta**: Daily time decay income
+      - **Vega**: IV sensitivity
+      - **Gamma**: Delta change rate
+    - **Returns:**
+      - `total_delta`, `total_theta`, `total_vega`, `total_gamma`
+      - `theta_daily_income`: Expected daily profit from time decay
+      - `vega_10pt_impact`: P&L change if IV moves 10 points
+      - `risk_assessment`: Exposure classification
+      - `recommendations`: Risk management suggestions
+    - **Use for:** Portfolio-level risk monitoring
+    - **Requires:** Questrade account with options positions
+    - **Reference:** Hull "Options, Futures, and Other Derivatives" Chapter 19
 
 ---
 
@@ -415,11 +466,30 @@ find_similar_historical_setups(ticker, lookback_period="2y", similarity_threshol
 
 # PHASE 10: Final Calculation
 # weighted_score = sum(phase_scores * weights) [Phases 1-8 only, Historical=0%]
+
+# POSITION MANAGEMENT (For Existing Options Positions) ⭐ NEW
+# Evaluate existing options positions for management decisions
+evaluate_options_position_management(
+    symbol=ticker,
+    strategy="IRON_CONDOR",  # or CREDIT_SPREAD, etc.
+    entry_date="2026-01-15",
+    expiration="2026-02-21",
+    entry_credit=630.00,
+    current_value=315.00,
+    entry_direction="NEUTRAL",
+    legs=[...]  # Position legs
+)
+# Returns: HOLD/CLOSE/ROLL recommendation with urgency level
+
+# PORTFOLIO RISK MONITORING (For Full Portfolio) ⭐ NEW
+# Monitor aggregate portfolio Greeks and risk exposure
+get_portfolio_greeks_dashboard()
+# Returns: Total delta/theta/vega/gamma, daily income, risk assessment
 ```
 
 ---
 
-## 4-GATE VALIDATION SYSTEM
+## 5-GATE VALIDATION SYSTEM ⭐ UPDATED (Phase 3 Complete - Jan 2026)
 
 **For trading signals via `generate_trading_signal()` and scanner tools:**
 
@@ -430,6 +500,7 @@ find_similar_historical_setups(ticker, lookback_period="2y", similarity_threshol
 | 2 | FRESHNESS | 20% | Enhanced with Dalio (6 checks, need 5/6) |
 | 3 | BROOKS | 20% | Al Brooks price action (probability ≥55%, no HIGH trap) |
 | 4 | QUALITY | 15% | Fundamental quality (F-Score, Z-Score) |
+| 5 | OPTIONS TRADABILITY | 20% | Liquidity, IV environment, earnings proximity, expected moves |
 
 ### Gate 2: FRESHNESS (Enhanced with Dalio Economic Machine)
 
@@ -461,14 +532,31 @@ find_similar_historical_setups(ticker, lookback_period="2y", similarity_threshol
 - Dollar Flow reverses sign
 - Sustainability drops below 40
 
+### Gate 5: OPTIONS TRADABILITY ⭐ NEW (Phase 3 - Jan 2026)
+
+**Purpose:** Determine whether OPTIONS or STOCK is the optimal vehicle for this trade.
+
+| Check | Requirement | Purpose |
+|-------|-------------|---------|
+| Liquidity Tier | TIER_1 or TIER_2 | Spread ≤5%, OI ≥100, Volume ≥50 |
+| IV Environment | Analyzed | High IV → sell premium, Low IV → buy premium |
+| Earnings Risk | >30 DTE to earnings | Avoid IV crush |
+| Expected Move | Calculated | 1 SD (16Δ) for optimal strike selection |
+
+**Output:**
+- `use_options`: true/false
+- `primary_vehicle`: "OPTIONS" or "STOCK"
+- `recommended_strategy`: "IRON_CONDOR", "CREDIT_SPREAD", "DEBIT_SPREAD", etc.
+- `allocation`: Options % vs Stock %
+
 ### Signal Classification
 
 | Gates Passed | Score | Signal |
 |--------------|-------|--------|
-| 4/4 | ≥70 | STRONG_BUY / STRONG_SELL |
-| 3/4 | ≥55 | BUY / SELL |
-| 2/4 | ≥40 | WATCH |
-| <2/4 | Any | NO_TRADE |
+| 5/5 | ≥70 | STRONG_BUY / STRONG_SELL |
+| 4/5 | ≥60 | BUY / SELL |
+| 3/5 | ≥50 | WATCH |
+| <3/5 | Any | NO_TRADE |
 
 ---
 
@@ -799,6 +887,8 @@ Every data point must show its source: `**RSI:** 73.78 [analyze_technical]`
 ✓ Check RS >70 for LONG, <30 for SHORT
 ✓ Calculate risk/reward ratio (minimum 2:1)
 ✓ Include McMillan strategy recommendation in reports
+✓ Use evaluate_options_position_management() when user asks about existing positions
+✓ Use get_portfolio_greeks_dashboard() when user asks about portfolio risk
 
 **NEVER:**
 ✗ Use get_ticker_data() for current price (15-20 min delayed) - use get_questrade_quotes()
@@ -1359,6 +1449,136 @@ Return on Risk: $1.00 / $9.00 = 11.1% in 45 days
 | Direction flips (Brooks) | CLOSE immediately |
 | Max loss hit | Hold to expiration (no stops) |
 | Earnings < 7 days | CLOSE (IV crush) |
+
+---
+
+## POSITION MANAGEMENT WORKFLOW ⭐ NEW (Phase 4)
+
+**Purpose:** Monitor and manage existing options positions using institutional rules.
+
+### When to Use Position Management Tools
+
+**Daily Monitoring:**
+```python
+# For EACH options position in portfolio, check:
+evaluate_options_position_management(
+    symbol=ticker,
+    strategy=position_strategy,
+    entry_date=position_entry,
+    expiration=option_expiry,
+    entry_credit=initial_credit,
+    current_value=current_position_value,
+    entry_direction=original_direction,
+    legs=position_legs
+)
+```
+
+**Portfolio Risk Check:**
+```python
+# Check aggregate portfolio risk:
+get_portfolio_greeks_dashboard()
+```
+
+### Position Management Priority (Automated Checks)
+
+The system evaluates positions in this priority order:
+
+1. **50% Profit Target (IMMEDIATE)**
+   - Triggers: P&L ≥ 50% of max profit
+   - Action: CLOSE position immediately
+   - Win rate: 88% (TastyTrade research)
+
+2. **21 DTE Management (WITHIN_3_DAYS)**
+   - Profitable position: CLOSE to lock gains
+   - Losing position: ROLL to next monthly expiration
+   - Reason: Gamma risk accelerates after 21 DTE
+
+3. **Direction Change (IMMEDIATE)**
+   - Triggers: Brooks Always-In flips from entry direction
+   - Action: CLOSE position immediately
+   - Reason: Thesis invalidated
+
+4. **Tested Position (IMMEDIATE if DTE ≤ 7)**
+   - Triggers: Price breaches short strike + HIGH assignment risk
+   - Action: CLOSE to avoid assignment
+   - Detection: Monitors CALL/PUT side breaches
+
+5. **Earnings Proximity (IMMEDIATE if < 7 days)**
+   - Triggers: Earnings announcement within 7 days
+   - Action: CLOSE to avoid IV crush
+   - Framework ready for integration
+
+### Position Management Return Format
+
+**Action Codes:**
+- `HOLD`: Position healthy, continue monitoring
+- `CLOSE`: Exit position now (IMMEDIATE or WITHIN_3_DAYS)
+- `ROLL`: Move to next expiration for credit
+- `ADJUST`: Modify strikes (advanced management)
+
+**Urgency Levels:**
+- `IMMEDIATE`: Take action today (50% profit, direction flip, high assignment risk)
+- `WITHIN_3_DAYS`: Action needed soon (21 DTE, moderate risk)
+- `MONITOR`: No urgent action, continue tracking
+
+**Example Response:**
+```json
+{
+  "action": "CLOSE",
+  "reason": "✅ 50% PROFIT TARGET HIT (50.0% of max profit)",
+  "urgency": "IMMEDIATE",
+  "profit_status": {
+    "current_pnl": 315.00,
+    "current_pnl_pct": 50.0,
+    "profit_target_hit": true
+  },
+  "dte_status": {
+    "days_to_expiration": 30,
+    "gamma_risk_level": "LOW"
+  },
+  "recommendation": "Close position now. You've captured 50.0% of max profit..."
+}
+```
+
+### Portfolio Greeks Dashboard
+
+**Use Case:** Monitor aggregate portfolio risk
+
+**Returns:**
+```json
+{
+  "total_delta": +142.3,      // Bullish directional bias
+  "total_theta": +12.45,      // Collecting $12.45/day
+  "total_vega": -156.8,       // Short vega (want IV down)
+  "total_gamma": -2.34,       // Short gamma (need hedging)
+
+  "theta_daily_income": 12.45,
+  "vega_10pt_impact": -1568.00,  // Lose $1,568 if IV +10 pts
+
+  "risk_assessment": {
+    "delta_exposure": "BULLISH",      // >+50 delta
+    "theta_position": "LONG_THETA",   // Collecting time decay
+    "vega_position": "SHORT_VEGA",    // Want IV to decrease
+    "gamma_position": "SHORT_GAMMA"   // Short gamma risk
+  },
+
+  "recommendations": [
+    "⚠️ Short gamma - hedge as price approaches strikes",
+    "✅ Positive theta - time decay in your favor"
+  ]
+}
+```
+
+### User Commands for Position Management
+
+| User Request | Tool to Use |
+|--------------|-------------|
+| "How's my AAPL iron condor doing?" | `evaluate_options_position_management()` |
+| "Should I close this position?" | `evaluate_options_position_management()` |
+| "What's my portfolio risk?" | `get_portfolio_greeks_dashboard()` |
+| "Show my portfolio Greeks" | `get_portfolio_greeks_dashboard()` |
+| "Am I delta neutral?" | `get_portfolio_greeks_dashboard()` |
+| "How much theta am I collecting?" | `get_portfolio_greeks_dashboard()` |
 
 ### Trading Plan Generation Rules
 
