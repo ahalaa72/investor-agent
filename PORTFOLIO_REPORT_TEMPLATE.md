@@ -1,8 +1,8 @@
 # DAILY PORTFOLIO REPORT TEMPLATE
 
-**Report Structure:** ~200 lines per run | **Time:** 5 min context + 90 sec per position (with 4-gate validation)
+**Report Structure:** ~200 lines per run | **Time:** 5 min context + 90 sec per position (with 5-gate validation)
 
-**Methodology:** Al Brooks (Price Action) + McMillan (Options Strategy) + Ray Dalio (Economic Machine) + **4-Gate Continuous Validation**
+**Methodology:** Al Brooks (Price Action) + McMillan (Options Strategy) + Ray Dalio (Economic Machine) + **5-Gate Continuous Validation** ⭐ (Phase 3 Complete - Jan 2026)
 
 ---
 
@@ -10,7 +10,7 @@
 
 > **"Entry is half the battle. The OTHER half is knowing when the thesis breaks."**
 >
-> Every position gets 4-GATE VALIDATION on every review.
+> Every position gets 5-GATE VALIDATION on every review.
 > - **Gate fails = Action required**
 > - **All gates pass = Continue holding**
 
@@ -24,12 +24,33 @@
 | `analyze_volume_tool` | Has move become exhausted? | Gate 2 |
 | `analyze_ml_enhanced` | Does Al Brooks still support? | Gate 3 |
 | `calculate_quality_score` | Has quality deteriorated? | Gate 4 |
+| `analyze_options_mcmillan` | Are options liquid and tradable? | Gate 5 |
 | `detect_insider_cluster` | Smart money still buying? | Override |
 | `analyze_competitors` | Still sector leader? | Override |
 
+### Phase 4: Options Position Management (January 2026) ⭐
+
+| Tool | Portfolio Purpose | When to Use |
+|------|------------------|-------------|
+| `evaluate_options_position_management()` | Manage options position lifecycle | **Daily** for each options position |
+| `get_portfolio_greeks_dashboard()` | Portfolio Greeks & risk monitoring | **Weekly** portfolio risk review |
+
+**For positions with OPTIONS components:**
+1. Run stock/ETF 5-gate validation (normal flow above)
+2. **Additionally:** Run `evaluate_options_position_management()` for options leg
+3. Include options management recommendation in position analysis
+4. **End of report:** Add portfolio Greeks dashboard summary
+
+**5 Management Rules (Priority Order):**
+- ✅ **50% Profit** (IMMEDIATE) - Close at 50% of max profit (88% win rate)
+- 📅 **21 DTE** (WITHIN_3_DAYS) - Close/roll at 21 days to expiration
+- 🔄 **Direction Change** (IMMEDIATE) - Exit if Brooks flips
+- ⚠️ **Tested Position** (IMMEDIATE if DTE ≤ 7) - Close if price breaches strike
+- 📊 **Earnings** (IMMEDIATE if < 7 days) - Close to avoid IV crush
+
 ---
 
-## 4-GATE PORTFOLIO VALIDATION SYSTEM
+## 5-GATE PORTFOLIO VALIDATION SYSTEM ⭐ UPDATED (Phase 3 Complete - Jan 2026)
 
 | Gate | Entry Question | Portfolio Question | HOLD if | TRIM if | CLOSE if |
 |------|----------------|-------------------|---------|---------|----------|
@@ -37,16 +58,17 @@
 | **2. FRESHNESS + DALIO** | Is it fresh? Money flowing? | Exhausted? Money reversing? | 5/6 checks pass | 4/6 checks pass | ≤3/6 checks pass |
 | **3. BROOKS** | Good entry? | Still supports? | Always-In aligned | Flipping | Reversed |
 | **4. QUALITY** | Is it quality? | Deteriorated? | Grade A-B | Grade C | Grade D-F |
+| **5. OPTIONS TRADABILITY** | Are options liquid? | Can use options to enhance? | Tier 1-2, IV favorable | Tier 3, moderate | Tier 4-5 (stock only) |
 
 ### Portfolio Signal Classification
 
 | Gates Passing | Signal | Action |
 |---------------|--------|--------|
-| **4/4** | STRONG_HOLD | Continue position, consider ADD on pullback |
-| **3/4** | HOLD | Maintain, monitor failed gate closely |
-| **2/4** | TRIM | Reduce position 25-50%, raise stops |
-| **1/4** | CLOSE 75% | Keep 25% runner only if Gate 3 passes |
-| **0/4** | CLOSE IMMEDIATELY | Full exit, no exceptions |
+| **5/5** | STRONG_HOLD | Continue position, consider ADD on pullback |
+| **4/5** | HOLD | Maintain, monitor failed gate closely |
+| **3/5** | TRIM | Reduce position 25-50%, raise stops |
+| **2/5** | CLOSE 50-75% | Keep 25-50% runner only if Gate 3 passes |
+| **≤1/5** | CLOSE IMMEDIATELY | Full exit, no exceptions |
 
 ---
 
@@ -63,10 +85,10 @@
 ## REPORT FORMAT
 
 ```markdown
-# DAILY PORTFOLIO REPORT - 4-GATE VALIDATION
+# DAILY PORTFOLIO REPORT - 5-GATE VALIDATION
 
 **Date:** YYYY-MM-DD | **Time:** HH:MM ET | **Mode:** Top 5 by Value
-**Accounts:** All (X accounts, Y positions) | **Methodology:** 4-Gate Continuous Validation
+**Accounts:** All (X accounts, Y positions) | **Methodology:** 5-Gate Continuous Validation (Phase 3 Complete)
 
 ---
 
@@ -97,12 +119,12 @@
 
 ## PORTFOLIO GATE SUMMARY
 
-| Position | Gate 1 | Gate 2 | Gate 3 | Gate 4 | Signal | Action |
-|----------|--------|--------|--------|--------|--------|--------|
-| NVDA | ✅ | ✅ | ✅ | ✅ | 4/4 STRONG | HOLD |
-| AAPL | ✅ | ⚠️ | ✅ | ✅ | 3/4 HOLD | Monitor G2 |
-| TSLA | ❌ | ⚠️ | ✅ | ⚠️ | 2/4 TRIM | Reduce 50% |
-| META | ❌ | ❌ | ❌ | ✅ | 1/4 CLOSE | Exit 75% |
+| Position | Gate 1 | Gate 2 | Gate 3 | Gate 4 | Gate 5 | Signal | Action |
+|----------|--------|--------|--------|--------|--------|--------|--------|
+| NVDA | ✅ | ✅ | ✅ | ✅ | ✅ | 5/5 STRONG | HOLD |
+| AAPL | ✅ | ⚠️ | ✅ | ✅ | ✅ | 4/5 HOLD | Monitor G2 |
+| TSLA | ❌ | ⚠️ | ✅ | ⚠️ | ✅ | 3/5 TRIM | Reduce 50% |
+| META | ❌ | ❌ | ❌ | ✅ | ⚠️ | 2/5 CLOSE | Exit 75% |
 
 **Legend:** ✅ PASS | ⚠️ WARNING | ❌ FAIL
 
@@ -114,7 +136,7 @@
 
 **Position:** XX shares @ $XX.XX avg | **Current:** $XX.XX | **P&L:** +/-$XXX (+/-X.X%)
 
-#### 🚦 4-GATE STATUS
+#### 🚦 5-GATE STATUS
 
 | Gate | Status | Details |
 |------|--------|---------|
@@ -122,8 +144,9 @@
 | **2. FRESHNESS** | ✅/⚠️/❌ | Exhaustion XX/100, CVD [aligned/diverging] |
 | **3. BROOKS** | ✅/⚠️/❌ | Always-In [LONG/SHORT], Trap [LOW/MED/HIGH] |
 | **4. QUALITY** | ✅/⚠️/❌ | Grade [A-F], F-Score X/9, Z-Score X.XX |
+| **5. OPTIONS** | ✅/⚠️/❌ | Tier [1-5], IV [LOW/NORMAL/HIGH] |
 
-**GATE SIGNAL:** [4/4 STRONG_HOLD / 3/4 HOLD / 2/4 TRIM / 1/4 CLOSE 75% / 0/4 CLOSE]
+**GATE SIGNAL:** [5/5 STRONG_HOLD / 4/5 HOLD / 3/5 TRIM / 2/5 CLOSE 50-75% / ≤1/5 CLOSE]
 
 ---
 
@@ -289,10 +312,10 @@
 - **Exception:** ONLY hold if strong catalyst coming in <7 days that could flip market
 
 **Position Sizing Guidance:**
-- **4/4 Gates + Brooks SUPPORTS:** Full position (100%), can add on pullback
-- **3/4 Gates + Brooks NEUTRAL:** 75% position, tighten stops
-- **2/4 Gates OR Brooks OPPOSES:** 50% position max, consider further trim
-- **≤1/4 Gates:** Close position regardless of Brooks
+- **5/5 Gates + Brooks SUPPORTS:** Full position (100%), can add on pullback
+- **4/5 Gates + Brooks NEUTRAL:** 75% position, tighten stops
+- **3/5 Gates OR Brooks OPPOSES:** 50% position max, consider further trim
+- **≤2/5 Gates:** Close position regardless of Brooks
 
 **Time Horizon:**
 - **Days in Current Always-In:** [X days]
@@ -608,7 +631,8 @@ Max Pain is the strike price where **most options expire worthless**, causing ma
 | 2. Freshness | [PASS/WARN/FAIL] | Important |
 | 3. Brooks | [PASS/WARN/FAIL] | Critical |
 | 4. Quality | [PASS/WARN/FAIL] | Important |
-| **Gates Passing** | **X/4** | - |
+| 5. Options | [PASS/WARN/FAIL] | Important |
+| **Gates Passing** | **X/5** | - |
 
 **Smart Money:** [Supports/Neutral/Opposes]
 **Sector Position:** [Leader/Middle/Laggard]
@@ -684,25 +708,25 @@ ORIG STOP:   $XX.XX ━━━━━━━━ (-XX%) Original risk (Swing low / 2
 
 **Scaling Out Plan:**
 
-[If 4/4 Gates]:
+[If 5/5 Gates]:
 💎 **LET IT RUN** - All systems go, hold full position
 - **T1 Hit:** Sell 25-33% (lock some gains)
 - **T2 Hit:** Sell another 25-33% (significant profit secured)
 - **T3 or Beyond:** Trail final 33-50% with raised stop, let winners run
 
-[If 3/4 Gates]:
+[If 4/5 Gates]:
 ⚡ **NORMAL SCALING** - One gate failing, reduce risk gradually
 - **T1 Hit:** Sell 33% (take some profits)
 - **T2 Hit:** Sell another 33% (majority of position out)
 - **Remaining:** Small runner (33%) with tight trail stop
 
-[If 2/4 Gates]:
+[If 3/5 Gates]:
 ⚠️ **AGGRESSIVE SCALING** - Multiple failures, prioritize capital preservation
 - **T1 Hit:** Sell 50% immediately
 - **T2 Hit:** Sell another 25% (75% total out)
 - **Remaining:** Tiny runner (25%) with very tight stop
 
-[If ≤1/4 Gates]:
+[If ≤2/5 Gates]:
 🚨 **CLOSE ON ANY BOUNCE** - Setup broken, exit on strength
 - Don't wait for targets - any bounce to resistance is a gift to exit
 
@@ -715,9 +739,9 @@ ORIG STOP:   $XX.XX ━━━━━━━━ (-XX%) Original risk (Swing low / 2
 
 **POSITION SIZING ADJUSTMENT**
 
-**Current Gates: [X/4]**
+**Current Gates: [X/5]**
 
-[If 4/4 gates]:
+[If 5/5 gates]:
 💡 **CONSIDER ADDING** on pullback to support
 - **Add Zone:** $XX.XX - $XX.XX (EMA20/VWAP area, recent support)
 - **Add Size:** XX shares (25-50% of current position)
@@ -725,22 +749,22 @@ ORIG STOP:   $XX.XX ━━━━━━━━ (-XX%) Original risk (Swing low / 2
 - **Stop for new piece:** $XX.XX (below support)
 - **Why:** All gates pass + pullback to value = high-probability add
 
-[If 3/4 gates]:
+[If 4/5 gates]:
 📊 **HOLD CURRENT SIZE** - Don't add, don't reduce yet
 - **Why:** One gate failing = uncertainty, maintain current exposure
 - **Watch:** If gate recovers → consider add. If second gate fails → trim.
 
-[If 2/4 gates]:
+[If 3/5 gates]:
 ⚠️ **TRIM 25-50%**
 - **Trim Size:** XX shares (sell 25-50% of position)
 - **Execute:** On bounce to resistance or EMA20
 - **Why:** Two gates failing = thesis weakening, reduce exposure
 - **Keep:** Enough for runner if setup recovers
 
-[If ≤1/4 gates]:
-🚨 **CLOSE 75-100%**
+[If ≤2/5 gates]:
+🚨 **CLOSE 50-100%**
 - **Why:** Setup is broken, preserve capital for next opportunity
-- **Exception:** Keep 25% runner ONLY if Gate 3 (Brooks) still passes and strong catalyst <7 days
+- **Exception:** Keep 25-50% runner ONLY if Gate 3 (Brooks) still passes and strong catalyst <7 days
 
 **Position Size Rules:**
 - **Never** add to losing position (averaging down = recipe for disaster)
@@ -771,14 +795,14 @@ ORIG STOP:   $XX.XX ━━━━━━━━ (-XX%) Original risk (Swing low / 2
 **EXECUTION CHECKLIST**
 
 **Before ANY Action (Buy/Sell/Add/Trim):**
-- [ ] Check all 4 gates - what's current status?
+- [ ] Check all 5 gates - what's current status?
 - [ ] Check Smart Money - insiders/options aligned or opposed?
 - [ ] Check sector leadership - still a leader or falling to laggard?
 - [ ] Check Al Brooks - Always-In direction support or oppose?
 - [ ] Check market context - Fear/Greed, VIX, sector rotation
 - [ ] Have clear trigger price - not "around here", exact level
 - [ ] Know stop loss for ANY new position/add
-- [ ] Size position based on gates (4/4 = full, 3/4 = 75%, 2/4 = 50%, ≤1/4 = close)
+- [ ] Size position based on gates (5/5 = full, 4/5 = 75%, 3/5 = 50%, ≤2/5 = close)
 
 **Execution Discipline:**
 - Use **limit orders** for entries/exits (don't chase with market orders)
@@ -878,9 +902,9 @@ ORIG STOP:   $XX.XX ━━━━━━━━ (-XX%) Original risk (Swing low / 2
 
 | Position | Last Week | This Week | Trend |
 |----------|-----------|-----------|-------|
-| NVDA | 4/4 | 4/4 | Stable ✅ |
-| AAPL | 4/4 | 3/4 | Declining ⚠️ |
-| TSLA | 3/4 | 2/4 | Deteriorating ❌ |
+| NVDA | 5/5 | 5/5 | Stable ✅ |
+| AAPL | 5/5 | 4/5 | Declining ⚠️ |
+| TSLA | 4/5 | 3/5 | Deteriorating ❌ |
 
 ---
 
@@ -898,10 +922,10 @@ ORIG STOP:   $XX.XX ━━━━━━━━ (-XX%) Original risk (Swing low / 2
 
 | Symbol | Type | Gates | Signal | Action | Trigger | Notes |
 |--------|------|-------|--------|--------|---------|-------|
-| NVDA | Stock | 4/4 | STRONG | HOLD | - | All gates pass |
-| AAPL | Stock | 3/4 | HOLD | Monitor | G2 fails | Watch exhaustion |
-| TSLA | Stock | 2/4 | TRIM | $XXX | 50% | Catalyst gone |
-| META | Stock | 1/4 | CLOSE | Market | 75% | Multiple failures |
+| NVDA | Stock | 5/5 | STRONG | HOLD | - | All gates pass |
+| AAPL | Stock | 4/5 | HOLD | Monitor | G2 fails | Watch exhaustion |
+| TSLA | Stock | 3/5 | TRIM | $XXX | 50% | Catalyst gone |
+| META | Stock | 2/5 | CLOSE | Market | 75% | Multiple failures |
 | SPY | ETF | 2/2 | HOLD | - | Market exposure |
 
 ---
@@ -924,8 +948,8 @@ ORIG STOP:   $XX.XX ━━━━━━━━ (-XX%) Original risk (Swing low / 2
 
 ---
 
-*Generated by Investor-Agent | Methodology: 4-Gate Continuous Validation*
-*Al Brooks Price Action + McMillan Options + Ray Dalio Economic Machine + Smart Money Detection*
+*Generated by Investor-Agent | Methodology: 5-Gate Continuous Validation (Phase 3 Complete - Jan 2026)*
+*Al Brooks Price Action + McMillan Options + Ray Dalio Economic Machine + Options Tradability + Smart Money Detection*
 *Saved to: /Users/AhmedE/Ahmed/PORTFOLIO_DAILY_YYYY-MM-DD.md*
 
 ---
@@ -1031,17 +1055,17 @@ store_trading_prediction(
 
 | Gates | Smart Money | Leadership | Final Action |
 |-------|-------------|------------|--------------|
-| 4/4 | Supports | Leader | **STRONG HOLD / ADD** |
-| 4/4 | Neutral | Leader | **HOLD** |
-| 4/4 | Opposes | Leader | **HOLD** (monitor SM) |
-| 3/4 | Supports | Leader | **HOLD** |
-| 3/4 | Neutral | Middle | **HOLD** (monitor gate) |
-| 3/4 | Opposes | Laggard | **TRIM 25%** |
-| 2/4 | Supports | Leader | **HOLD** (SM override) |
-| 2/4 | Neutral | Any | **TRIM 50%** |
-| 2/4 | Opposes | Laggard | **CLOSE 75%** |
-| 1/4 | Any | Any | **CLOSE 75%** |
-| 0/4 | Any | Any | **CLOSE 100%** |
+| 5/5 | Supports | Leader | **STRONG HOLD / ADD** |
+| 5/5 | Neutral | Leader | **HOLD** |
+| 5/5 | Opposes | Leader | **HOLD** (monitor SM) |
+| 4/5 | Supports | Leader | **HOLD** |
+| 4/5 | Neutral | Middle | **HOLD** (monitor gate) |
+| 4/5 | Opposes | Laggard | **TRIM 25%** |
+| 3/5 | Supports | Leader | **HOLD** (SM override) |
+| 3/5 | Neutral | Any | **TRIM 50%** |
+| 3/5 | Opposes | Laggard | **CLOSE 50-75%** |
+| 2/5 | Any | Any | **CLOSE 50-75%** |
+| ≤1/5 | Any | Any | **CLOSE 100%** |
 
 ---
 
@@ -1068,8 +1092,8 @@ elif quote_type == 'ETF':
     # Skip Gate 1 (Catalyst) and Gate 4 (Quality)
     pass
 else:
-    # Full 4-gate validation for stocks
-    # All 6 enhanced tools applied
+    # Full 5-gate validation for stocks
+    # All 7 enhanced tools applied (including options tradability)
     pass
 ```
 
@@ -1117,6 +1141,81 @@ else:
 | **5** | **Earnings Filter** | Skip if earnings < 30 days (IV crush risk) |
 | **6** | **Liquidity Rules** | Spread ≤5%, OI ≥100, Volume ≥50 |
 
+---
+
+### Phase 4: Position Management (January 2026) ⭐
+
+**MCP Tools:**
+- `evaluate_options_position_management()` - Daily position checks
+- `get_portfolio_greeks_dashboard()` - Weekly portfolio risk
+
+**5 Management Rules (Priority Order):**
+
+| # | Rule | Trigger | Action | Urgency |
+|---|------|---------|--------|---------|
+| 1 | ✅ **50% Profit** | P&L ≥ 50% max profit | CLOSE | IMMEDIATE |
+| 2 | 📅 **21 DTE** | DTE ≤ 21 days | CLOSE (profit) or ROLL (loss) | WITHIN_3_DAYS |
+| 3 | 🔄 **Direction Change** | Brooks Always-In flips | CLOSE | IMMEDIATE |
+| 4 | ⚠️ **Tested Position** | Price breaches strike + DTE ≤ 7 | CLOSE | IMMEDIATE |
+| 5 | 📊 **Earnings** | Earnings < 7 days | CLOSE | IMMEDIATE |
+
+**How to Use:**
+
+**Daily Check (For EACH Options Position):**
+```python
+evaluate_options_position_management(
+    symbol="AAPL",
+    strategy="IRON_CONDOR",
+    entry_date="2026-01-15",
+    expiration="2026-02-21",
+    entry_credit=630.00,
+    current_value=315.00,
+    entry_direction="NEUTRAL",
+    legs=[...]
+)
+```
+
+**Returns:**
+- `action`: HOLD / CLOSE / ROLL / ADJUST
+- `urgency`: IMMEDIATE / WITHIN_3_DAYS / MONITOR
+- `profit_status`: P&L, %, days in trade
+- `dte_status`: Days to expiration, gamma risk
+- `tested_status`: Assignment risk assessment
+- `recommendation`: Detailed action plan
+
+**Weekly Portfolio Greeks:**
+```python
+get_portfolio_greeks_dashboard()
+```
+
+**Returns:**
+- Total delta/theta/vega/gamma
+- Daily theta income
+- 10-point IV impact
+- Risk assessment (BULLISH/NEUTRAL/BEARISH)
+- Position types (LONG_THETA/SHORT_VEGA/etc.)
+
+**Example Integration in Position:**
+
+```markdown
+**Stock Position:** HOLD (5/5 gates pass)
+**Options Position:** CLOSE (IMMEDIATE) - ✅ 50% profit target hit
+
+Options Management: `evaluate_options_position_management`
+- Strategy: Bull Put Spread
+- Entry: $630 credit (Jan 15)
+- Current: $315 value
+- P&L: $315 (50.0% of max)
+- DTE: 30 days
+- Action: CLOSE NOW
+- Reason: TastyTrade research shows 88% win rate at 50% vs 52% at expiration
+
+Integrated Action: Close options immediately at 50% profit.
+                   Keep stock position (5/5 gates still pass).
+```
+
+**Reference:** TastyTrade research + McMillan Chapter 36 (Position Management)
+
 ### Portfolio-Specific Options Strategies
 
 | Situation | IV Environment | Strategy |
@@ -1129,7 +1228,7 @@ else:
 ### Trading Plan Rules
 
 **GENERATE options trading plan for:**
-- ✅ ADD recommendation (new position with 4/4 gates)
+- ✅ ADD recommendation (new position with 5/5 gates)
 - ✅ Rotation candidate (replacing TRIM/CLOSE)
 - ✅ STRONG_HOLD + want to add on pullback
 

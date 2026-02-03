@@ -2018,6 +2018,261 @@ McMillan's framework teaches us: **"Match your strategy to market conditions, no
 
 ---
 
+### 6C. 📊 POSITION MANAGEMENT (Phase 4 - NEW) ⭐
+
+**Purpose:** For EXISTING options positions - provides daily monitoring and management recommendations based on TastyTrade + McMillan methodology.
+
+**⚠️ Note:** This section only applies if you ALREADY HAVE an options position open. For NEW positions, use Section 6B above.
+
+---
+
+#### Position Management Framework
+
+The system automatically evaluates your position against 5 critical management rules:
+
+**📊 MANAGEMENT PRIORITY (Institutional Rules):**
+
+| Priority | Check | Trigger | Action | Urgency |
+|----------|-------|---------|--------|---------|
+| **1** | 50% Profit Target | P&L ≥ 50% max profit | CLOSE | IMMEDIATE |
+| **2** | 21 DTE Management | DTE ≤ 21 days | CLOSE or ROLL | WITHIN_3_DAYS |
+| **3** | Direction Change | Brooks Always-In flips | CLOSE | IMMEDIATE |
+| **4** | Tested Position | Price breaches short strike + DTE ≤ 7 | CLOSE | IMMEDIATE |
+| **5** | Earnings Proximity | Earnings < 7 days | CLOSE | IMMEDIATE |
+
+**Why This Order:**
+1. Take profits early (88% win rate at 50% vs 52% at expiration)
+2. Avoid gamma risk acceleration after 21 DTE
+3. Exit invalidated thesis immediately
+4. Manage assignment risk in danger zone
+5. Avoid IV crush and binary risk
+
+---
+
+#### How to Use Position Management
+
+**Daily Check (For Each Options Position):**
+
+```python
+# Check your position
+evaluate_options_position_management(
+    symbol="AAPL",
+    strategy="IRON_CONDOR",          # or CREDIT_SPREAD, DEBIT_SPREAD, etc.
+    entry_date="2026-01-15",         # When you entered
+    expiration="2026-02-21",         # Options expiry
+    entry_credit=630.00,             # Credit collected (for credit spreads)
+    current_value=315.00,            # Current position value
+    entry_direction="NEUTRAL",       # LONG/SHORT/NEUTRAL
+    legs=[                           # Position structure
+        {"type": "CALL", "strike": 252, "action": "SELL", "quantity": 2},
+        {"type": "CALL", "strike": 257, "action": "BUY", "quantity": 2},
+        {"type": "PUT", "strike": 204, "action": "SELL", "quantity": 2},
+        {"type": "PUT", "strike": 199, "action": "BUY", "quantity": 2}
+    ]
+)
+```
+
+**Response Format:**
+
+```json
+{
+  "action": "CLOSE",
+  "reason": "✅ 50% PROFIT TARGET HIT (50.0% of max profit)",
+  "urgency": "IMMEDIATE",
+
+  "profit_status": {
+    "current_pnl": 315.00,
+    "current_pnl_pct": 50.0,
+    "profit_target_hit": true,
+    "days_in_trade": 10
+  },
+
+  "dte_status": {
+    "days_to_expiration": 30,
+    "gamma_risk_level": "LOW"
+  },
+
+  "recommendation": "Close position now. You've captured 50.0% of max profit..."
+}
+```
+
+---
+
+#### Management Action Codes
+
+**📊 ACTION TYPES:**
+
+| Action | Meaning | When Applied |
+|--------|---------|--------------|
+| **HOLD** | Position healthy, continue monitoring | No triggers hit |
+| **CLOSE** | Exit position now | Profit target, direction flip, assignment risk |
+| **ROLL** | Move to next expiration | 21 DTE + losing position |
+| **ADJUST** | Modify strikes | Advanced management (manual) |
+
+**📊 URGENCY LEVELS:**
+
+| Urgency | Timeframe | Examples |
+|---------|-----------|----------|
+| **IMMEDIATE** | Today | 50% profit, direction flip, high assignment risk |
+| **WITHIN_3_DAYS** | This week | 21 DTE threshold, moderate gamma risk |
+| **MONITOR** | No action needed | Continue daily checks |
+
+---
+
+#### Example Management Scenarios
+
+**Scenario 1: 50% Profit Target Hit**
+
+```
+Position: AAPL Iron Condor
+Entry Credit: $630
+Current Value: $315
+P&L: $315 (50%)
+DTE: 30
+
+✅ ACTION: CLOSE (IMMEDIATE)
+Reason: 50% profit target hit
+Recommendation: Close now - TastyTrade shows 88% win rate at 50%
+                vs 52% if holding to expiration.
+```
+
+**Scenario 2: 21 DTE with Profit**
+
+```
+Position: TSLA Bull Put Spread
+Entry Credit: $400
+Current Value: $320
+P&L: $80 (20% profit)
+DTE: 18
+
+📅 ACTION: CLOSE (WITHIN_3_DAYS)
+Reason: 21 DTE threshold + profitable
+Recommendation: Close to lock gains before gamma risk accelerates.
+```
+
+**Scenario 3: 21 DTE with Loss**
+
+```
+Position: MSFT Credit Spread
+Entry Credit: $500
+Current Value: $575
+P&L: -$75 (-15%)
+DTE: 19
+
+🔄 ACTION: ROLL (WITHIN_3_DAYS)
+Reason: 21 DTE threshold + losing position
+Recommendation: Roll to Mar 2026 expiration for additional credit.
+                Extends duration and may recover loss.
+```
+
+**Scenario 4: Direction Change**
+
+```
+Position: NVDA Long Call Spread
+Entry Direction: LONG
+Current Direction: SHORT (Brooks flipped)
+P&L: -$20
+
+🔄 ACTION: CLOSE (IMMEDIATE)
+Reason: Brooks Always-In flipped from LONG → SHORT
+Recommendation: EXIT NOW - Your thesis is invalidated.
+```
+
+**Scenario 5: Tested Position (High Assignment Risk)**
+
+```
+Position: SPY Iron Condor
+Short Call Strike: $580
+Current Price: $609 (5% ITM)
+DTE: 6
+
+⚠️ ACTION: CLOSE (IMMEDIATE)
+Reason: High assignment risk + DTE ≤ 7
+Recommendation: Close to avoid assignment at $580 strike.
+```
+
+---
+
+#### Portfolio Greeks Dashboard
+
+**Use Case:** Monitor aggregate portfolio risk across ALL options positions
+
+```python
+# Check total portfolio risk
+get_portfolio_greeks_dashboard()
+```
+
+**📊 EXAMPLE OUTPUT:**
+
+```
+Total Delta: +142.3         (Bullish directional bias)
+Total Theta: +$12.45        (Collecting $12.45/day in time decay)
+Total Vega: -156.8          (Want IV to decrease - short vega)
+Total Gamma: -2.34          (Short gamma - need hedging near strikes)
+
+Daily Theta Income: $12.45
+10-Point IV Impact: -$1,568  (Lose $1,568 if IV increases 10 points)
+
+Risk Assessment:
+  Delta Exposure: BULLISH (>+50 delta)
+  Theta Position: LONG_THETA (time decay working for you)
+  Vega Position: SHORT_VEGA (vulnerable to IV expansion)
+  Gamma Position: SHORT_GAMMA (hedge as price approaches strikes)
+
+Recommendations:
+  ⚠️ Short gamma position - hedge if price approaches short strikes
+  ✅ Positive theta - time decay is in your favor ($12.45/day)
+  ⚠️ Short vega - vulnerable to IV spike events
+```
+
+**Delta Exposure Guide:**
+- `< -50`: BEARISH portfolio (net short)
+- `-50 to +50`: NEUTRAL (balanced)
+- `> +50`: BULLISH portfolio (net long)
+
+**Theta Position:**
+- `LONG_THETA`: Collecting premium (credit spreads, iron condors)
+- `SHORT_THETA`: Paying for time (debit spreads, long options)
+
+**Vega Position:**
+- `LONG_VEGA`: Profit from IV increase (long options)
+- `SHORT_VEGA`: Profit from IV decrease (short premium)
+
+**Gamma Position:**
+- `LONG_GAMMA`: Delta increases as price moves favorably
+- `SHORT_GAMMA`: Delta works against you (credit spreads)
+
+---
+
+#### Position Management Tools
+
+**📊 MCP TOOLS:**
+
+| Tool | Purpose | When to Use |
+|------|---------|-------------|
+| `evaluate_options_position_management()` | Evaluate single position | Daily check on each position |
+| `get_portfolio_greeks_dashboard()` | Portfolio-level risk | Weekly portfolio review |
+
+**Reference:**
+- TastyTrade: "Manage Winners at 50% of Max Profit" (88% win rate)
+- McMillan: "Options as a Strategic Investment", Chapter 36 (Position Management)
+
+---
+
+**⚠️ IMPORTANT NOTES:**
+
+1. **NO Stop Losses on Credit Spreads** - Research shows stops reduce profitability (TastyTrade). Manage at 21 DTE instead.
+
+2. **Priority Matters** - The system checks in order (50% profit → 21 DTE → Direction → Tested → Earnings). First trigger wins.
+
+3. **Daily Monitoring** - Check positions DAILY using `evaluate_options_position_management()`.
+
+4. **Portfolio Greeks** - Check weekly to ensure portfolio-level risk is acceptable.
+
+5. **Trust the System** - These rules are backed by institutional research (TastyTrade 88% win rate at 50% profit target).
+
+---
+
 ### 7. CATALYST VERIFICATION (Phase 2 - 13.4%) 🚨 WITH VERIFICATION SYSTEM
 
 **Note:** Catalyst weight reduced from 15.2% to 13.4% to accommodate McMillan Options Strategy (17.9%)
@@ -2652,7 +2907,7 @@ print(f"   Entry: ${result['entry_price']}")
 - Tracks which analysis components are most accurate
 - Generates weekly efficiency reports after 5+ predictions
 - Identifies improvement areas automatically
-- Validates the 4-gate system performance
+- Validates the 5-gate system performance (Phase 3 Complete - Jan 2026)
 
 ---
 
@@ -2685,14 +2940,14 @@ print(f"   Entry: ${result['entry_price']}")
 ### Trading Plan Generation Rules
 
 **GENERATE full stock + options trading plan ONLY for:**
-- ✅ STRONG_BUY (4/4 gates, score ≥80)
-- ✅ BUY (3/4 gates, score ≥65)
-- ✅ SELL (3/4 gates, score ≥65)
-- ✅ STRONG_SELL (4/4 gates, score ≥80)
+- ✅ STRONG_BUY (5/5 gates, score ≥70)
+- ✅ BUY (4/5 gates, score ≥60)
+- ✅ SELL (4/5 gates, score ≥60)
+- ✅ STRONG_SELL (5/5 gates, score ≥70)
 
 **DO NOT generate trading plan for:**
-- ❌ WATCH (2/4 gates, score 50-64) - No conviction, wait
-- ❌ NO_TRADE (<2/4 gates, score <50) - Gates failed, skip
+- ❌ WATCH (3/5 gates, score 50-59) - No conviction, wait
+- ❌ NO_TRADE (<3/5 gates, score <50) - Gates failed, skip
 
 **Rationale:** Trading plans for low-conviction signals encourage overtrading. Only commit capital to high-conviction setups that pass validation gates.
 

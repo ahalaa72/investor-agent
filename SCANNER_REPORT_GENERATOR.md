@@ -4,7 +4,7 @@ Scan markets for top LONG and SHORT candidates with detailed analysis per stock.
 
 **Structure:** 6 Sections per Stock (Overview + Catalyst + McMillan Options + Al Brooks + **Dalio Economic Machine** + Trading Signal) | **Time:** 50-70 minutes | **Stocks:** Top 3 LONG + Top 3 SHORT
 
-**Methodology:** Al Brooks (Price Action) + McMillan (Options Strategy) + Ray Dalio (Economic Machine) + **4-Gate Signal Classification**
+**Methodology:** Al Brooks (Price Action) + McMillan (Options Strategy) + Ray Dalio (Economic Machine) + **5-Gate Signal Classification (Phase 3 Complete - Jan 2026)**
 
 ---
 
@@ -28,7 +28,7 @@ Every trade MUST have an identifiable catalyst. Without a catalyst, there's no r
 | Tool | Purpose | Gate |
 |------|---------|------|
 | `detect_catalyst_strength` | Aggregate ALL catalyst signals | **MANDATORY** |
-| `generate_trading_signal` | Final signal with 4-gate validation | **CORE** |
+| `generate_trading_signal` | Final signal with 5-gate validation | **CORE** |
 | `detect_unusual_options_activity` | Smart money options detection | Scoring |
 | `detect_insider_cluster` | Clustered insider buying patterns | Scoring |
 | `calculate_quality_score` | F-Score + Z-Score + ROE unified | Scoring |
@@ -47,7 +47,7 @@ Scanner now caches predictions in the database. **Repeated tickers skip re-analy
 | 1 | Query DB for predictions from last 7 days |
 | 2 | Skip `generate_trading_signal()` for cached tickers |
 | 3 | Mark with ♻️ REPEATED in results |
-| 4 | Only NEW tickers run full 4-gate validation |
+| 4 | Only NEW tickers run full 5-gate validation |
 
 ### Performance Impact
 
@@ -141,14 +141,14 @@ Scanner now caches predictions in the database. **Repeated tickers skip re-analy
 
 ## 📊 SCAN STATISTICS
 
-| Direction | Raw | DB Matches | Repeated ♻️ | New Analyzed | 4/4 Gates | 3/4 Gates | Returned |
+| Direction | Raw | DB Matches | Repeated ♻️ | New Analyzed | 5/5 Gates | 4/5 Gates | Returned |
 |-----------|-----|------------|-------------|--------------|-----------|-----------|----------|
 | LONG      | XXX | XX         | X           | XX           | X         | X         | 3        |
 | SHORT     | XXX | XX         | X           | XX           | X         | X         | 3        |
 
-**Pass Rate:** X.X% (4/4) | X.X% (3+/4)
+**Pass Rate:** X.X% (5/5) | X.X% (3+/4)
 **DB Cache:** X repeated tickers skipped (saved ~Xs)
-**Elapsed:** XXs | **Relaxed:** [YES/NO - filled with 3/4 if needed]
+**Elapsed:** XXs | **Relaxed:** [YES/NO - filled with 4/5 if needed]
 
 ---
 
@@ -677,6 +677,16 @@ IV Rank XX% = **[HIGH / NORMAL / LOW]**
 - [ ] Direction confirmed (Al Brooks + Dalio)
 - [ ] Risk <1% of account
 - [ ] No earnings within 7 days of expiry
+
+**📊 AFTER ENTRY - Position Management (Phase 4):**
+
+Once you enter this position, use **daily monitoring** with Phase 4 tools:
+- `evaluate_options_position_management()` - Daily checks (50% profit, 21 DTE, direction change, tested position)
+- `get_portfolio_greeks_dashboard()` - Weekly portfolio risk (delta, theta, vega, gamma)
+
+**5 Management Rules:** ✅ 50% Profit → 📅 21 DTE → 🔄 Direction Flip → ⚠️ Tested Position → 📊 Earnings
+
+*Reference:* TastyTrade research (88% win rate at 50% profit target)
 
 ---
 
@@ -1225,7 +1235,7 @@ Win/Loss Record:          XXW / XXL
 ## LONG #2: [TICKER] - [Company Name]
 ═══════════════════════════════════════════════════════════════
 
-[Repeat SECTION A, B, C, D, E format with 4-gate validation]
+[Repeat SECTION A, B, C, D, E format with 5-gate validation]
 
 ---
 
@@ -1233,7 +1243,7 @@ Win/Loss Record:          XXW / XXL
 ## LONG #3: [TICKER] - [Company Name]
 ═══════════════════════════════════════════════════════════════
 
-[Repeat SECTION A, B, C, D, E format with 4-gate validation]
+[Repeat SECTION A, B, C, D, E format with 5-gate validation]
 
 ---
 
@@ -1261,7 +1271,7 @@ Win/Loss Record:          XXW / XXL
 ## SHORT #2: [TICKER] - [Company Name]
 ═══════════════════════════════════════════════════════════════
 
-[Repeat SECTION A, B, C, D, E format with 4-gate validation]
+[Repeat SECTION A, B, C, D, E format with 5-gate validation]
 
 ---
 
@@ -1269,7 +1279,7 @@ Win/Loss Record:          XXW / XXL
 ## SHORT #3: [TICKER] - [Company Name]
 ═══════════════════════════════════════════════════════════════
 
-[Repeat SECTION A, B, C, D, E format with 4-gate validation]
+[Repeat SECTION A, B, C, D, E format with 5-gate validation]
 
 ---
 
@@ -1279,12 +1289,12 @@ Win/Loss Record:          XXW / XXL
 
 | Rank | Dir | Ticker | Signal | Score | Gates | Brooks | R/R | Status |
 |------|-----|--------|--------|-------|-------|--------|-----|--------|
-| 1 | LONG | [XXX] | 🟢🟢 | XX/100 | 4/4 | XX% | X.X:1 | EXECUTE |
-| 2 | LONG | [XXX] | 🟢 | XX/100 | 3/4 | XX% | X.X:1 | EXECUTE 75% |
-| 3 | LONG | [XXX] | 🟡 | XX/100 | 2/4 | XX% | X.X:1 | WATCH |
-| 1 | SHORT | [XXX] | 🟢🟢 | XX/100 | 4/4 | XX% | X.X:1 | EXECUTE |
-| 2 | SHORT | [XXX] | 🟢 | XX/100 | 3/4 | XX% | X.X:1 | EXECUTE 75% |
-| 3 | SHORT | [XXX] | 🔴 | XX/100 | 1/4 | XX% | X.X:1 | SKIP |
+| 1 | LONG | [XXX] | 🟢🟢 | XX/100 | 5/5 | XX% | X.X:1 | EXECUTE |
+| 2 | LONG | [XXX] | 🟢 | XX/100 | 4/5 | XX% | X.X:1 | EXECUTE 75% |
+| 3 | LONG | [XXX] | 🟡 | XX/100 | 3/5 | XX% | X.X:1 | WATCH |
+| 1 | SHORT | [XXX] | 🟢🟢 | XX/100 | 5/5 | XX% | X.X:1 | EXECUTE |
+| 2 | SHORT | [XXX] | 🟢 | XX/100 | 4/5 | XX% | X.X:1 | EXECUTE 75% |
+| 3 | SHORT | [XXX] | 🔴 | XX/100 | 2/5 | XX% | X.X:1 | SKIP |
 
 **Signal Legend:** 🟢🟢 STRONG_BUY/SELL | 🟢 BUY/SELL | 🟡 WATCH | 🔴 NO_TRADE
 
@@ -1309,7 +1319,7 @@ Win/Loss Record:          XXW / XXL
 
 ---
 
-*Scan completed at [TIME]. All data from MCP investor-agent tools with 4-gate validation.*
+*Scan completed at [TIME]. All data from MCP investor-agent tools with 5-gate validation.*
 ```
 
 ---
@@ -1326,7 +1336,7 @@ get_raw_scan_candidates(direction="LONG", market="america", limit=500)
 
 # Step 1b: Validate LONG candidates
 scan_long_candidates(market="america", max_scan=50, top_n=3)
-# Returns: Top 3 LONG with 4-gate validation + progress log
+# Returns: Top 3 LONG with 5-gate validation + progress log
 
 # Step 1c: Get raw SHORT candidates
 get_raw_scan_candidates(direction="SHORT", market="america", limit=500)
@@ -1334,7 +1344,7 @@ get_raw_scan_candidates(direction="SHORT", market="america", limit=500)
 
 # Step 1d: Validate SHORT candidates
 scan_short_candidates(market="america", max_scan=50, top_n=3)
-# Returns: Top 3 SHORT with 4-gate validation + progress log
+# Returns: Top 3 SHORT with 5-gate validation + progress log
 ```
 
 **Option B: One-Shot Full Scan**
@@ -1421,9 +1431,9 @@ asyncio.run(find_similar_historical_setups(
 | **4. QUALITY** | Financial health OK | `calculate_quality_score` | `f_score < 3 OR z_score < 1.81` |
 
 **Signal Classification:**
-- **4/4 Gates + Score ≥80 + Success >65%** → STRONG_BUY/SELL
-- **3/4 Gates + Score ≥70 + Success >55%** → BUY/SELL
-- **2/4 Gates OR warnings** → WATCH
+- **5/5 Gates + Score ≥80 + Success >65%** → STRONG_BUY/SELL
+- **4/5 Gates + Score ≥70 + Success >55%** → BUY/SELL
+- **3/5 Gates OR warnings** → WATCH
 - **Any critical gate fail** → NO_TRADE
 
 ### Step 4: Generate Brooks Analysis (AI interpretation)
@@ -1451,7 +1461,7 @@ Create the final ranking table with:
 | Tool | Purpose | Gate |
 |------|---------|------|
 | `detect_catalyst_strength()` | Aggregate ALL catalyst signals | **GATE 1** |
-| `generate_trading_signal()` | Final signal with 4-gate validation | **CORE** |
+| `generate_trading_signal()` | Final signal with 5-gate validation | **CORE** |
 | `detect_unusual_options_activity()` | Smart money options detection | Scoring |
 | `detect_insider_cluster()` | Clustered insider buying patterns | Scoring |
 | `calculate_quality_score()` | F-Score + Z-Score + ROE unified | **GATE 4** |
@@ -1464,8 +1474,8 @@ Create the final ranking table with:
 | Tool | Purpose | When to Use |
 |------|---------|-------------|
 | `get_raw_scan_candidates(direction, limit)` | Raw TradingView list (NO validation) | Verify scanner returns candidates |
-| `scan_long_candidates(max_scan, top_n)` | LONG only with 4-gate validation | After raw list verified |
-| `scan_short_candidates(max_scan, top_n)` | SHORT only with 4-gate validation | After LONG scan |
+| `scan_long_candidates(max_scan, top_n)` | LONG only with 5-gate validation | After raw list verified |
+| `scan_short_candidates(max_scan, top_n)` | SHORT only with 5-gate validation | After LONG scan |
 | `scan_market_opportunities(top_n)` | Full scan (LONG + SHORT) | One-shot full scan |
 
 **Recommended Workflow:**
@@ -1529,9 +1539,9 @@ Create the final ranking table with:
 
 | Gates Passed | Score | Success | Signal | Action |
 |--------------|-------|---------|--------|--------|
-| 4/4 | ≥80 | >65% | 🟢🟢 STRONG_BUY/SELL | Execute full size |
-| 3/4 | ≥70 | >55% | 🟢 BUY/SELL | Execute 75% size |
-| 2/4 | ≥60 | >50% | 🟡 WATCH | Monitor, don't trade |
+| 5/5 | ≥80 | >65% | 🟢🟢 STRONG_BUY/SELL | Execute full size |
+| 4/5 | ≥70 | >55% | 🟢 BUY/SELL | Execute 75% size |
+| 3/5 | ≥60 | >50% | 🟡 WATCH | Monitor, don't trade |
 | <2 | Any | Any | 🔴 NO_TRADE | Skip candidate |
 
 ---
@@ -1599,7 +1609,7 @@ Stocks automatically rejected:
 
 ---
 
-**Time:** 60-90 minutes for full 6-stock scan report with 4-gate validation
+**Time:** 60-90 minutes for full 6-stock scan report with 5-gate validation
 **Output:** ~400-500 lines per stock, ~2500+ lines total
 **Sections:** 6 per stock (A: Overview + B: Catalyst + C: Options + D: Brooks + E: Dalio + F: Signal)
 **Methodology:** Al Brooks (Price Action) + McMillan (Options Strategy) + Ray Dalio (Economic Machine) + 4-Gate Validation
@@ -1639,14 +1649,14 @@ Stocks automatically rejected:
 ### Trading Plan Generation Rules
 
 **GENERATE full stock + options trading plan ONLY for:**
-- ✅ STRONG_BUY (4/4 gates, score ≥80)
-- ✅ BUY (3/4 gates, score ≥65)
-- ✅ SELL (3/4 gates, score ≥65)
-- ✅ STRONG_SELL (4/4 gates, score ≥80)
+- ✅ STRONG_BUY (5/5 gates, score ≥80)
+- ✅ BUY (4/5 gates, score ≥65)
+- ✅ SELL (4/5 gates, score ≥65)
+- ✅ STRONG_SELL (5/5 gates, score ≥80)
 
 **DO NOT generate trading plan for:**
-- ❌ WATCH (2/4 gates, score 50-64) - No conviction, wait
-- ❌ NO_TRADE (<2/4 gates, score <50) - Gates failed, skip
+- ❌ WATCH (3/5 gates, score 50-64) - No conviction, wait
+- ❌ NO_TRADE (<3/5 gates, score <50) - Gates failed, skip
 
 **Rationale:** Trading plans for low-conviction signals encourage overtrading. Only commit capital when validation gates pass.
 

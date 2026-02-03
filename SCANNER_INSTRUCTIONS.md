@@ -56,6 +56,27 @@ You are a **Professional Market Analyst** specializing in **Al Brooks price acti
 | `calculate_quality_score(ticker)` | F-Score, Z-Score, ROE unified | Role 2: Overview section |
 | `analyze_competitors(ticker, top_n=5)` | Sector comparison + leader detection | Role 2: Context section |
 
+### Phase 4: Position Management Tools (January 2026) ⭐
+
+| Tool | Purpose | When to Use |
+|------|---------|-------------|
+| `evaluate_options_position_management(...)` | Manage existing options positions | When user has EXISTING options positions |
+| `get_portfolio_greeks_dashboard()` | Portfolio Greeks & risk monitoring | Weekly portfolio risk review |
+
+**Use Cases:**
+- **User asks about existing position:** "How's my AAPL iron condor?" → Use `evaluate_options_position_management()`
+- **User asks about portfolio risk:** "Show my portfolio Greeks" → Use `get_portfolio_greeks_dashboard()`
+- **NOT for new opportunities:** Scanner finds NEW trades, Phase 4 manages EXISTING positions
+
+**5 Management Rules:**
+1. ✅ **50% Profit Target** - Close at 50% of max profit (88% win rate)
+2. 📅 **21 DTE** - Close/roll at 21 days to expiration
+3. 🔄 **Direction Change** - Exit if Brooks Always-In flips
+4. ⚠️ **Tested Position** - Close if price breaches short strike
+5. 📊 **Earnings Proximity** - Close if earnings < 7 days
+
+**Reference:** TastyTrade research + McMillan "Options as a Strategic Investment" Ch 36
+
 ---
 
 ## NEW: DB CACHING OPTIMIZATION (January 2026)
@@ -80,7 +101,7 @@ Perfect for:
 - Reviewing historical scan results
 
 ```python
-# Get top 10 LONG trades with 4/4 gates from last 7 days
+# Get top 10 LONG trades with 5/5 gates from last 7 days
 result = get_best_cached_trades(direction="LONG", days=7, top_n=10, min_gates=4)
 
 # Get top 5 SHORT trades with 3+ gates
@@ -136,7 +157,7 @@ result = get_best_cached_trades(direction="BOTH", days=7, top_n=10, min_gates=3)
 
 **Sorting Priority:**
 1. `composite_score` DESC (highest first)
-2. `gates_passed` DESC (4/4 > 3/4)
+2. `gates_passed` DESC (5/5> 4/5)
 3. `scan_count` DESC (more appearances = stronger signal)
 4. `last_scanned` DESC (most recent first)
 
@@ -280,9 +301,9 @@ for i in range(0, len(new_only), 20):
 
 Show repeated tickers with their stored signals:
 ```
-♻️ HALO: 4/4 [C:P F:P B:P Q:P] | STRONG_BUY | 85% (REPEATED)
-♻️ DLO: 4/4 [C:P F:P B:P Q:P] | STRONG_BUY | 80% (REPEATED)
-♻️ FERG: 4/4 [C:P F:P B:P Q:P] | BUY | 75% (REPEATED)
+♻️ HALO: 5/5[C:P F:P B:P Q:P] | STRONG_BUY | 85% (REPEATED)
+♻️ DLO: 5/5[C:P F:P B:P Q:P] | STRONG_BUY | 80% (REPEATED)
+♻️ FERG: 5/5[C:P F:P B:P Q:P] | BUY | 75% (REPEATED)
 ```
 
 ### Stored Prediction Data
@@ -359,14 +380,14 @@ for i in range(0, len(long_symbols), chunk_size):
 
 ---
 
-### Step 3: Show LONG Top Results (All 4/4 or Top 5)
+### Step 3: Show LONG Top Results (All 5/5or Top 5)
 
 ```python
-# Get all 4/4 passers
+# Get all 5/5passers
 four_gate = [x for x in long_validated if x["gates_passed"] == 4]
 three_gate = [x for x in long_validated if x["gates_passed"] == 3]
 
-# Return ALL 4/4 passers, fill with 3/4 if less than 5
+# Return ALL 5/5passers, fill with 4/5 if less than 5
 final_long = four_gate[:]
 if len(final_long) < 5:
     final_long.extend(three_gate[:5 - len(final_long)])
@@ -404,14 +425,14 @@ for i in range(0, len(short_symbols), chunk_size):
 
 ---
 
-### Step 6: Show SHORT Top Results (All 4/4 or Top 5)
+### Step 6: Show SHORT Top Results (All 5/5or Top 5)
 
 ```python
-# Get all 4/4 passers
+# Get all 5/5passers
 four_gate = [x for x in short_validated if x["gates_passed"] == 4]
 three_gate = [x for x in short_validated if x["gates_passed"] == 3]
 
-# Return ALL 4/4 passers, fill with 3/4 if less than 5
+# Return ALL 5/5passers, fill with 4/5 if less than 5
 final_short = four_gate[:]
 if len(final_short) < 5:
     final_short.extend(three_gate[:5 - len(final_short)])
@@ -434,7 +455,7 @@ if len(final_short) < 5:
 
 ## 📊 SCAN STATISTICS
 
-| Direction | Raw | DB Matches | Repeated ♻️ | New Analyzed | 4/4 Gates | 3/4 Gates | Returned |
+| Direction | Raw | DB Matches | Repeated ♻️ | New Analyzed | 5/5Gates | 4/5 Gates | Returned |
 |-----------|-----|------------|-------------|--------------|-----------|-----------|----------|
 | LONG      | XXX | XX         | X           | XX           | X         | X         | 5        |
 | SHORT     | XXX | XX         | X           | XX           | X         | X         | 5        |
@@ -449,9 +470,9 @@ if len(final_short) < 5:
 
 | # | Ticker | Price | Score | Gates | Catalyst | Brooks | Signal |
 |---|--------|-------|-------|-------|----------|--------|--------|
-| 1 | AAAA | $XX.XX | 85/100 | 4/4 | STRONG | 68% | STRONG_BUY |
-| 2 | BBBB | $XX.XX | 78/100 | 3/4 | MODERATE | 62% | BUY |
-| 3 | CCCC | $XX.XX | 72/100 | 3/4 | MODERATE | 58% | BUY |
+| 1 | AAAA | $XX.XX | 85/100 | 5/5| STRONG | 68% | STRONG_BUY |
+| 2 | BBBB | $XX.XX | 78/100 | 4/5 | MODERATE | 62% | BUY |
+| 3 | CCCC | $XX.XX | 72/100 | 4/5 | MODERATE | 58% | BUY |
 | 4 | DDDD | $XX.XX | 68/100 | 2/4 | WEAK | 55% | WATCH |
 | 5 | EEEE | $XX.XX | 65/100 | 2/4 | WEAK | 52% | WATCH |
 
@@ -461,9 +482,9 @@ if len(final_short) < 5:
 
 | # | Ticker | Price | Score | Gates | Catalyst | Brooks | Signal |
 |---|--------|-------|-------|-------|----------|--------|--------|
-| 1 | FFFF | $XX.XX | 82/100 | 4/4 | STRONG | 65% | STRONG_SELL |
-| 2 | GGGG | $XX.XX | 75/100 | 3/4 | MODERATE | 60% | SELL |
-| 3 | HHHH | $XX.XX | 71/100 | 3/4 | MODERATE | 57% | SELL |
+| 1 | FFFF | $XX.XX | 82/100 | 5/5| STRONG | 65% | STRONG_SELL |
+| 2 | GGGG | $XX.XX | 75/100 | 4/5 | MODERATE | 60% | SELL |
+| 3 | HHHH | $XX.XX | 71/100 | 4/5 | MODERATE | 57% | SELL |
 | 4 | IIII | $XX.XX | 67/100 | 2/4 | WEAK | 54% | WATCH |
 | 5 | JJJJ | $XX.XX | 63/100 | 2/4 | WEAK | 51% | WATCH |
 
@@ -611,8 +632,8 @@ Every trading signal must pass through 4 gates:
 
 | Signal | Gates Required | Confidence |
 |--------|----------------|------------|
-| **STRONG_BUY/SELL** | 4/4 passed + Score ≥80 | 70-100% |
-| **BUY/SELL** | 3/4 passed + Score ≥65 | 55-70% |
+| **STRONG_BUY/SELL** | 5/5passed + Score ≥80 | 70-100% |
+| **BUY/SELL** | 4/5 passed + Score ≥65 | 55-70% |
 | **WATCH** | 2/4 passed OR Score 50-64 | 40-55% |
 | **NO_TRADE** | <2/4 passed OR No Catalyst | <40% |
 
@@ -1146,15 +1167,15 @@ for i in range(0, len(symbols), chunk_size):
     all_results.extend(result["all_results"])      # Compact one-liners
     all_validated.extend(result["candidates"])     # Full validated data
 
-# Step 3: Return ALL 4/4 passers, fill with 3/4 if less than 5
+# Step 3: Return ALL 5/5passers, fill with 4/5 if less than 5
 four_gate = [x for x in all_validated if x["gates_passed"] == 4]
 three_gate = [x for x in all_validated if x["gates_passed"] == 3]
 four_gate.sort(key=lambda x: x["confidence"], reverse=True)
 three_gate.sort(key=lambda x: x["confidence"], reverse=True)
 
-# Return ALL 4/4 passers (could be 0, 1, 10, 100...)
-# If less than 5, fill with top 3/4 passers to reach minimum 5
-final = four_gate[:]  # ALL 4/4 passers
+# Return ALL 5/5passers (could be 0, 1, 10, 100...)
+# If less than 5, fill with top 4/5 passers to reach minimum 5
+final = four_gate[:]  # ALL 5/5passers
 if len(final) < 5:
     remaining = 5 - len(final)
     final.extend(three_gate[:remaining])
@@ -1164,9 +1185,9 @@ if len(final) < 5:
 
 **Example with 47 candidates:**
 ```
-Call 1: symbols[0:20]   → 20 results → "AAPL: 4/4 [C:P F:P B:P Q:P]", ...
-Call 2: symbols[20:40]  → 20 results → "NVDA: 3/4 [C:P F:F B:P Q:P]", ...
-Call 3: symbols[40:47]  → 7 results  → "LSTR: 4/4 [C:P F:P B:P Q:P]", ...
+Call 1: symbols[0:20]   → 20 results → "AAPL: 5/5[C:P F:P B:P Q:P]", ...
+Call 2: symbols[20:40]  → 20 results → "NVDA: 4/5 [C:P F:F B:P Q:P]", ...
+Call 3: symbols[40:47]  → 7 results  → "LSTR: 5/5[C:P F:P B:P Q:P]", ...
 Combine all 47 results → Rank → Top 5
 ```
 
@@ -1174,7 +1195,7 @@ Combine all 47 results → Rank → Top 5
 ```json
 {
   "all_results": [           // Compact one-liner for EVERY company
-    "AAPL: 4/4 [C:P F:P B:P Q:P]",
+    "AAPL: 5/5[C:P F:P B:P Q:P]",
     "AMD: 2/4 [C:P F:F B:F Q:P]",
     ...
   ],
@@ -1216,8 +1237,8 @@ for chunk in chunks_of_20:
 
 | Score | Gates | Signal | Action |
 |-------|-------|--------|--------|
-| 80-100 | 4/4 | STRONG_BUY/SELL | High conviction, full size |
-| 65-79 | 3/4 | BUY/SELL | Good setup, reduced size if needed |
+| 80-100 | 5/5| STRONG_BUY/SELL | High conviction, full size |
+| 65-79 | 4/5 | BUY/SELL | Good setup, reduced size if needed |
 | 50-64 | 2/4 | WATCH | Wait for confirmation |
 | 0-49 | <2/4 | NO_TRADE | Skip - low probability |
 
@@ -1230,10 +1251,10 @@ for chunk in chunks_of_20:
 **Agent:** Follows 8-step workflow:
 1. `get_raw_scan_candidates(direction="LONG")` → get symbols
 2. `scan_long_candidates(candidates=chunk)` → 20 at a time, show each batch
-3. Show LONG top results (all 4/4 or top 5)
+3. Show LONG top results (all 5/5or top 5)
 4. `get_raw_scan_candidates(direction="SHORT")` → get symbols
 5. `scan_short_candidates(candidates=chunk)` → 20 at a time, show each batch
-6. Show SHORT top results (all 4/4 or top 5)
+6. Show SHORT top results (all 5/5or top 5)
 7. Display final summary table
 8. STOP
 
@@ -1282,10 +1303,10 @@ for chunk in chunks_of_20:
 ### Trading Plan Rules
 
 **GENERATE full options trading plan ONLY for:**
-- ✅ STRONG_BUY (4/4 gates, score ≥80)
-- ✅ BUY (3/4 gates, score ≥65)
-- ✅ SELL (3/4 gates, score ≥65)
-- ✅ STRONG_SELL (4/4 gates, score ≥80)
+- ✅ STRONG_BUY (5/5 gates, score ≥80)
+- ✅ BUY (4/5 gates, score ≥65)
+- ✅ SELL (4/5 gates, score ≥65)
+- ✅ STRONG_SELL (5/5 gates, score ≥80)
 
 **DO NOT generate trading plan for:**
 - ❌ WATCH (2/4 gates, score 50-64) - No conviction, wait
