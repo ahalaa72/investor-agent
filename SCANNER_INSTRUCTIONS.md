@@ -4,6 +4,20 @@ Instructions for the AI Agent to generate Market Opportunity Scanner reports.
 
 ---
 
+## 🚨 QUESTRADE TOKEN WARNING 🚨
+
+**NEVER write Python scripts to access Questrade or get quotes** - This consumes the single-use refresh token.
+
+**ALWAYS use MCP tools ONLY:**
+
+- `get_questrade_quotes()` for real-time prices
+- `scan_long_candidates()` / `scan_short_candidates()` for opportunities
+- All other investor-agent MCP tools
+
+If HTTP 400 errors occur, token is consumed. See [CLAUDE.md](CLAUDE.md) or skills/investor_agent/SKILL.md for recovery.
+
+---
+
 ## CRITICAL PRINCIPLE: CATALYST IS MANDATORY
 
 **NO CATALYST = NO TRADE. Period.**
@@ -79,6 +93,44 @@ You are a **Professional Market Analyst** specializing in **Al Brooks price acti
 
 ---
 
+## 🚨 MANDATORY: CACHE-FIRST SCANNING WORKFLOW 🚨
+
+**ALWAYS CHECK CACHE FIRST BEFORE SCANNING NEW STOCKS**
+
+### Why Cache-First
+
+- **Instant results** - User sees opportunities in seconds, not minutes
+- **No hanging** - Don't make user wait with no progress
+- **Better UX** - Show something immediately while scanning for new
+
+### CORRECT Workflow (ALWAYS USE THIS)
+
+```python
+# STEP 1: Get cached candidates FIRST (INSTANT)
+cached = get_best_cached_trades(direction="SHORT", days=7, top_n=5, min_gates=3)
+→ SHOW THESE IMMEDIATELY TO USER
+→ Say: "Here are 5 cached SHORT candidates from last 7 days, scanning for new..."
+
+# STEP 2: Scan for NEW candidates (BATCHES OF 20 with LIVE PROGRESS)
+new = scan_short_candidates(batch_size=20, max_scan=500, top_n=5)
+→ Scanner processes in batches of 20
+→ Shows progress after EACH batch
+→ NO HANGING for minutes
+
+# STEP 3: Present combined results
+→ Show both cached + new candidates
+→ Mark which are fresh vs cached
+```
+
+### WRONG Workflow (NEVER DO THIS)
+
+```python
+# ❌ DON'T: Jump straight to scanning
+scan_short_candidates()  # User waits 5+ minutes with no feedback
+```
+
+---
+
 ## NEW: DB CACHING OPTIMIZATION (January 2026)
 
 ### Available DB Cache Tools
@@ -86,11 +138,11 @@ You are a **Professional Market Analyst** specializing in **Al Brooks price acti
 | Tool | Purpose | When to Use |
 |------|---------|-------------|
 | `get_cached_predictions(direction, days)` | Get list of cached tickers | BEFORE scanning - skip repeated analysis |
-| `get_best_cached_trades(direction, days, top_n, min_gates)` | Get best trades from cache sorted by score | **WITHOUT scanning** - quick review of opportunities |
+| `get_best_cached_trades(direction, days, top_n, min_gates)` | Get best trades from cache sorted by score | **ALWAYS USE FIRST** - instant results |
 
 ---
 
-### New Tool: `get_best_cached_trades(direction, days, top_n, min_gates)`
+### Tool: `get_best_cached_trades(direction, days, top_n, min_gates)`
 
 **Use this when you want best trading opportunities WITHOUT running a new scan.**
 

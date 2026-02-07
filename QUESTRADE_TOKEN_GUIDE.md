@@ -194,6 +194,51 @@ def _get_client(self) -> Questrade:
 
 ## Troubleshooting
 
+### Error: "HTTP Error 403: Forbidden" (CRITICAL)
+
+**Cause:** Cloudflare protection blocking requests without User-Agent header (error code: 1010)
+
+**Background:** As of January 2026, Questrade's API is protected by Cloudflare WAF (Web Application Firewall) which blocks requests that don't include a `User-Agent` header. The standard `questrade-api` Python library uses `urllib.request.urlopen()` which doesn't send User-Agent headers by default.
+
+**Solution:**
+
+The fix has been implemented in `investor_agent/questrade.py` (lines 38-61) as a monkey-patch that wraps `urllib.request.urlopen` to automatically add User-Agent headers.
+
+**Verify the fix is present:**
+
+```bash
+docker exec investor-agent-mcp grep -A 5 "_urlopen_with_user_agent" /app/investor_agent/questrade.py
+```
+
+**Test if Cloudflare is blocking:**
+
+```bash
+# Without User-Agent (will fail with 403)
+docker exec investor-agent-mcp python -c "
+import urllib.request
+try:
+    urllib.request.urlopen('https://login.questrade.com/oauth2/token?grant_type=refresh_token&refresh_token=TEST')
+except urllib.error.HTTPError as e:
+    print(f'{e.code}: {e.read().decode()}')
+"
+# Output: 403: error code: 1010
+
+# With User-Agent (will pass Cloudflare, may fail with 400 for bad token)
+docker exec investor-agent-mcp python -c "
+import urllib.request
+req = urllib.request.Request('https://login.questrade.com/oauth2/token?grant_type=refresh_token&refresh_token=TEST',
+                              headers={'User-Agent': 'Mozilla/5.0'})
+try:
+    urllib.request.urlopen(req)
+except urllib.error.HTTPError as e:
+    print(f'{e.code}: {e.read().decode()}')
+"
+# Output: 400: (different error, Cloudflare allowed it)
+```
+
+**If the fix is missing:**
+You need to rebuild the container with the updated code. See `QUESTRADE_SETUP.md` for details.
+
 ### Error: "HTTP Error 400: Bad Request"
 
 **Cause:** Refresh token has been consumed

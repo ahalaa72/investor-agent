@@ -63,18 +63,25 @@ This multi-layered approach ensures reliable data delivery while respecting API 
 
 ### Docker Setup
 
-```bash
-# Build the Docker image
-docker build -t investor-agent-mcp .
+**⚠️ IMPORTANT:** For Questrade integration, see [`QUESTRADE_SETUP.md`](QUESTRADE_SETUP.md) for complete setup instructions including the required Cloudflare User-Agent fix.
 
-# Run the container with Questrade token
+```bash
+# Quick setup using rebuild.sh (recommended)
+bash rebuild.sh
+
+# Manual setup
+docker build -t investor-agent-mcp .
+docker volume create questrade-tokens
 docker run -d --name investor-agent-mcp \
-  -e QUESTRADE_REFRESH_TOKEN="your_token_here" \
+  -v questrade-tokens:/root \
+  --env-file .env \
   investor-agent-mcp
 
 # Or use docker-compose with .env file
 docker-compose up -d
 ```
+
+**Note:** As of January 2026, Questrade API is protected by Cloudflare and requires User-Agent headers. This is handled automatically by the code, but initial setup requires following the guide.
 
 ## Prerequisites
 
@@ -110,14 +117,32 @@ uvx "investor-agent[ta,questrade]"
 
 ### Questrade Setup
 
-To use Questrade features, you need to:
+**⚠️ IMPORTANT:** Questrade API setup requires special configuration due to Cloudflare protection. Follow these guides:
+
+- **[`QUESTRADE_SETUP.md`](QUESTRADE_SETUP.md)** - Complete setup guide with Cloudflare User-Agent fix
+- **[`QUESTRADE_TOKEN_GUIDE.md`](QUESTRADE_TOKEN_GUIDE.md)** - Token lifecycle and troubleshooting
+
+**Quick Setup:**
 
 1. Install with Questrade support: `uvx "investor-agent[questrade]"` or `uv pip install "investor-agent[questrade]"`
 2. Generate a refresh token from [Questrade API Portal](https://www.questrade.com/api/)
-3. Set the environment variable:
+3. For Docker deployment (recommended):
+
+   ```bash
+   # Add token to .env file
+   echo "QUESTRADE_REFRESH_TOKEN=your_token_here" >> .env
+
+   # Run rebuild script (handles volume setup)
+   bash rebuild.sh
+   ```
+
+4. For local development:
+
    ```bash
    export QUESTRADE_REFRESH_TOKEN="your_refresh_token_here"
    ```
+
+**Known Issue:** If you see `HTTP Error 403: Forbidden`, the User-Agent fix may be missing. See `QUESTRADE_SETUP.md` for resolution.
 
 ## Tools
 

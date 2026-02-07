@@ -2646,6 +2646,7 @@ def _calculate_liquidity_score(
         oi_score = 0
         warnings.append(f"🚫 REJECT: OI {open_interest} < {params['min_open_interest']} min")
         factors.append(f"OI {open_interest}: +{oi_score:.0f}")
+    score += oi_score
 
     # 3. Daily Volume (20% weight)
     if daily_volume >= params['min_volume'] * 10:  # 500+ volume
@@ -2663,6 +2664,7 @@ def _calculate_liquidity_score(
         if daily_volume < params['min_volume'] and open_interest < params['min_open_interest'] * 5:
             warnings.append(f"⚠️ Low volume ({daily_volume}) and OI")
         factors.append(f"Volume {daily_volume:,}: +{vol_score:.0f}")
+    score += vol_score
 
     # 4. Underlying Volume (10% weight)
     if underlying_volume >= params['min_underlying_volume'] * 2:
@@ -8417,7 +8419,9 @@ def get_questrade_quotes(symbols: list[str]) -> dict[str, Any]:
         client = get_questrade_client()
         quotes = client.get_quotes(symbols)
         quotes['data_source'] = 'QUESTRADE'
-        logger.info(f"Retrieved quotes for {len(symbols)} symbols from Questrade")
+        quotes['data_quality'] = 'REAL-TIME (0 delay)'
+        quotes['note'] = 'Real-time data from Questrade API'
+        logger.info(f"✓ Retrieved quotes for {len(symbols)} symbols from Questrade (real-time)")
         return quotes
 
     except Exception as questrade_error:
@@ -8454,9 +8458,13 @@ def get_questrade_quotes(symbols: list[str]) -> dict[str, Any]:
             result = {
                 'quotes': yf_quotes,
                 'data_source': 'YAHOO_FINANCE',
-                'note': 'Questrade unavailable, using Yahoo Finance (may be delayed 15-20 min)'
+                'WARNING': '⚠️ USING DELAYED DATA - Questrade unavailable, falling back to Yahoo Finance',
+                'data_quality': 'DELAYED (15-20 min old)',
+                'note': 'This is NOT real-time data. Verify current price with your broker before trading.',
+                'questrade_error': str(questrade_error),
+                'recommendation': 'Fix Questrade token to get real-time data. See CLAUDE.md troubleshooting section.'
             }
-            logger.info(f"Retrieved quotes for {len(symbols)} symbols from Yahoo Finance (fallback)")
+            logger.warning(f"Retrieved quotes for {len(symbols)} symbols from Yahoo Finance (FALLBACK - data may be stale)")
             return result
 
         except Exception as yf_error:
@@ -8553,7 +8561,9 @@ def get_questrade_candles(
         client = get_questrade_client()
         candles = client.get_candles(symbol, interval, start_time, end_time)
         candles['data_source'] = 'QUESTRADE'
-        logger.info(f"Retrieved candles for {symbol} from Questrade")
+        candles['data_quality'] = 'REAL-TIME (0 delay)'
+        candles['note'] = 'Real-time historical data from Questrade API'
+        logger.info(f"✓ Retrieved candles for {symbol} from Questrade (real-time)")
         return candles
 
     except Exception as questrade_error:
@@ -8634,9 +8644,13 @@ def get_questrade_candles(
             result = {
                 'candles': candles_list,
                 'data_source': 'YAHOO_FINANCE',
-                'note': f'Questrade unavailable, using Yahoo Finance. Interval mapped: {interval} -> {yf_interval}'
+                'WARNING': '⚠️ USING DELAYED DATA - Questrade unavailable, falling back to Yahoo Finance',
+                'data_quality': 'DELAYED (15-20 min old)',
+                'note': f'Interval mapped: {interval} -> {yf_interval}. This is NOT real-time data.',
+                'questrade_error': str(questrade_error),
+                'recommendation': 'Fix Questrade token to get real-time data. See CLAUDE.md troubleshooting section.'
             }
-            logger.info(f"Retrieved {len(candles_list)} candles for {symbol} from Yahoo Finance (fallback)")
+            logger.warning(f"Retrieved {len(candles_list)} candles for {symbol} from Yahoo Finance (FALLBACK - data may be stale)")
             return result
 
         except Exception as yf_error:
@@ -12089,8 +12103,11 @@ def _scan_one_direction(
             log_progress(f"[{direction} {global_idx}/{raw_candidates_count}] 🔍 Checking {symbol}...")
 
             try:
-                # Pass report_type="scanner" for auto-storage tracking
-                signal = generate_trading_signal(ticker=symbol, direction=direction, report_type="scanner")
+                # Fetch all analysis data ONCE
+                cached_data = fetch_analysis_data(symbol)
+
+                # Pass cached_data to avoid redundant API calls
+                signal = generate_trading_signal(ticker=symbol, direction=direction, report_type="scanner", cached_data=cached_data)
                 gate_status = signal.get('gate_status', {})
                 core_gates_passed = sum(1 for g in ['catalyst', 'freshness', 'brooks', 'quality'] if gate_status.get(g) == "PASS")
                 all_gates_passed = sum(1 for g in gate_status.values() if g == "PASS")
@@ -12616,8 +12633,11 @@ def scan_market_opportunities(
             log_progress(f"[LONG {total_scanned_long}/{len(all_long_candidates)}] Checking {symbol}...")
 
             try:
+                # Fetch all analysis data ONCE
+                cached_data = fetch_analysis_data(symbol)
+
                 # Run FULL 4-gate validation - let data determine direction
-                signal = generate_trading_signal(ticker=symbol, direction=None)
+                signal = generate_trading_signal(ticker=symbol, direction=None, cached_data=cached_data)
 
                 gate_status = signal.get('gate_status', {})
                 gates_passed = sum(1 for g in gate_status.values() if g == "PASS")
@@ -12684,8 +12704,11 @@ def scan_market_opportunities(
             log_progress(f"[SHORT {total_scanned_short}/{len(all_short_candidates)}] Checking {symbol}...")
 
             try:
+                # Fetch all analysis data ONCE
+                cached_data = fetch_analysis_data(symbol)
+
                 # Let data determine direction - verify SHORT is truly warranted
-                signal = generate_trading_signal(ticker=symbol, direction=None)
+                signal = generate_trading_signal(ticker=symbol, direction=None, cached_data=cached_data)
 
                 gate_status = signal.get('gate_status', {})
                 gates_passed = sum(1 for g in gate_status.values() if g == "PASS")
@@ -16570,13 +16593,112 @@ def analyze_competitors(ticker: str, top_n: int = 5) -> dict[str, Any]:
     return result
 
 
+def fetch_analysis_data(ticker: str) -> dict[str, Any]:
+    """
+    Fetch all analysis data ONCE for a ticker.
+
+    This function consolidates all 9 API calls needed for trading signal generation
+    to avoid redundant calls. The returned dict can be passed to generate_trading_signal
+    via the cached_data parameter.
+
+    Returns:
+        dict with keys:
+        - quotes: Questrade quotes data
+        - catalyst: Catalyst strength analysis
+        - volume: Volume/CVD analysis with Dalio metrics
+        - relative_strength: RS Score analysis
+        - options: Options McMillan analysis (if available)
+        - institutional: Institutional holders data
+        - quality: Quality/F-Score analysis
+        - exhaustion: Exhaustion/freshness analysis
+        - technical: Technical analysis (RSI, MACD, Brooks, etc.)
+        - ohlcv: OHLCV price data
+    """
+    ticker = validate_ticker(ticker)
+    cached = {}
+
+    # 1. Quotes (Questrade or Yahoo fallback)
+    try:
+        cached['quotes'] = get_questrade_quotes([ticker])
+    except Exception as e:
+        logger.warning(f"Failed to fetch quotes for {ticker}: {e}")
+        cached['quotes'] = None
+
+    # 2. Catalyst analysis
+    try:
+        cached['catalyst'] = detect_catalyst_strength(ticker)
+    except Exception as e:
+        logger.warning(f"Failed to fetch catalyst for {ticker}: {e}")
+        cached['catalyst'] = None
+
+    # 3. Volume/CVD with Dalio metrics
+    try:
+        cached['volume'] = analyze_volume_tool(ticker, period="3mo")
+    except Exception as e:
+        logger.warning(f"Failed to fetch volume data for {ticker}: {e}")
+        cached['volume'] = None
+
+    # 4. Relative Strength Score
+    try:
+        cached['relative_strength'] = calculate_relative_strength_tool(ticker=ticker, benchmark="SPY", period="3mo")
+    except Exception as e:
+        logger.warning(f"Failed to fetch RS Score for {ticker}: {e}")
+        cached['relative_strength'] = None
+
+    # 5. Options analysis (if available)
+    try:
+        t_temp = yf.Ticker(ticker)
+        has_options = len(t_temp.options) > 0 if hasattr(t_temp, 'options') else False
+        if has_options:
+            cached['options'] = analyze_options_mcmillan(ticker)
+        else:
+            cached['options'] = None
+    except Exception as e:
+        logger.warning(f"Failed to fetch options data for {ticker}: {e}")
+        cached['options'] = None
+
+    # 6. Institutional holders
+    try:
+        cached['institutional'] = get_institutional_holders(ticker=ticker)
+    except Exception as e:
+        logger.warning(f"Failed to fetch institutional data for {ticker}: {e}")
+        cached['institutional'] = None
+
+    # 7. Quality/F-Score
+    try:
+        cached['quality'] = calculate_quality_score(ticker=ticker)
+    except Exception as e:
+        logger.warning(f"Failed to fetch quality score for {ticker}: {e}")
+        cached['quality'] = None
+
+    # 8. Exhaustion/Freshness
+    try:
+        from investor_agent.technical_analysis_bootstrap import calculate_exhaustion_score
+        cached['exhaustion'] = calculate_exhaustion_score(ticker, period="3mo")
+    except Exception as e:
+        logger.warning(f"Failed to fetch exhaustion data for {ticker}: {e}")
+        cached['exhaustion'] = None
+
+    # 9. Technical analysis + OHLCV
+    try:
+        cached['ohlcv'] = _get_ohlcv_cached(ticker, period="3mo")
+        cached['technical'] = analyze_technical(ticker, period="3mo", include_ml_analysis=False, include_trend_score=False)
+    except Exception as e:
+        logger.warning(f"Failed to fetch technical data for {ticker}: {e}")
+        cached['ohlcv'] = None
+        cached['technical'] = None
+
+    return cached
+
+
 @mcp.tool()
 def generate_trading_signal(
     ticker: str,
     direction: Literal["LONG", "SHORT"] | None = None,
     account_size: float = 10000.0,
     auto_store: bool = True,
-    report_type: str = "comprehensive"
+    report_type: str = "comprehensive",
+    cached_data: dict[str, Any] | None = None
 ) -> dict[str, Any]:
     """
     Generate actionable trading signal with complete trading plan.
@@ -16662,171 +16784,245 @@ def generate_trading_signal(
     }
 
     try:
-        # Get current price
-        t = yf.Ticker(ticker)
-        info = t.info
-        current_price = info.get('currentPrice') or info.get('regularMarketPrice', 0)
+        # Get current price - TRY QUESTRADE FIRST (real-time), fallback to Yahoo Finance
+        current_price = 0
+        data_source = "UNKNOWN"
+        quotes_response = None
+
+        # Check cache first
+        if cached_data and 'quotes' in cached_data and cached_data['quotes']:
+            quotes_response = cached_data['quotes']
+            logger.info(f"✓ Using CACHED quotes for {ticker}")
+        else:
+            # Fetch if not cached
+            try:
+                # PRIORITY 1: Questrade (real-time)
+                quotes_response = get_questrade_quotes([ticker])
+            except Exception as e:
+                logger.warning(f"Questrade quotes failed for {ticker}, falling back to Yahoo Finance: {e}")
+
+        # Extract price from quotes_response
+        try:
+            if quotes_response and 'quotes' in quotes_response and len(quotes_response['quotes']) > 0:
+                quote = quotes_response['quotes'][0]
+                current_price = quote.get('lastTradePrice', 0)
+                data_source = quotes_response.get('data_source', 'QUESTRADE')
+                if not (cached_data and 'quotes' in cached_data):
+                    logger.info(f"✓ Using {data_source} price for {ticker}: ${current_price}")
+        except Exception as e:
+            logger.warning(f"Failed to extract price from quotes: {e}")
+
+        # FALLBACK: Yahoo Finance if Questrade failed
+        if not current_price:
+            t = yf.Ticker(ticker)
+            info = t.info
+            current_price = info.get('currentPrice') or info.get('regularMarketPrice', 0)
+            data_source = "YAHOO_FINANCE"
+            logger.warning(f"⚠️ Using {data_source} price for {ticker}: ${current_price} (may be delayed)")
+            result["warnings"].append(f"Using delayed Yahoo Finance data - Questrade unavailable")
 
         if not current_price:
-            result["warnings"].append("Could not get current price")
+            result["warnings"].append("Could not get current price from any source")
             return result
 
+        # Store data source in result for transparency
+        result["price_data_source"] = data_source
         result["current_price"] = current_price
 
         # ========== STEP 1: COLLECT INDEPENDENT DIRECTION FINDINGS ==========
 
         # Get catalyst data (now returns catalyst_direction)
         catalyst_data = None
-        try:
-            catalyst_data = detect_catalyst_strength(ticker)
+        if cached_data and 'catalyst' in cached_data:
+            catalyst_data = cached_data['catalyst']
+        else:
+            try:
+                catalyst_data = detect_catalyst_strength(ticker)
+            except Exception as e:
+                result["warnings"].append(f"Catalyst check failed: {e}")
+
+        if catalyst_data:
             catalyst_dir = catalyst_data.get("catalyst_direction", "NEUTRAL")
             direction_votes["catalyst"] = catalyst_dir
-        except Exception as e:
-            result["warnings"].append(f"Catalyst check failed: {e}")
 
         # Get volume/CVD data
         volume_data = None
-        try:
-            volume_data = analyze_volume_tool(ticker, period="3mo")
-            if isinstance(volume_data, dict):
-                cvd_assessment = volume_data.get("cvd_analysis", {}).get("assessment", "")
-                if "BULLISH" in cvd_assessment.upper():
-                    direction_votes["cvd"] = "BULLISH"
-                elif "BEARISH" in cvd_assessment.upper():
-                    direction_votes["cvd"] = "BEARISH"
+        if cached_data and 'volume' in cached_data:
+            volume_data = cached_data['volume']
+        else:
+            try:
+                volume_data = analyze_volume_tool(ticker, period="3mo")
+            except Exception as e:
+                result["warnings"].append(f"Volume analysis failed: {e}")
 
-                # NEW: Dollar Flow as PRIMARY signal (80% accurate in backtest)
-                # Dollar Flow follows the money - most reliable indicator
-                dalio_metrics = volume_data.get("dalio_metrics", {})
-                cdf_20d = dalio_metrics.get("cumulative_dollar_flow", {}).get("20d", 0)
-                # Threshold: $10M to avoid noise
-                if cdf_20d > 10_000_000:
-                    direction_votes["dollar_flow"] = "BULLISH"
-                elif cdf_20d < -10_000_000:
-                    direction_votes["dollar_flow"] = "BEARISH"
-                # else stays NEUTRAL
-        except Exception as e:
-            result["warnings"].append(f"Volume analysis failed: {e}")
+        if isinstance(volume_data, dict):
+            cvd_assessment = volume_data.get("cvd_analysis", {}).get("assessment", "")
+            if "BULLISH" in cvd_assessment.upper():
+                direction_votes["cvd"] = "BULLISH"
+            elif "BEARISH" in cvd_assessment.upper():
+                direction_votes["cvd"] = "BEARISH"
+
+            # NEW: Dollar Flow as PRIMARY signal (80% accurate in backtest)
+            # Dollar Flow follows the money - most reliable indicator
+            dalio_metrics = volume_data.get("dalio_metrics", {})
+            cdf_20d = dalio_metrics.get("cumulative_dollar_flow", {}).get("20d", 0)
+            # Threshold: $10M to avoid noise
+            if cdf_20d > 10_000_000:
+                direction_votes["dollar_flow"] = "BULLISH"
+            elif cdf_20d < -10_000_000:
+                direction_votes["dollar_flow"] = "BEARISH"
+            # else stays NEUTRAL
 
         # Get RS Score (MOST IMPORTANT long-term indicator - 40% weight)
         relative_strength = None
-        try:
-            relative_strength = calculate_relative_strength_tool(ticker=ticker, benchmark="SPY", period="3mo")
-            if relative_strength and relative_strength.get("rs_score") is not None:
-                rs_score = relative_strength["rs_score"]
+        if cached_data and 'relative_strength' in cached_data:
+            relative_strength = cached_data['relative_strength']
+        else:
+            try:
+                relative_strength = calculate_relative_strength_tool(ticker=ticker, benchmark="SPY", period="3mo")
+            except Exception as e:
+                result["warnings"].append(f"RS Score analysis failed: {e}")
+                direction_votes["rs_score"] = "NEUTRAL"
 
-                # Strong thresholds - RS Score is critical for direction
-                if rs_score >= 80:  # Market leader
-                    direction_votes["rs_score"] = "LONG"
-                elif rs_score >= 60:  # Above average strength
-                    direction_votes["rs_score"] = "LONG"
-                elif rs_score <= 20:  # Market laggard
-                    direction_votes["rs_score"] = "SHORT"
-                elif rs_score <= 40:  # Below average strength
-                    direction_votes["rs_score"] = "SHORT"
-                # else stays NEUTRAL (41-59 range is neutral)
-        except Exception as e:
-            result["warnings"].append(f"RS Score analysis failed: {e}")
-            direction_votes["rs_score"] = "NEUTRAL"
+        if relative_strength and relative_strength.get("rs_score") is not None:
+            rs_score = relative_strength["rs_score"]
+
+            # Strong thresholds - RS Score is critical for direction
+            if rs_score >= 80:  # Market leader
+                direction_votes["rs_score"] = "LONG"
+            elif rs_score >= 60:  # Above average strength
+                direction_votes["rs_score"] = "LONG"
+            elif rs_score <= 20:  # Market laggard
+                direction_votes["rs_score"] = "SHORT"
+            elif rs_score <= 40:  # Below average strength
+                direction_votes["rs_score"] = "SHORT"
+            # else stays NEUTRAL (41-59 range is neutral)
 
         # Get P/C Contrarian vote (from options analysis)
         options_analysis = None
-        try:
-            # Check if ticker has options
-            t_temp = yf.Ticker(ticker)
-            has_options = len(t_temp.options) > 0 if hasattr(t_temp, 'options') else False
+        if cached_data and 'options' in cached_data:
+            options_analysis = cached_data['options']
+        else:
+            try:
+                # Check if ticker has options
+                t_temp = yf.Ticker(ticker)
+                has_options = len(t_temp.options) > 0 if hasattr(t_temp, 'options') else False
 
-            if has_options:
-                options_analysis = analyze_options_mcmillan(ticker)
-                if options_analysis and "put_call_ratio" in options_analysis:
-                    pc_data = options_analysis["put_call_ratio"]
-                    volume_pc = pc_data.get("volume_pc_ratio")
+                if has_options:
+                    options_analysis = analyze_options_mcmillan(ticker)
+            except Exception as e:
+                result["warnings"].append(f"P/C contrarian analysis failed: {e}")
 
-                    if volume_pc is not None:
-                        # Contrarian interpretation (opposite of market sentiment)
-                        if volume_pc < 0.5:  # Extreme call buying = greed
-                            direction_votes["pc_contrarian"] = "SHORT"  # Contrarian bearish
-                        elif volume_pc > 1.5:  # Extreme put buying = fear
-                            direction_votes["pc_contrarian"] = "LONG"   # Contrarian bullish
-                        # else stays NEUTRAL
-        except Exception as e:
-            result["warnings"].append(f"P/C contrarian analysis failed: {e}")
+        if options_analysis and "put_call_ratio" in options_analysis:
+            pc_data = options_analysis["put_call_ratio"]
+            volume_pc = pc_data.get("volume_pc_ratio")
+
+            if volume_pc is not None:
+                # Contrarian interpretation (opposite of market sentiment)
+                if volume_pc < 0.5:  # Extreme call buying = greed
+                    direction_votes["pc_contrarian"] = "SHORT"  # Contrarian bearish
+                elif volume_pc > 1.5:  # Extreme put buying = fear
+                    direction_votes["pc_contrarian"] = "LONG"   # Contrarian bullish
+                # else stays NEUTRAL
 
         # Get Institutional Flow vote
         institutional = None
-        try:
-            institutional = get_institutional_holders(ticker=ticker)
-            if institutional and "holders" in institutional:
-                holders = institutional["holders"]
+        if cached_data and 'institutional' in cached_data:
+            institutional = cached_data['institutional']
+        else:
+            try:
+                institutional = get_institutional_holders(ticker=ticker)
+            except Exception as e:
+                result["warnings"].append(f"Institutional flow analysis failed: {e}")
 
-                # Count accumulation vs distribution among top holders
-                accumulating = 0
-                distributing = 0
+        if institutional and "holders" in institutional:
+            holders = institutional["holders"]
 
-                for holder in holders[:10]:  # Top 10 institutions
-                    change_pct = holder.get("pct_change", 0)
-                    if change_pct > 10:  # Meaningful accumulation (>10% increase)
-                        accumulating += 1
-                    elif change_pct < -10:  # Meaningful distribution (>10% decrease)
-                        distributing += 1
+            # Count accumulation vs distribution among top holders
+            accumulating = 0
+            distributing = 0
 
-                # Require strong imbalance (2:1 ratio)
-                if accumulating > distributing * 2:
-                    direction_votes["institutional"] = "LONG"
-                elif distributing > accumulating * 2:
-                    direction_votes["institutional"] = "SHORT"
-                # else stays NEUTRAL
-        except Exception as e:
-            result["warnings"].append(f"Institutional flow analysis failed: {e}")
+            for holder in holders[:10]:  # Top 10 institutions
+                change_pct = holder.get("pct_change", 0)
+                if change_pct > 10:  # Meaningful accumulation (>10% increase)
+                    accumulating += 1
+                elif change_pct < -10:  # Meaningful distribution (>10% decrease)
+                    distributing += 1
+
+            # Require strong imbalance (2:1 ratio)
+            if accumulating > distributing * 2:
+                direction_votes["institutional"] = "LONG"
+            elif distributing > accumulating * 2:
+                direction_votes["institutional"] = "SHORT"
+            # else stays NEUTRAL
 
         # Get F-Score vote (quality indicator)
         quality_analysis = None
-        try:
-            quality_analysis = calculate_quality_score(ticker=ticker)
-            if quality_analysis and "f_score" in quality_analysis:
-                f_score = quality_analysis.get("f_score")
+        if cached_data and 'quality' in cached_data:
+            quality_analysis = cached_data['quality']
+        else:
+            try:
+                quality_analysis = calculate_quality_score(ticker=ticker)
+            except Exception as e:
+                result["warnings"].append(f"F-Score analysis failed: {e}")
 
-                if f_score is not None:
-                    if f_score >= 7:  # High quality (strong fundamentals)
-                        direction_votes["f_score"] = "LONG"
-                    elif f_score <= 3:  # Low quality (weak fundamentals)
-                        direction_votes["f_score"] = "SHORT"
-                    # else stays NEUTRAL (4-6 range)
-        except Exception as e:
-            result["warnings"].append(f"F-Score analysis failed: {e}")
+        if quality_analysis and "f_score" in quality_analysis:
+            f_score = quality_analysis.get("f_score")
+
+            if f_score is not None:
+                if f_score >= 7:  # High quality (strong fundamentals)
+                    direction_votes["f_score"] = "LONG"
+                elif f_score <= 3:  # Low quality (weak fundamentals)
+                    direction_votes["f_score"] = "SHORT"
+                # else stays NEUTRAL (4-6 range)
 
         # Get exhaustion data (now returns fresh_direction)
         exhaustion_data = None
-        try:
-            from investor_agent.technical_analysis_bootstrap import calculate_exhaustion_score
-            exhaustion_data = calculate_exhaustion_score(ticker, period="3mo")  # No direction!
+        if cached_data and 'exhaustion' in cached_data:
+            exhaustion_data = cached_data['exhaustion']
+        else:
+            try:
+                from investor_agent.technical_analysis_bootstrap import calculate_exhaustion_score
+                exhaustion_data = calculate_exhaustion_score(ticker, period="3mo")  # No direction!
+            except Exception as e:
+                result["warnings"].append(f"Exhaustion check failed: {e}")
+
+        if exhaustion_data:
             fresh_dir = exhaustion_data.get("fresh_direction", "NEUTRAL")
             direction_votes["exhaustion"] = fresh_dir
-        except Exception as e:
-            result["warnings"].append(f"Exhaustion check failed: {e}")
 
         # Get Brooks Always-In direction
         ohlcv = None
         technical_data = None
         brooks_always_in = "NEUTRAL"
-        try:
-            ohlcv = _get_ohlcv_cached(ticker, period="3mo")
-            technical_data = analyze_technical(ticker, period="3mo", include_ml_analysis=False, include_trend_score=False)
 
-            # Get Always-In direction independently (not for a specific trade)
-            brooks_analyzer = AlBrooksAnalyzer()
-            # Call with a neutral analysis first to get Always-In
-            temp_brooks = brooks_analyzer.analyze(
-                ticker=ticker,
-                direction="long",  # Doesn't matter - we just want always_in
-                ohlcv_data=ohlcv,
-                technical_data=technical_data or {}
-            )
-            if isinstance(temp_brooks, dict):
-                brooks_always_in = temp_brooks.get("always_in", "NEUTRAL")
-                direction_votes["brooks"] = brooks_always_in
-        except Exception as e:
-            result["warnings"].append(f"Brooks analysis failed: {e}")
+        # Check cache for OHLCV and technical data
+        if cached_data and 'ohlcv' in cached_data and 'technical' in cached_data:
+            ohlcv = cached_data['ohlcv']
+            technical_data = cached_data['technical']
+        else:
+            try:
+                ohlcv = _get_ohlcv_cached(ticker, period="3mo")
+                technical_data = analyze_technical(ticker, period="3mo", include_ml_analysis=False, include_trend_score=False)
+            except Exception as e:
+                result["warnings"].append(f"Failed to fetch technical data: {e}")
+
+        if ohlcv is not None and technical_data is not None:
+            try:
+                # Get Always-In direction independently (not for a specific trade)
+                brooks_analyzer = AlBrooksAnalyzer()
+                # Call with a neutral analysis first to get Always-In
+                temp_brooks = brooks_analyzer.analyze(
+                    ticker=ticker,
+                    direction="long",  # Doesn't matter - we just want always_in
+                    ohlcv_data=ohlcv,
+                    technical_data=technical_data or {}
+                )
+                if isinstance(temp_brooks, dict):
+                    brooks_always_in = temp_brooks.get("always_in", "NEUTRAL")
+                    direction_votes["brooks"] = brooks_always_in
+            except Exception as e:
+                result["warnings"].append(f"Brooks analysis failed: {e}")
 
         # ========== STEP 2: WEIGHTED VOTING SYSTEM (v2) ==========
         # Long-term indicators (40%): RS Score (most important)
@@ -17316,7 +17512,8 @@ def generate_trading_signal(
         # LONG: Want HIGH quality (score >= 50, no major red flags)
         # SHORT: Want LOW quality / defects (score <= 40 OR red_flags OR distressed)
         try:
-            quality_data = calculate_quality_score(ticker)
+            # Use cached quality_analysis if available
+            quality_data = quality_analysis if quality_analysis else calculate_quality_score(ticker)
 
             if isinstance(quality_data, dict):
                 quality_score = quality_data.get("quality_score", 0)
@@ -17373,15 +17570,17 @@ def generate_trading_signal(
             from investor_agent.options.decision_framework import should_use_options
 
             # Get options data for Gate 5 validation
-            options_data = None
+            # Use cached options_analysis if available
+            options_data = options_analysis if options_analysis else None
             iv_skew_data = None
             term_structure_data = None
 
-            try:
-                # Use existing analyze_options_mcmillan (already has liquidity + IV)
-                options_data = analyze_options_mcmillan(ticker, holding_period_days=45)
-            except Exception as e:
-                logger.debug(f"Options data fetch failed: {e}")
+            if options_data is None:
+                try:
+                    # Use existing analyze_options_mcmillan (already has liquidity + IV)
+                    options_data = analyze_options_mcmillan(ticker, holding_period_days=45)
+                except Exception as e:
+                    logger.debug(f"Options data fetch failed: {e}")
 
             try:
                 # Get IV skew for strategy selection
@@ -17635,7 +17834,13 @@ def generate_trading_signal(
 
         # ========== OPTIONS ANALYSIS (McMillan) ==========
         try:
-            options_data = analyze_options_mcmillan(ticker)
+            # Use cached options_analysis if available
+            if options_analysis is None and options_data is None:
+                options_data = analyze_options_mcmillan(ticker)
+            else:
+                # Reuse already fetched data
+                options_data = options_analysis if options_analysis else options_data
+
             if isinstance(options_data, dict) and "error" not in options_data:
                 iv_analysis = options_data.get("iv_analysis", {})
                 pc_analysis = options_data.get("put_call_ratio", {})

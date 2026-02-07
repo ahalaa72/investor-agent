@@ -8,6 +8,20 @@ Fast analysis with bullet points for data, detailed Al Brooks, McMillan Options,
 
 ---
 
+## 🚨 QUESTRADE TOKEN WARNING 🚨
+
+**NEVER write Python scripts to access data** - This consumes the single-use refresh token.
+
+**ALWAYS use MCP tools ONLY:**
+
+- `get_questrade_quotes()` for real-time prices
+- `get_ticker_data()` for company data
+- All other investor-agent MCP tools
+
+If HTTP 400 errors occur, token is consumed. See [CLAUDE.md](CLAUDE.md) for recovery.
+
+---
+
 ## CRITICAL RULES
 
 ### Data Integrity

@@ -12,6 +12,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+import urllib.request
 
 from questrade_api import Questrade
 from tenacity import (
@@ -34,6 +35,32 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[logging.StreamHandler(sys.stderr)]
 )
+
+# Monkey-patch urllib.request.urlopen to add User-Agent header
+# Questrade API is protected by Cloudflare which blocks requests without User-Agent (error 1010)
+_original_urlopen = urllib.request.urlopen
+
+def _urlopen_with_user_agent(url, data=None, timeout=None, **kwargs):
+    """Wrapper for urlopen that adds User-Agent header to prevent Cloudflare blocking."""
+    if isinstance(url, str):
+        # Create Request object with User-Agent header
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
+        }
+        req = urllib.request.Request(url, data=data, headers=headers)
+        if timeout is not None:
+            return _original_urlopen(req, timeout=timeout, **kwargs)
+        return _original_urlopen(req, **kwargs)
+    else:
+        # Already a Request object, add User-Agent if not present
+        if not url.has_header('User-Agent'):
+            url.add_header('User-Agent', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36')
+        if timeout is not None:
+            return _original_urlopen(url, timeout=timeout, **kwargs)
+        return _original_urlopen(url, **kwargs)
+
+urllib.request.urlopen = _urlopen_with_user_agent
+logger.info("Patched urllib.request.urlopen to add User-Agent header for Questrade API")
 
 
 class QuestradeClient:

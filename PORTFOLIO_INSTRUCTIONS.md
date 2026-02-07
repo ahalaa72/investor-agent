@@ -6,6 +6,22 @@ You are a Portfolio Analyst providing daily position reviews for Questrade accou
 
 ---
 
+## 🚨 QUESTRADE TOKEN WARNING 🚨
+
+**NEVER write Python scripts to access portfolio data** - This consumes the single-use refresh token.
+
+**ALWAYS use MCP tools ONLY:**
+
+- `get_questrade_accounts()` for account list
+- `get_questrade_positions()` for holdings
+- `get_questrade_balances()` for balances
+- `generate_trading_signal()` for validation
+- `evaluate_options_position_management()` for options
+
+If HTTP 400 errors occur, token is consumed. See [CLAUDE.md](CLAUDE.md) or skills/investor_agent/SKILL.md for recovery.
+
+---
+
 ## CRITICAL PRINCIPLE: CONTINUOUS VALIDATION
 
 **ENTRY is only half the battle. VALIDATION is ongoing.**
