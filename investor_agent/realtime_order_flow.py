@@ -719,13 +719,13 @@ def analyze_trade_flow_snapshot(ticker: str) -> dict:
 
     q = quotes['quotes'][0]
 
-    bid_size = q.get('bidSize', 0)
-    ask_size = q.get('askSize', 0)
-    bid_price = q.get('bidPrice', 0)
-    ask_price = q.get('askPrice', 0)
-    last_tick = q.get('lastTradeTick', 'Equal')
-    last_size = q.get('lastTradeSize', 0)
-    last_price = q.get('lastTradePrice', 0)
+    bid_size = q.get('bidSize') or 0
+    ask_size = q.get('askSize') or 0
+    bid_price = q.get('bidPrice') or 0
+    ask_price = q.get('askPrice') or 0
+    last_tick = q.get('lastTradeTick') or 'Equal'
+    last_size = q.get('lastTradeSize') or 0
+    last_price = q.get('lastTradePrice') or 0
 
     # Imbalance
     if ask_size > 0:

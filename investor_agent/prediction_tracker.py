@@ -14,7 +14,6 @@ import json
 import logging
 import uuid
 from datetime import datetime, date, timedelta
-from pathlib import Path
 from typing import Any
 from statistics import mean, stdev
 
@@ -23,10 +22,6 @@ import yfinance as yf
 from .database import execute_query, execute_insert, get_db_session
 
 logger = logging.getLogger(__name__)
-
-# Directory for JSON backups
-PREDICTIONS_DIR = Path(__file__).parent / "predictions"
-PREDICTIONS_DIR.mkdir(exist_ok=True)
 
 
 class PredictionTracker:
@@ -204,9 +199,6 @@ class PredictionTracker:
             # Store in database
             execute_insert(query, params)
 
-            # Also save JSON backup
-            self._save_json_backup(prediction_id, ticker, params, trading_signal)
-
             logger.info(f"Stored prediction {prediction_id} for {ticker} ({direction})")
 
             return {
@@ -235,28 +227,6 @@ class PredictionTracker:
                 "ticker": ticker,
                 "direction": direction
             }
-
-    def _save_json_backup(
-        self,
-        prediction_id: str,
-        ticker: str,
-        params: dict,
-        trading_signal: dict
-    ) -> None:
-        """Save JSON backup file for human review."""
-        filename = f"{ticker}_{date.today().isoformat()}_{prediction_id[:8]}.json"
-        filepath = PREDICTIONS_DIR / filename
-
-        backup_data = {
-            "prediction_id": prediction_id,
-            "stored_params": {k: str(v) if isinstance(v, (datetime, date)) else v for k, v in params.items()},
-            "full_trading_signal": trading_signal
-        }
-
-        with open(filepath, "w") as f:
-            json.dump(backup_data, f, indent=2, default=str)
-
-        logger.info(f"JSON backup saved: {filepath}")
 
     def update_outcomes(self, prediction_id: str | None = None) -> dict[str, Any]:
         """

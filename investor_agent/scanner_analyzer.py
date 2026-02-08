@@ -36,18 +36,19 @@ except ImportError:
 
 # Import new scanner enhancement tools (December 2025)
 try:
-    from .server import (
-        detect_catalyst_strength,
-        detect_insider_cluster,
-        detect_unusual_options_activity,
-        calculate_quality_score,
-        analyze_competitors,
-        generate_trading_signal
+    from .tools.catalysts import (
+        detect_catalyst_strength_impl as detect_catalyst_strength,
+        detect_insider_cluster_impl as detect_insider_cluster,
+        detect_unusual_options_activity_impl as detect_unusual_options_activity,
+        calculate_quality_score_impl as calculate_quality_score,
+        analyze_competitors_impl as analyze_competitors,
     )
     _new_tools_available = True
 except ImportError:
     _new_tools_available = False
     logger.warning("New scanner enhancement tools not available")
+
+# generate_trading_signal imported lazily where needed (from tools.signals)
 
 
 def _parse_numeric(value, default=0):

@@ -18,16 +18,16 @@
 
 | File | Lines Modified | What Was Added |
 |------|---------------|----------------|
-| [COMPREHENSIVE_REPORT_GENERATOR.md](../COMPREHENSIVE_REPORT_GENERATOR.md) | 1383-1427 | • New section: "OPTIONS DATA INTERPRETATION - UNDERSTANDING EXPIRATION-SPECIFIC ANALYSIS"<br>• Examples of apparent contradictions<br>• Correct vs incorrect reporting formats<br>• Red flag identification (earnings plays) |
-| [CONCISE_REPORT_GENERATOR.md](../CONCISE_REPORT_GENERATOR.md) | 60-72 | • Warning note in Phase 3 McMillan section<br>• Liquidity reporting with expiration specification |
-| [SCANNER_REPORT_GENERATOR.md](../SCANNER_REPORT_GENERATOR.md) | 361 | • Important note about expiration-specific analysis<br>• Reference to specify expiration when reporting |
+| [COMPREHENSIVE_REPORT_GENERATOR.md](../reportsGenerator/COMPREHENSIVE_REPORT_GENERATOR.md) | 1383-1427 | • New section: "OPTIONS DATA INTERPRETATION - UNDERSTANDING EXPIRATION-SPECIFIC ANALYSIS"<br>• Examples of apparent contradictions<br>• Correct vs incorrect reporting formats<br>• Red flag identification (earnings plays) |
+| [CONCISE_REPORT_GENERATOR.md](../reportsGenerator/CONCISE_REPORT_GENERATOR.md) | 60-72 | • Warning note in Phase 3 McMillan section<br>• Liquidity reporting with expiration specification |
+| [SCANNER_REPORT_GENERATOR.md](../reportsGenerator/SCANNER_REPORT_GENERATOR.md) | 361 | • Important note about expiration-specific analysis<br>• Reference to specify expiration when reporting |
 
 ### 3. Workflow Instructions
 
 | File | Lines Modified | What Was Added |
 |------|---------------|----------------|
-| [SCANNER_INSTRUCTIONS.md](../SCANNER_INSTRUCTIONS.md) | 887-920 | • New section: "OPTIONS DATA INTERPRETATION - AVOIDING CONFUSION"<br>• Table showing tool differences<br>• Red flag guidance for earnings plays<br>• Reporting examples (bad vs good) |
-| [PORTFOLIO_REPORT_TEMPLATE.md](../PORTFOLIO_REPORT_TEMPLATE.md) | 836 | • Warning note in Options section<br>• Reference to different expirations |
+| [SCANNER_INSTRUCTIONS.md](../reportsGenerator/SCANNER_INSTRUCTIONS.md) | 887-920 | • New section: "OPTIONS DATA INTERPRETATION - AVOIDING CONFUSION"<br>• Table showing tool differences<br>• Red flag guidance for earnings plays<br>• Reporting examples (bad vs good) |
+| [PORTFOLIO_REPORT_GENERATOR.md](../reportsGenerator/PORTFOLIO_REPORT_GENERATOR.md) | 836 | • Warning note in Options section<br>• Reference to different expirations |
 
 ### 4. Documentation
 
@@ -171,14 +171,14 @@ When generating reports going forward, ensure:
 - [CLAUDE.md](../CLAUDE.md) - Project configuration (no changes needed)
 
 ### Report Generators
-- [COMPREHENSIVE_REPORT_GENERATOR.md](../COMPREHENSIVE_REPORT_GENERATOR.md)
-- [CONCISE_REPORT_GENERATOR.md](../CONCISE_REPORT_GENERATOR.md)
-- [SCANNER_REPORT_GENERATOR.md](../SCANNER_REPORT_GENERATOR.md)
+- [COMPREHENSIVE_REPORT_GENERATOR.md](../reportsGenerator/COMPREHENSIVE_REPORT_GENERATOR.md)
+- [CONCISE_REPORT_GENERATOR.md](../reportsGenerator/CONCISE_REPORT_GENERATOR.md)
+- [SCANNER_REPORT_GENERATOR.md](../reportsGenerator/SCANNER_REPORT_GENERATOR.md)
 
 ### Workflow Instructions
-- [SCANNER_INSTRUCTIONS.md](../SCANNER_INSTRUCTIONS.md)
-- [PORTFOLIO_INSTRUCTIONS.md](../PORTFOLIO_INSTRUCTIONS.md) (updated earlier in session)
-- [PORTFOLIO_REPORT_TEMPLATE.md](../PORTFOLIO_REPORT_TEMPLATE.md)
+- [SCANNER_INSTRUCTIONS.md](../reportsGenerator/SCANNER_INSTRUCTIONS.md)
+- [PORTFOLIO_INSTRUCTIONS.md](../reportsGenerator/PORTFOLIO_INSTRUCTIONS.md) (updated earlier in session)
+- [PORTFOLIO_REPORT_GENERATOR.md](../reportsGenerator/PORTFOLIO_REPORT_GENERATOR.md)
 
 ### Reference Documentation
 - [OPTIONS_DATA_CLARIFICATION.md](OPTIONS_DATA_CLARIFICATION.md) - Detailed explanation
@@ -215,7 +215,7 @@ When generating reports going forward, ensure:
 | Update CONCISE_REPORT_GENERATOR.md | ✅ Complete | Jan 19, 2026 |
 | Update SCANNER_REPORT_GENERATOR.md | ✅ Complete | Jan 19, 2026 |
 | Update SCANNER_INSTRUCTIONS.md | ✅ Complete | Jan 19, 2026 |
-| Update PORTFOLIO_REPORT_TEMPLATE.md | ✅ Complete | Jan 19, 2026 |
+| Update PORTFOLIO_REPORT_GENERATOR.md | ✅ Complete | Jan 19, 2026 |
 | Create reference documentation | ✅ Complete | Jan 19, 2026 |
 | Create summary documentation | ✅ Complete | Jan 19, 2026 |
 

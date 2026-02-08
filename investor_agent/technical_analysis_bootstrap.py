@@ -52,7 +52,7 @@ def _get_price_history(ticker: str, period: str = "3mo") -> pd.DataFrame:
 
     # Try Questrade first - use the working get_questrade_candles pattern
     try:
-        from .server import get_questrade_candles
+        from .tools.questrade_api import get_questrade_candles_impl as get_questrade_candles
 
         candles_result = get_questrade_candles(ticker, "OneDay", window=window)
 

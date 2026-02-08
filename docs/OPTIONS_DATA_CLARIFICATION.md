@@ -73,7 +73,7 @@ detect_unusual_options_activity():
 
 Updated 3 key files to prevent future confusion:
 
-#### 1. [instructions.md](../instructions.md)
+#### 1. [instructions.md](../reportsGenerator/instructions.md)
 
 **Added to `analyze_options_mcmillan()` description:**
 ```markdown
@@ -98,7 +98,7 @@ Updated 3 key files to prevent future confusion:
 - Shows correct vs incorrect reporting formats
 - Includes multi-expiration liquidity check workflow
 
-#### 2. [COMPREHENSIVE_REPORT_GENERATOR.md](../COMPREHENSIVE_REPORT_GENERATOR.md)
+#### 2. [COMPREHENSIVE_REPORT_GENERATOR.md](../reportsGenerator/COMPREHENSIVE_REPORT_GENERATOR.md)
 
 **Added section before McMillan educational breakdown:**
 ```markdown
@@ -114,7 +114,7 @@ Updated 3 key files to prevent future confusion:
 - Clear reporting format to avoid confusion
 - Checklist: Check expiration, check earnings, note DTE difference
 
-#### 3. [CONCISE_REPORT_GENERATOR.md](../CONCISE_REPORT_GENERATOR.md)
+#### 3. [CONCISE_REPORT_GENERATOR.md](../reportsGenerator/CONCISE_REPORT_GENERATOR.md)
 
 **Added warning in Phase 3:**
 ```markdown
@@ -217,9 +217,9 @@ When reporting options analysis going forward:
 
 ## 🔗 RELATED DOCUMENTATION
 
-- [instructions.md](../instructions.md) - Lines 142-158 (McMillan tool), Lines 984-1132 (OPTIONS DATA INTERPRETATION)
-- [COMPREHENSIVE_REPORT_GENERATOR.md](../COMPREHENSIVE_REPORT_GENERATOR.md) - Lines 1383-1427
-- [CONCISE_REPORT_GENERATOR.md](../CONCISE_REPORT_GENERATOR.md) - Lines 58-71
+- [instructions.md](../reportsGenerator/instructions.md) - Lines 142-158 (McMillan tool), Lines 984-1132 (OPTIONS DATA INTERPRETATION)
+- [COMPREHENSIVE_REPORT_GENERATOR.md](../reportsGenerator/COMPREHENSIVE_REPORT_GENERATOR.md) - Lines 1383-1427
+- [CONCISE_REPORT_GENERATOR.md](../reportsGenerator/CONCISE_REPORT_GENERATOR.md) - Lines 58-71
 
 ---
 
