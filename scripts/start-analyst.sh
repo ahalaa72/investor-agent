@@ -38,6 +38,21 @@ cleanup_stale() {
 if [ ! -f "$SERVER" ]; then echo "❌ analyst_server.py not found"; exit 1; fi
 if ! command -v python3 &>/dev/null; then echo "❌ python3 not found"; exit 1; fi
 if ! command -v cloudflared &>/dev/null; then echo "❌ cloudflared not found — brew install cloudflared"; exit 1; fi
+if ! command -v claude &>/dev/null; then echo "❌ claude not found"; exit 1; fi
+
+# ── 0. Get OAuth token (auto-generates via claude setup-token) ────────────
+if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+  echo "🔑 Generating OAuth token via claude setup-token…"
+  CLAUDE_CODE_OAUTH_TOKEN=$(claude setup-token 2>/dev/null || true)
+  if [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
+    echo "❌ Failed to generate token — run 'claude setup-token' manually"
+    exit 1
+  fi
+  export CLAUDE_CODE_OAUTH_TOKEN
+  echo "✅ OAuth token generated"
+else
+  echo "✅ Using existing CLAUDE_CODE_OAUTH_TOKEN"
+fi
 
 # ── Stop previous instances ──────────────────────────────────────────────────
 cleanup_stale "$SERVER_PID_FILE" "Server"
@@ -55,10 +70,6 @@ done
 
 # ── 1. Start Server (env -i = clean env, no Claude/VS Code session leaks) ──
 cd "$REPO_DIR"
-if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
-  echo "⚠️  CLAUDE_CODE_OAUTH_TOKEN not set — run: export CLAUDE_CODE_OAUTH_TOKEN=\$(claude setup-token)"
-fi
-
 env -i \
   HOME="$HOME" \
   USER="${USER:-AhmedE}" \

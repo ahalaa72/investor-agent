@@ -1923,14 +1923,28 @@ function selectJob(jobId){
     const ctr=createJobView(jobId,job.name,job.prompt||'(loaded from server)');
     job.container=ctr;
     view=document.getElementById('jv-'+jobId);
-    // If running, connect SSE for replay + live
-    if((job.status==='queued'||job.status==='running')&&!job.es){connectSSE(jobId)}
+    // If running, connect stream for live events
+    if((job.status==='queued'||job.status==='running')&&!job.es&&!job._ws){connectSSE(jobId)}
+    // If done/error, replay all buffered events once
+    else if(job.status==='done'||job.status==='error'){replayJob(jobId)}
   }
 
   if(view)view.style.display='';
   if(!view&&intro)intro.style.display='';
   selectedJobId=jobId;
   updateSidebar();updatePills();scr();
+}
+
+async function replayJob(jobId){
+  const job=jobs[jobId];if(!job||job._replayed)return;
+  job._replayed=true;
+  try{
+    const r=await afetch('/jobs/'+jobId+'/events?after=-1');
+    if(!r.ok)return;
+    const data=await r.json();
+    data.events.forEach(ev=>{delete ev.idx;handleEvent(jobId,ev)});
+    updateSidebar();updatePills();scr();
+  }catch(e){console.error('replay error',e)}
 }
 
 /* ── Pipeline blocks ───────────────────────────────────────────────────────── */

@@ -522,26 +522,20 @@ The only reliable free method for `claude -p` subprocess auth:
 
 ## Start Script (`start-analyst.sh`)
 
-Must use `env -i` to prevent VS Code env contamination. The OAuth token is passed through as an env variable:
+One command starts everything — token, server, tunnel, email:
 
 ```bash
-# Set token before starting (run once per session, lasts ~15 hours):
-export CLAUDE_CODE_OAUTH_TOKEN=$(claude setup-token)
-
-# start-analyst.sh passes it through env -i:
-env -i \
-  HOME="$HOME" \
-  USER="${USER:-AhmedE}" \
-  SHELL="${SHELL:-/bin/zsh}" \
-  PATH="/Users/AhmedE/.nvm/versions/node/v22.20.0/bin:/usr/local/bin:/usr/bin:/bin" \
-  LANG="en_US.UTF-8" \
-  TERM="xterm-256color" \
-  PYTHONUNBUFFERED=1 \
-  TMPDIR="${TMPDIR:-/tmp}" \
-  NVM_DIR="${NVM_DIR:-$HOME/.nvm}" \
-  CLAUDE_CODE_OAUTH_TOKEN="${CLAUDE_CODE_OAUTH_TOKEN:-}" \
-  nohup python3 -u analyst_server.py >> logs/analyst-server.log 2>&1 &
+bash scripts/start-analyst.sh
 ```
+
+The script automatically:
+1. Runs `claude setup-token` to get an OAuth token (or reuses `CLAUDE_CODE_OAUTH_TOKEN` if already set)
+2. Starts the server with `env -i` (clean env, no VS Code leaks)
+3. Starts Cloudflare Quick Tunnel
+4. Emails the tunnel URL to your phone
+5. Prints summary with PIDs and log paths
+
+Uses `env -i` to prevent VS Code env contamination, passes only whitelisted vars including the OAuth token.
 
 ## E2E Pipeline Result
 
