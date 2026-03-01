@@ -549,28 +549,30 @@ def _untrack_claude(proc):
 
 
 def _run_claude_once(prompt: str, stage: str, pq, env: dict, needs_mcp: bool = True) -> str:
-    """Single claude -p execution with stream-json output for live tool visibility.
-    needs_mcp=True  → prompt as CLI arg, loads MCP tools (investor-agent).
-    needs_mcp=False → prompt as CLI arg, --strict-mcp-config skips all plugins (fast).
+    """Single Claude execution with stream-json output for live tool visibility.
+
+    Prompt is piped via stdin using --input-format stream-json to avoid OS
+    argument-length limits (prompts can be 100K+ chars).
+
+    needs_mcp=True  → loads investor-agent MCP tools.
+    needs_mcp=False → --strict-mcp-config skips all plugins (fast).
     """
     log = lambda msg: print(f"  [{stage}] {msg}", flush=True)
 
     # Kill any stale Claude processes from previous jobs before starting a new one
     _cleanup_stale_claude(log)
 
-    if needs_mcp:
-        # MCP mode: prompt as CLI arg, loads investor-agent MCP tools
-        cmd = [CLAUDE_BIN, "-p", prompt, "--dangerously-skip-permissions",
-               "--output-format", "stream-json", "--verbose"]
-    else:
-        # No-MCP mode: prompt as CLI arg, --strict-mcp-config skips all plugins (fast)
-        cmd = [CLAUDE_BIN, "-p", prompt, "--dangerously-skip-permissions",
-               "--output-format", "stream-json", "--verbose",
-               "--no-session-persistence",
-               "--mcp-config", str(REPO / ".mcp-empty.json"), "--strict-mcp-config"]
-    stdin_mode = subprocess.DEVNULL
+    base_cmd = [CLAUDE_BIN, "-p", "--dangerously-skip-permissions",
+                "--output-format", "stream-json", "--verbose",
+                "--input-format", "stream-json",
+                "--include-partial-messages"]
+    if not needs_mcp:
+        base_cmd += ["--no-session-persistence",
+                     "--mcp-config", str(REPO / ".mcp-empty.json"), "--strict-mcp-config"]
+    cmd = base_cmd
 
-    log(f"CMD: claude -p <{len(prompt):,} chars> (mcp={'ON' if needs_mcp else 'SKIP, strict-empty'})")
+    log(f"CMD: claude -p --input-format stream-json <{len(prompt):,} chars> "
+        f"(mcp={'ON' if needs_mcp else 'SKIP, strict-empty'})")
 
     text_parts = []       # collected final text output
     result_text = ""
@@ -578,7 +580,7 @@ def _run_claude_once(prompt: str, stage: str, pq, env: dict, needs_mcp: bool = T
     try:
         proc = subprocess.Popen(
             cmd,
-            stdin=stdin_mode,
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=env, cwd=str(REPO),
@@ -587,6 +589,23 @@ def _run_claude_once(prompt: str, stage: str, pq, env: dict, needs_mcp: bool = T
 
         _track_claude(proc, stage)
         log(f"PID {proc.pid} started")
+
+        # Feed prompt via stdin as stream-json user message, then close stdin
+        user_msg = json.dumps({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [{"type": "text", "text": prompt}]
+            }
+        })
+        def _feed_stdin():
+            try:
+                proc.stdin.write(user_msg + "\n")
+                proc.stdin.flush()
+                proc.stdin.close()
+            except Exception as e:
+                log(f"stdin feed error: {e}")
+        threading.Thread(target=_feed_stdin, daemon=True).start()
 
         # Drain stderr in background to prevent deadlock
         stderr_thread = threading.Thread(target=_drain_stderr, args=(proc, log), daemon=True)
@@ -691,6 +710,11 @@ def _run_claude_once(prompt: str, stage: str, pq, env: dict, needs_mcp: bool = T
                     if result_text and not text_parts:
                         # No streaming deltas arrived — push full result as chunk
                         push(pq, stage, "streaming", "", result_text)
+                    # Kill process after result to avoid hang (Issue #25629)
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
                     break
 
                 # Message start/stop — informational
@@ -700,6 +724,31 @@ def _run_claude_once(prompt: str, stage: str, pq, env: dict, needs_mcp: bool = T
                     err = ev.get("error", {}).get("message", str(ev))
                     log(f"Stream error: {err}")
                     push(pq, stage, "running", f"Error: {err[:80]}")
+                # Tool result returned to Claude (MCP-ON path)
+                elif etype == "user":
+                    # "user" events = Claude received tool results back
+                    # Extract tool result info if available
+                    msg_content = ev.get("message", {}).get("content", [])
+                    for block in msg_content:
+                        if block.get("type") == "tool_result":
+                            tid = block.get("tool_use_id", "")[:8]
+                            is_err = block.get("is_error", False)
+                            content = block.get("content", "")
+                            clen = len(str(content))
+                            if is_err:
+                                log(f"Tool result: error ({clen} chars)")
+                                push(pq, stage, "running", f"✗ Tool error ({clen} chars)")
+                            else:
+                                log(f"Tool result: OK ({clen:,} chars)")
+                                push(pq, stage, "running", f"✓ Tool result ({clen:,} chars)")
+                            break
+                    else:
+                        log(f"Event: {etype}")
+
+                elif etype == "rate_limit_event":
+                    log(f"Rate limited — waiting…")
+                    push(pq, stage, "running", "Rate limited — waiting…")
+
                 else:
                     log(f"Event: {etype}")
 
@@ -749,6 +798,9 @@ def _run_claude_once(prompt: str, stage: str, pq, env: dict, needs_mcp: bool = T
             result_text = "".join(text_parts).strip()
 
         log(f"Done code={proc.returncode} output={len(result_text):,} chars ({len(text_parts)} parts)")
+        # Debug: log first 200 chars of output to diagnose short/empty responses
+        if len(result_text) < 500:
+            log(f"DEBUG OUTPUT: {repr(result_text[:200])}")
 
     except subprocess.TimeoutExpired:
         proc.kill()
@@ -762,6 +814,44 @@ def _run_claude_once(prompt: str, stage: str, pq, env: dict, needs_mcp: bool = T
     return result_text
 
 
+def _build_clean_env() -> dict:
+    """Build a minimal clean environment for claude -p subprocess.
+
+    Whitelist approach: only pass what's needed, nothing inherited from
+    VS Code / Claude Desktop / parent sessions.  This prevents CLAUDECODE,
+    CLAUDE_CODE_ENTRYPOINT, DEEP_SESSION_ID and any other session-detection
+    vars from leaking into the child process.
+    """
+    env = {
+        "HOME":  os.environ["HOME"],
+        "USER":  os.environ.get("USER", "AhmedE"),
+        "SHELL": os.environ.get("SHELL", "/bin/zsh"),
+        "PATH":  f"{CLAUDE_PATH}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        "LANG":  "en_US.UTF-8",
+        "TERM":  "xterm-256color",
+        # Node / npm needs these
+        "NVM_DIR": os.environ.get("NVM_DIR", f"{os.environ['HOME']}/.nvm"),
+        "NODE_PATH": os.environ.get("NODE_PATH", ""),
+        # SSL certificates (macOS)
+        "SSL_CERT_FILE": os.environ.get("SSL_CERT_FILE", ""),
+        "REQUESTS_CA_BUNDLE": os.environ.get("REQUESTS_CA_BUNDLE", ""),
+        # XDG dirs Claude may use for config/cache
+        "XDG_CONFIG_HOME": os.environ.get("XDG_CONFIG_HOME", ""),
+        "XDG_DATA_HOME": os.environ.get("XDG_DATA_HOME", ""),
+        "XDG_CACHE_HOME": os.environ.get("XDG_CACHE_HOME", ""),
+        # Temp dir
+        "TMPDIR": os.environ.get("TMPDIR", "/tmp"),
+    }
+    # Auth: persistent setup-token bypasses Keychain naming bug (Issue #9403)
+    # Generated via `claude setup-token` from Terminal.app
+    env["CLAUDE_CODE_OAUTH_TOKEN"] = (
+        "sk-ant-oat01-Shg64IOdpnr49NriR8bZJd0EQ4-izjzJXuQ__AgFnbjHjT79nR4EEHbCpZ22X74bIOP"
+        "IAm1GZCE4CqY16UnJXQ-UfPXygAA"
+    )
+    env["CLAUDE_CODE_DONT_INHERIT_ENV"] = "1"
+    return {k: v for k, v in env.items() if v}
+
+
 def run_claude(prompt: str, stage: str, pq,
                validate_mcp: bool = False, max_retries: int = 2,
                needs_mcp: bool = True) -> str:
@@ -773,11 +863,7 @@ def run_claude(prompt: str, stage: str, pq,
     log = lambda msg: print(f"  [{stage}] {msg}", flush=True)
     push(pq, stage, "running", f"{stage} starting…")
 
-    env = os.environ.copy()
-    env.pop("ANTHROPIC_API_KEY", None)
-    env.pop("ANTHROPIC_API_KEY_HELPER", None)
-    env.pop("CLAUDECODE", None)  # Allow launching claude -p from within a Claude session
-    env["PATH"] = f"{CLAUDE_PATH}:{env.get('PATH', '/usr/bin:/bin')}"
+    env = _build_clean_env()
 
     result_text = _run_claude_once(prompt, stage, pq, env, needs_mcp=needs_mcp)
 
@@ -806,9 +892,8 @@ def run_gemini(prompt: str, stage: str, pq) -> str:
     log = lambda msg: print(f"  [{stage}] {msg}", flush=True)
     push(pq, stage, "running", f"{stage} starting…")
 
-    env = os.environ.copy()
-    env.pop("GEMINI_API_KEY", None)
-    env["PATH"] = f"{CLAUDE_PATH}:{env.get('PATH', '/usr/bin:/bin')}"
+    env = _build_clean_env()
+    env.pop("GEMINI_API_KEY", None)   # Gemini uses Google login, not API key
 
     cmd = [GEMINI_BIN, "-p", ""]
     log(f"CMD: gemini -p")
@@ -1070,7 +1155,7 @@ def _cleanup_old_jobs():
 # ── HTTP Server ───────────────────────────────────────────────────────────────
 
 class Handler(BaseHTTPRequestHandler):
-    protocol_version = "HTTP/1.0"   # HTTP/1.0 = read-until-close, natural for SSE
+    protocol_version = "HTTP/1.1"   # HTTP/1.1 = chunked encoding, works through Cloudflare tunnel
     def log_message(self, *a): pass
     def handle_one_request(self):
         try:

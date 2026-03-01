@@ -53,9 +53,19 @@ for f in "$SERVER_LOG" "$TUNNEL_LOG"; do
   fi
 done
 
-# ── 1. Start Server ─────────────────────────────────────────────────────────
+# ── 1. Start Server (env -i = clean env, no Claude/VS Code session leaks) ──
 cd "$REPO_DIR"
-PYTHONUNBUFFERED=1 nohup python3 -u "$SERVER" >> "$SERVER_LOG" 2>&1 &
+env -i \
+  HOME="$HOME" \
+  USER="${USER:-AhmedE}" \
+  SHELL="${SHELL:-/bin/zsh}" \
+  PATH="/Users/AhmedE/.nvm/versions/node/v22.20.0/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+  LANG="en_US.UTF-8" \
+  TERM="xterm-256color" \
+  PYTHONUNBUFFERED=1 \
+  TMPDIR="${TMPDIR:-/tmp}" \
+  NVM_DIR="${NVM_DIR:-$HOME/.nvm}" \
+  nohup python3 -u "$SERVER" >> "$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
 echo "$SERVER_PID" > "$SERVER_PID_FILE"
 sleep 2
