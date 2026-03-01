@@ -749,6 +749,30 @@ def _run_claude_once(prompt: str, stage: str, pq, env: dict, needs_mcp: bool = T
                     log(f"Rate limited — waiting…")
                     push(pq, stage, "running", "Rate limited — waiting…")
 
+                # stream_event wraps content_block_delta when --include-partial-messages is used
+                elif etype == "stream_event":
+                    inner = ev.get("event", {})
+                    inner_type = inner.get("type", "")
+                    if inner_type == "content_block_delta":
+                        delta = inner.get("delta", {})
+                        if delta.get("type") == "text_delta":
+                            txt = delta.get("text", "")
+                            if txt:
+                                text_parts.append(txt)
+                                push(pq, stage, "streaming", "", txt)
+                                for ln in txt.split("\n"):
+                                    stripped = ln.strip()
+                                    if stripped.startswith("#"):
+                                        heading = stripped[:80]
+                                        log(f"  {heading}")
+                                        push(pq, stage, "running", f"Writing: {heading}")
+                                total_chars = sum(len(p) for p in text_parts)
+                                if total_chars - _chars_logged[0] >= 5000:
+                                    msg = f"Writing… {total_chars:,} chars"
+                                    log(f"  ...{msg}")
+                                    push(pq, stage, "running", msg)
+                                    _chars_logged[0] = total_chars
+
                 else:
                     log(f"Event: {etype}")
 

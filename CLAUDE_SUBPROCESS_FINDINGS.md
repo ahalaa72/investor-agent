@@ -89,6 +89,49 @@ With `--include-partial-messages`:
 | `assistant` | Complete message | After model finishes |
 | `result` | Final result text | Last event |
 
+## UI Streaming Bug: `stream_event` Wrapper Not Unwrapped
+
+### Problem
+
+With `--include-partial-messages`, text deltas arrive wrapped in a `stream_event` envelope:
+
+```json
+{"type": "stream_event", "event": {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "Hello"}}}
+```
+
+The original code handled `content_block_delta` as a **top-level** event type (line 684), which only fires **without** `--include-partial-messages`. With the flag enabled, the top-level type is `stream_event` — which fell into the `else` branch and was silently logged as `Event: stream_event` with no text extraction or UI push.
+
+**Result:** Pipeline completed successfully (13,799 chars saved to vault), but the UI showed zero streaming output — users saw nothing during generation.
+
+### Fix
+
+Added a `stream_event` handler that unwraps the inner event and processes it identically to the top-level `content_block_delta` handler:
+
+```python
+elif etype == "stream_event":
+    inner = ev.get("event", {})
+    inner_type = inner.get("type", "")
+    if inner_type == "content_block_delta":
+        delta = inner.get("delta", {})
+        if delta.get("type") == "text_delta":
+            txt = delta.get("text", "")
+            if txt:
+                text_parts.append(txt)
+                push(pq, stage, "streaming", "", txt)  # → SSE → browser UI
+```
+
+### Event Flow (with fix)
+
+```
+claude -p stdout → JSON parse → type="stream_event"
+                                 → unwrap inner event
+                                 → type="content_block_delta"
+                                 → extract delta.text
+                                 → push to SSE queue → browser UI renders live
+```
+
+---
+
 ## Known Bugs to Handle
 
 ### 1. Process hangs after result (Issue #25629)
