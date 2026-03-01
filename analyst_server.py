@@ -14,7 +14,7 @@ Supports up to 3 concurrent scans. Each scan gets a job ID and independent SSE s
 Jobs auto-cleanup after 4 hours.
 """
 
-import os, json, subprocess, threading, queue, time, re, smtplib, select, uuid, base64
+import os, json, subprocess, threading, queue, time, re, smtplib, select, uuid, base64, hashlib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
@@ -32,25 +32,36 @@ AUTH_PASS = "admin"
 # ── BroadcastQueue ────────────────────────────────────────────────────────────
 
 class BroadcastQueue:
-    """Queue-like object that stores events and broadcasts to all subscribers."""
+    """Queue-like object that stores events and broadcasts to all subscribers.
+
+    Each event is assigned a sequential index (0, 1, 2, …). Subscribers
+    receive ``(index, event)`` tuples.  On reconnect the caller can pass
+    ``from_index`` to :meth:`subscribe` so already-seen events are skipped —
+    this is the key to surviving Cloudflare SSE connection drops.
+    """
 
     def __init__(self):
-        self._events = []
-        self._subs = []
+        self._events = []          # ordered list of events
+        self._subs = []            # list of subscriber Queues
         self._lock = threading.Lock()
 
     def put(self, event):
         with self._lock:
+            idx = len(self._events)
             self._events.append(event)
             for sq in self._subs:
-                sq.put(event)
+                sq.put((idx, event))
 
-    def subscribe(self):
-        """Subscribe and get a personal Queue pre-loaded with past events."""
+    def subscribe(self, from_index=0):
+        """Subscribe and get a personal Queue pre-loaded with past events.
+
+        ``from_index`` skips events before that index — used with SSE
+        ``Last-Event-ID`` so reconnecting clients don't re-process events.
+        """
         sq = queue.Queue()
         with self._lock:
-            for ev in self._events:
-                sq.put(ev)
+            for i in range(max(0, from_index), len(self._events)):
+                sq.put((i, self._events[i]))
             self._subs.append(sq)
         return sq
 
@@ -867,11 +878,12 @@ def _build_clean_env() -> dict:
         "TMPDIR": os.environ.get("TMPDIR", "/tmp"),
     }
     # Auth: persistent setup-token bypasses Keychain naming bug (Issue #9403)
-    # Generated via `claude setup-token` from Terminal.app
-    env["CLAUDE_CODE_OAUTH_TOKEN"] = (
-        "sk-ant-oat01-Shg64IOdpnr49NriR8bZJd0EQ4-izjzJXuQ__AgFnbjHjT79nR4EEHbCpZ22X74bIOP"
-        "IAm1GZCE4CqY16UnJXQ-UfPXygAA"
-    )
+    # Generated via `claude setup-token` — pass through from parent env
+    oauth = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "")
+    if oauth:
+        env["CLAUDE_CODE_OAUTH_TOKEN"] = oauth
+    else:
+        print("  ⚠️  CLAUDE_CODE_OAUTH_TOKEN not set — claude -p will fail auth", flush=True)
     env["CLAUDE_CODE_DONT_INHERIT_ENV"] = "1"
     return {k: v for k, v in env.items() if v}
 
@@ -1038,15 +1050,28 @@ def pipeline(job_id, prompt, name, pq):
     try:
         update_job(status="running", stage="generator")
         VAULT.mkdir(parents=True, exist_ok=True)
-        date = datetime.now().strftime("%Y-%m-%d_%H%M")
-        safe = re.sub(r"[^A-Z0-9_]", "_", name.upper())[:35]
-
-        final_file = VAULT / f"{safe}_{date}.md"
 
         # ── Stage 1: Generator (Claude) → draft text in memory ──────────
         req_type, tickers = _classify_request(prompt)
         tool_list = _build_tool_list(req_type, tickers)
         ticker = tickers[0] if tickers else ""
+
+        # Build vault filename with ticker (e.g., AVGO_CONCISE_2026-03-01.md)
+        date_str = datetime.now().strftime("%Y-%m-%d")
+        if ticker:
+            vault_name = f"{ticker}_CONCISE_{date_str}"
+        elif req_type == "market_scan":
+            vault_name = f"MARKET_SCAN_{date_str}"
+        elif req_type == "market_scan_long":
+            vault_name = f"MARKET_SCAN_LONG_{date_str}"
+        elif req_type == "market_scan_short":
+            vault_name = f"MARKET_SCAN_SHORT_{date_str}"
+        elif req_type == "portfolio_review":
+            vault_name = f"PORTFOLIO_REVIEW_{date_str}"
+        else:
+            safe = re.sub(r"[^A-Z0-9_]", "_", name.upper())[:35]
+            vault_name = f"{safe}_{date_str}"
+        final_file = VAULT / f"{vault_name}.md"
         print(f"  [generator] Type: {req_type} | Tickers: {tickers} | Tools: {len(tool_list)}", flush=True)
 
         if tool_list:
@@ -1136,7 +1161,8 @@ Now produce RESOLUTION_LOG, then FINAL_REPORT, then CONFIDENCE_SUMMARY, then HUM
         final_text = run_claude(res_prompt, "resolver", pq, needs_mcp=False)
 
         # ── Save only the FINAL report to vault ──────────────────────────
-        header = f"# {name}\nGenerated: {datetime.now():%Y-%m-%d %H:%M}\n\n---\n\n"
+        report_title = f"{ticker} Analysis" if ticker else name
+        header = f"# {report_title}\nGenerated: {datetime.now():%Y-%m-%d %H:%M}\n\n---\n\n"
         final_file.write_text(header + final_text, encoding="utf-8")
         print(f"  [vault] Saved: {final_file} ({final_file.stat().st_size:,} bytes)", flush=True)
 
@@ -1147,7 +1173,7 @@ Now produce RESOLUTION_LOG, then FINAL_REPORT, then CONFIDENCE_SUMMARY, then HUM
 
         # ── Email FINAL report ───────────────────────────────────────────
         push(pq, "email", "running", f"Emailing to {EMAIL_TO}…")
-        subject = f"[Analyst] {name} — {datetime.now():%Y-%m-%d %H:%M}"
+        subject = f"[Analyst] {report_title} — {datetime.now():%Y-%m-%d %H:%M}"
         email_status = send_email(subject, final_text)
         push(pq, "email", "done", email_status)
 
@@ -1232,6 +1258,60 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type,Authorization")
 
+    # ── WebSocket helpers (RFC 6455, raw implementation) ─────────────────────
+
+    def _ws_handshake(self):
+        """Perform RFC 6455 WebSocket opening handshake."""
+        key = self.headers.get("Sec-WebSocket-Key", "")
+        accept = base64.b64encode(
+            hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()
+        ).decode()
+        self.send_response(101)
+        self.send_header("Upgrade", "websocket")
+        self.send_header("Connection", "Upgrade")
+        self.send_header("Sec-WebSocket-Accept", accept)
+        self.end_headers()
+
+    def _ws_send(self, data: str):
+        """Send a text WebSocket frame."""
+        payload = data.encode("utf-8")
+        length = len(payload)
+        if length <= 125:
+            header = bytes([0x81, length])
+        elif length <= 65535:
+            header = bytes([0x81, 126]) + length.to_bytes(2, "big")
+        else:
+            header = bytes([0x81, 127]) + length.to_bytes(8, "big")
+        self.wfile.write(header + payload)
+        self.wfile.flush()
+
+    def _ws_recv(self, timeout=1.0):
+        """Non-blocking read of incoming WS frame. Returns None on timeout."""
+        import select as _select
+        ready, _, _ = _select.select([self.rfile], [], [], timeout)
+        if not ready:
+            return None
+        b1 = self.rfile.read(1)
+        if not b1:
+            return None
+        b1 = b1[0]
+        b2 = self.rfile.read(1)[0]
+        opcode = b1 & 0x0F
+        if opcode == 0x8:
+            return "__CLOSE__"
+        masked = (b2 & 0x80) != 0
+        length = b2 & 0x7F
+        if length == 126:
+            length = int.from_bytes(self.rfile.read(2), "big")
+        elif length == 127:
+            length = int.from_bytes(self.rfile.read(8), "big")
+        mask = self.rfile.read(4) if masked else None
+        data = bytearray(self.rfile.read(length))
+        if masked:
+            for i in range(len(data)):
+                data[i] ^= mask[i % 4]
+        return data.decode("utf-8", errors="replace")
+
     def do_OPTIONS(self):
         self.send_response(200); self._cors()
         self.send_header("Content-Length", "0"); self.end_headers()
@@ -1275,6 +1355,83 @@ class Handler(BaseHTTPRequestHandler):
                 } for j in _jobs.values()]
             self._json(200, {"jobs": sorted(jobs_list, key=lambda x: x["created"], reverse=True)})
 
+        elif path.startswith("/jobs/") and path.endswith("/ws"):
+            # /jobs/{id}/ws — WebSocket stream (works through Cloudflare Quick Tunnel)
+            if self.headers.get("Upgrade", "").lower() != "websocket":
+                self._json(400, {"error": "Expected WebSocket upgrade"}); return
+            parts = path.split("/")
+            if len(parts) != 4:
+                self._json(404, {"error": "Not found"}); return
+            job_id = parts[2]
+            with _jobs_lock:
+                job = _jobs.get(job_id)
+            if not job:
+                self.send_response(404); self.end_headers(); return
+
+            bq = job["pq"]
+            self._ws_handshake()
+            print(f"  [WS] Client connected for job {job_id[:12]}", flush=True)
+
+            sq = bq.subscribe(from_index=0)
+            try:
+                n = 0
+                while True:
+                    msg = self._ws_recv(timeout=0.05)
+                    if msg == "__CLOSE__":
+                        break
+                    try:
+                        idx, ev = sq.get(timeout=0.1)
+                        self._ws_send(json.dumps(ev))
+                        n += 1
+                        if ev.get("stage") in ("complete", "error"):
+                            print(f"  [WS] job={job_id[:8]} complete after {n} events", flush=True)
+                            break
+                    except queue.Empty:
+                        try:
+                            self.wfile.write(bytes([0x89, 0x00]))  # ping
+                            self.wfile.flush()
+                        except Exception:
+                            break
+            except (BrokenPipeError, ConnectionResetError, OSError) as e:
+                print(f"  [WS] job={job_id[:8]} disconnected: {e}", flush=True)
+            finally:
+                bq.unsubscribe(sq)
+                print(f"  [WS] Client disconnected for job {job_id[:12]}", flush=True)
+
+        elif path.startswith("/jobs/") and path.endswith("/events"):
+            # /jobs/{id}/events?after=N — polling fallback for Cloudflare tunnel
+            # Returns JSON array of events with indices, for clients where SSE fails
+            parts = path.split("/")
+            if len(parts) != 4:
+                self._json(404, {"error": "Not found"}); return
+            job_id = parts[2]
+            with _jobs_lock:
+                job = _jobs.get(job_id)
+            if not job:
+                self._json(404, {"error": "Job not found"}); return
+
+            # Parse ?after=N query param
+            after = -1
+            qs = parse_qs(urlparse(self.path).query)
+            if "after" in qs:
+                try:
+                    after = int(qs["after"][0])
+                except (ValueError, IndexError):
+                    pass
+
+            bq = job["pq"]
+            with bq._lock:
+                events = [
+                    {"idx": i, **ev}
+                    for i, ev in enumerate(bq._events)
+                    if i > after
+                ]
+            self._json(200, {
+                "events": events,
+                "status": job["status"],
+                "stage": job["stage"],
+            })
+
         elif path.startswith("/jobs/") and not path.endswith("/stream"):
             # /jobs/{id} — poll a single job's status (mobile fallback)
             parts = path.split("/")
@@ -1302,8 +1459,23 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(404, {"error": "Job not found"}); return
 
             bq = job["pq"]
-            sq = bq.subscribe()
-            print(f"  [SSE] Client connected for job {job_id}, {sq.qsize()} buffered events", flush=True)
+
+            # ── SSE Last-Event-ID: skip already-seen events on reconnect ──
+            last_id_hdr = self.headers.get("Last-Event-ID")
+            from_index = 0
+            if last_id_hdr is not None:
+                try:
+                    from_index = int(last_id_hdr) + 1
+                except ValueError:
+                    pass
+
+            sq = bq.subscribe(from_index=from_index)
+            replay_n = sq.qsize()
+            if from_index > 0:
+                print(f"  [SSE] Client RECONNECTED for job {job_id[:8]}, "
+                      f"Last-Event-ID={last_id_hdr}, replaying {replay_n} missed events", flush=True)
+            else:
+                print(f"  [SSE] Client connected for job {job_id}, {replay_n} buffered events", flush=True)
 
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
@@ -1319,8 +1491,9 @@ class Handler(BaseHTTPRequestHandler):
                 n = 0
                 while True:
                     try:
-                        ev = sq.get(timeout=15)  # 15s keepalive (Cloudflare times out idle at ~100s)
-                        payload = f"data: {json.dumps(ev)}\n\n".encode()
+                        idx, ev = sq.get(timeout=5)  # 5s keepalive (Cloudflare drops idle ~100s)
+                        # Include SSE id: field so EventSource sends Last-Event-ID on reconnect
+                        payload = f"id: {idx}\ndata: {json.dumps(ev)}\n\n".encode()
                         self.wfile.write(payload)
                         self.wfile.flush()
                         n += 1
@@ -1637,7 +1810,7 @@ textarea::placeholder{color:var(--muted)}
     <input class="iname" id="rname" placeholder="Report name…" value="ANALYSIS">
     <div class="ibox">
       <textarea id="prompt" rows="1"
-        placeholder="Ask your analyst — up to 3 concurrent scans, subscription mode…"
+        placeholder="scan AAPL · scan the market · portfolio review"
         onkeydown="hk(event)" oninput="rz(this)"></textarea>
     </div>
     <button class="run" id="run" onclick="go()">▶ Run</button>
@@ -1941,89 +2114,114 @@ function handleEvent(jobId,ev){
   if(selectedJobId===jobId)scr();
 }
 
-/* ── SSE connection with polling fallback ──────────────────────────────────── */
+/* ── Stream connection: WS (tunnel/HTTPS) or SSE (localhost/HTTP) ─────────── */
 let _sseN=0;
 const _dbg=()=>document.getElementById('dbg');
 function connectSSE(jobId){
   _sseN=0;
   const job=jobs[jobId];if(!job)return;
-  // Don't reconnect to finished jobs
   if(job.status==='done'||job.status==='error')return;
-  // Close existing connection if any
+  // Close existing connection
   if(job.es){job.es.close();job.es=null}
+  if(job._ws){job._ws.close();job._ws=null}
 
-  const url='/jobs/'+jobId+'/stream?token='+encodeURIComponent(_cred);
-  if(_dbg())_dbg().textContent='SSE: connecting…';
-  const es=new EventSource(url);
-  job.es=es;
-  job._sseDrops=(job._sseDrops||0);
-  job._lastOpen=0;
-  es.onopen=()=>{
-    const now=Date.now();
-    if(job._lastOpen&&(now-job._lastOpen)<10000)job._sseDrops++;
-    else job._sseDrops=0;
-    job._lastOpen=now;
-    if(_dbg())_dbg().textContent='SSE: CONNECTED (drops='+job._sseDrops+')';
-  };
-  es.onmessage=(e)=>{
-    _sseN++;
-    let ev;try{ev=JSON.parse(e.data)}catch(err){if(_dbg())_dbg().textContent='SSE: parse error';return}
-    if(_dbg())_dbg().textContent='SSE: #'+_sseN+' '+ev.stage+' '+ev.status+' '+(ev.message||'').slice(0,40);
-    handleEvent(jobId,ev);
-  };
-  es.onerror=(e)=>{
-    if(_dbg())_dbg().textContent='SSE: error (drops='+job._sseDrops+', n='+_sseN+')';
-    if(job.status==='done'||job.status==='error'){
-      es.close();job.es=null;
-      if(_dbg())_dbg().textContent='SSE: closed (job '+job.status+')';
-      return;
-    }
-    if(job._sseDrops>=3&&!job._polling){
-      es.close();job.es=null;
-      if(_dbg())_dbg().textContent='SSE drops 3x → polling';
-      startPolling(jobId);
-    }
-  };
+  const isHttps=window.location.protocol==='https:';
+
+  if(isHttps){
+    // ── WebSocket path — works through Cloudflare Quick Tunnel ──
+    const wsUrl='wss://'+window.location.host+'/jobs/'+jobId+'/ws';
+    if(_dbg())_dbg().textContent='WS: connecting…';
+    const ws=new WebSocket(wsUrl);
+    job._ws=ws;
+    ws.onopen=()=>{
+      if(_dbg())_dbg().textContent='WS: CONNECTED';
+    };
+    ws.onmessage=(e)=>{
+      _sseN++;
+      let ev;try{ev=JSON.parse(e.data)}catch(err){if(_dbg())_dbg().textContent='WS: parse error';return}
+      if(_dbg())_dbg().textContent='WS: #'+_sseN+' '+ev.stage+' '+ev.status+' '+(ev.message||'').slice(0,40);
+      handleEvent(jobId,ev);
+      if(ev.stage==='complete'||ev.stage==='error'){
+        ws.close();job._ws=null;
+      }
+    };
+    ws.onerror=(e)=>{
+      if(_dbg())_dbg().textContent='WS: error → polling';
+      if(!job._polling)startPolling(jobId);
+    };
+    ws.onclose=()=>{
+      if(_dbg())_dbg().textContent='WS: closed';
+    };
+  } else {
+    // ── SSE path — works on localhost ──
+    const url='/jobs/'+jobId+'/stream?token='+encodeURIComponent(_cred);
+    if(_dbg())_dbg().textContent='SSE: connecting…';
+    const es=new EventSource(url);
+    job.es=es;
+    job._sseDrops=(job._sseDrops||0);
+    job._lastOpen=0;
+    es.onopen=()=>{
+      const now=Date.now();
+      if(job._lastOpen&&(now-job._lastOpen)<10000)job._sseDrops++;
+      else job._sseDrops=0;
+      job._lastOpen=now;
+      if(_dbg())_dbg().textContent='SSE: CONNECTED (drops='+job._sseDrops+')';
+    };
+    es.onmessage=(e)=>{
+      _sseN++;
+      let ev;try{ev=JSON.parse(e.data)}catch(err){if(_dbg())_dbg().textContent='SSE: parse error';return}
+      if(_dbg())_dbg().textContent='SSE: #'+_sseN+' '+ev.stage+' '+ev.status+' '+(ev.message||'').slice(0,40);
+      handleEvent(jobId,ev);
+    };
+    es.onerror=(e)=>{
+      if(_dbg())_dbg().textContent='SSE: error (drops='+job._sseDrops+', n='+_sseN+')';
+      if(job.status==='done'||job.status==='error'){
+        es.close();job.es=null;
+        if(_dbg())_dbg().textContent='SSE: closed (job '+job.status+')';
+        return;
+      }
+      if(job._sseDrops>=1&&!job._polling){
+        es.close();job.es=null;
+        if(_dbg())_dbg().textContent='SSE drop → polling fallback';
+        startPolling(jobId);
+      }
+    };
+  }
 }
 
 function startPolling(jobId){
   const job=jobs[jobId];if(!job||job._polling)return;
   job._polling=true;
+  job._lastEventIdx=-1;  // track last seen event index
   if(_dbg())_dbg().textContent='POLL: active for '+jobId.slice(0,8);
   const poll=async()=>{
     if(job.status==='done'||job.status==='error'){job._polling=false;return}
     try{
-      const r=await afetch('/jobs/'+jobId);
+      // Fetch events since last seen index — same data as SSE but via JSON
+      const r=await afetch('/jobs/'+jobId+'/events?after='+job._lastEventIdx);
       if(r.ok){
-        const sj=await r.json();
-        const oldStage=job.stage;
-        job.status=sj.status;job.stage=sj.stage;
-        if(_dbg())_dbg().textContent='POLL: '+sj.stage+' '+sj.status;
+        const data=await r.json();
+        if(_dbg())_dbg().textContent='POLL: '+data.stage+' '+data.status+' (+'+data.events.length+' evts)';
         // Create view if needed
         if(!document.getElementById('jv-'+jobId)){
           const ctr=createJobView(jobId,job.name,job.prompt||'(loaded)');
           job.container=ctr;selectJob(jobId);
         }
-        // Create stage blocks for running stages
-        const ctr=document.getElementById('pw-'+jobId);
-        if(ctr&&['generator','auditor','resolver'].includes(sj.stage)){
-          if(!job.blocks[sj.stage])job.blocks[sj.stage]=mkBlock(ctr,sj.stage,jobId);
-          const ps=document.getElementById('ps-'+jobId+'-'+sj.stage);
-          if(ps)ps.textContent=sj.status==='running'?'Running…':'Done';
-        }
-        if(sj.status==='done'){
-          if(ctr){
-            const sv=document.createElement('div');sv.className='saved';
-            sv.textContent='\u2B21 Report saved to vault';ctr.appendChild(sv);
-          }
-          job._polling=false;
-        }else if(sj.status==='error'){
+        // Process each event through handleEvent (same as SSE)
+        data.events.forEach(ev=>{
+          const idx=ev.idx;delete ev.idx;
+          handleEvent(jobId,ev);
+          job._lastEventIdx=idx;
+        });
+        if(data.status==='done'||data.status==='error'){
           job._polling=false;
         }
         updateSidebar();updatePills();
       }
-    }catch{}
-    if(job._polling)setTimeout(poll,5000);
+    }catch(e){
+      if(_dbg())_dbg().textContent='POLL: error '+e.message;
+    }
+    if(job._polling)setTimeout(poll,2000);
   };
   poll();
 }

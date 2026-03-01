@@ -55,6 +55,10 @@ done
 
 # ── 1. Start Server (env -i = clean env, no Claude/VS Code session leaks) ──
 cd "$REPO_DIR"
+if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+  echo "⚠️  CLAUDE_CODE_OAUTH_TOKEN not set — run: export CLAUDE_CODE_OAUTH_TOKEN=\$(claude setup-token)"
+fi
+
 env -i \
   HOME="$HOME" \
   USER="${USER:-AhmedE}" \
@@ -65,6 +69,7 @@ env -i \
   PYTHONUNBUFFERED=1 \
   TMPDIR="${TMPDIR:-/tmp}" \
   NVM_DIR="${NVM_DIR:-$HOME/.nvm}" \
+  CLAUDE_CODE_OAUTH_TOKEN="${CLAUDE_CODE_OAUTH_TOKEN:-}" \
   nohup python3 -u "$SERVER" >> "$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
 echo "$SERVER_PID" > "$SERVER_PID_FILE"
