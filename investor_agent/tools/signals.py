@@ -1465,6 +1465,31 @@ def register_tools(mcp):
                 entry_strategy = entry_data['entry_strategy']
                 entry_rationale = entry_data['entry_rationale']
                 entry_confidence = entry_data['entry_confidence']
+                entry_status = entry_data.get('entry_status', 'ACTIONABLE')
+
+                # === CHASE WARNING DETECTION ===
+                # Upgrade entry_status to CHASE_WARNING if overbought + no clear entry
+                rsi_value = None
+                if technical_data and isinstance(technical_data, dict):
+                    rsi_raw = technical_data.get('rsi')
+                    if isinstance(rsi_raw, dict):
+                        rsi_value = rsi_raw.get('value')
+                    elif isinstance(rsi_raw, (int, float)):
+                        rsi_value = rsi_raw
+
+                exhaustion_val = locals().get('exhaustion', 50)
+
+                if entry_strategy in ("NO_CLEAR_ENTRY", "WAIT_FOR_PULLBACK"):
+                    is_overbought = rsi_value is not None and rsi_value > 70
+                    is_exhausted = exhaustion_val > 70
+                    if is_overbought or is_exhausted:
+                        entry_status = "CHASE_WARNING"
+                        result["warnings"].append(
+                            f"CHASE WARNING: entry_strategy={entry_strategy}, "
+                            f"RSI={rsi_value}, exhaustion={exhaustion_val}. "
+                            f"Do NOT enter at current price ${current_price:.2f}. "
+                            f"Wait for pullback to ${entry_price:.2f}."
+                        )
 
                 # === STOP LOSS (ATR-based) ===
                 stop_loss_data = calculate_atr_stop_loss(
@@ -1515,6 +1540,8 @@ def register_tools(mcp):
                     "entry_price": round(entry_price, 2),
                     "entry_type": "LIMIT",
                     "entry_strategy": entry_strategy,
+                    "entry_status": entry_status,
+                    "entry_zone": entry_data.get('entry_zone', {}),
                     "entry_rationale": entry_rationale,
                     "current_price": round(current_price, 2),
                     "entry_confidence": round(entry_confidence, 2),

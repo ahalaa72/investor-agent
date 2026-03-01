@@ -292,7 +292,7 @@ The `.mcp.json` file configures Claude Desktop to use:
       "command": "docker",
       "args": [
         "exec", "-i", "investor-agent-mcp",
-        "python", "-m", "investor_agent.server"
+        "python", "-m", "investor_agent.server_modular"
       ]
     }
   }

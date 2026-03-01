@@ -1,170 +1,94 @@
 ---
 name: scanner
-description: Market opportunity discovery. Use when finding new LONG/SHORT trading opportunities, scanning for setups, detecting catalysts, finding unusual options activity, or tracking smart money flow. Filters through institutional validation before presenting candidates.
+description: Market opportunity discovery. TWO MODES - ROLE 1 (market scan = list top candidates) and ROLE 2 (ticker scan = full deep analysis with 6 sections A-F + Obsidian vault save). Always follow SCANNER_INSTRUCTIONS.md and SCANNER_REPORT_GENERATOR.md.
 ---
 
 # Scanner - Market Opportunity Discovery
 
-Scan the market for LONG and SHORT opportunities using institutional filters and 4-gate validation.
+## AUTHORITATIVE REFERENCES (MUST FOLLOW)
+
+1. **Instructions:** `reportsGenerator/SCANNER_INSTRUCTIONS.md` — Complete workflow, tools, gates, signal classification
+2. **Report Template:** `reportsGenerator/SCANNER_REPORT_GENERATOR.md` — Full report format with 6 sections per stock
+
+**These files define ALL scanner behavior. Read and follow them exactly.**
 
 ---
 
-## ⚠️ Questrade Token Protection
+## TWO OPERATING MODES
 
-**NEVER write Python scripts to scan or get quotes** - This consumes the single-use refresh token.
+| Mode | Trigger | Action |
+|------|---------|--------|
+| **ROLE 1: Market Scan** | "scan the market", "find opportunities" (no specific ticker) | List Top 5 LONG + Top 5 SHORT, then STOP |
+| **ROLE 2: Ticker Scan** | "scan WMT", "scan AAPL" (specific ticker named) | Full deep analysis: ALL 6 sections (A-F) + save to Obsidian vault |
 
-**ALWAYS use MCP tools:**
-
-- `scan_long_candidates()` for LONG opportunities
-- `scan_short_candidates()` for SHORT opportunities
-- `get_questrade_quotes()` for real-time prices
-
-If you get HTTP 400 errors, the token is consumed. See main SKILL.md for recovery steps.
+**If user names a specific ticker, that is ALWAYS ROLE 2.**
 
 ---
 
-## Workflow (CACHE-FIRST - MANDATORY)
+## Questrade Token Protection
 
-### ALWAYS CHECK CACHE FIRST - DO NOT SKIP THIS STEP
+**NEVER write Python scripts to scan or get quotes** — use MCP tools only.
 
-### Step 1: Get Cached Candidates (INSTANT RESULTS)
+---
 
-```python
-FIRST: get_best_cached_trades(direction="LONG/SHORT", days=7, top_n=5, min_gates=3)
-  → Show these results IMMEDIATELY
-  → User sees opportunities within seconds
-```
+## ROLE 1: Market Scan (List Mode)
 
-### Step 2: Scan for NEW Candidates (BATCHES OF 20 with LIVE PROGRESS)
+Follow `SCANNER_INSTRUCTIONS.md` ROLE 1 section:
 
-```python
-THEN: scan_long_candidates() or scan_short_candidates()
-  → Scans in batches of 20 stocks
-  → Shows progress after EACH batch
-  → NO HANGING for minutes without updates
-```
+1. **Cache-First:** `get_best_cached_trades()` → show immediately
+2. **Fetch Raw:** `get_raw_scan_candidates()` for LONG and/or SHORT
+3. **Filter:** Remove cached tickers
+4. **Validate:** Parallel single-stock MCP calls (5 per wave)
+5. **Store (MANDATORY):** 3+ gate passes → `store_trading_prediction()` immediately
+6. **Present:** Summary table, then STOP
 
-### Complete Workflow
+## ROLE 2: Ticker Scan (Full Deep Analysis)
 
-1. **Check Cache FIRST:** `get_best_cached_trades()` → Show immediately
-2. **Scan NEW:** `scan_long_candidates()` / `scan_short_candidates()` → Batches of 20
-3. **Verify Catalysts:** `detect_catalyst_strength(ticker)` for each candidate
-4. **Detect Smart Money:** `detect_unusual_options_activity()` + `detect_insider_cluster()`
-5. **Present:** Combined cached + new results, ranked by setup quality
+Follow `SCANNER_INSTRUCTIONS.md` ROLE 2 section + `SCANNER_REPORT_GENERATOR.md` template:
 
-## Key Tools
+1. **Gather ALL data:** Run every tool listed in ROLE 2 Step 1 (Phase 0 + Sections A-F)
+2. **Generate full report:** ALL 6 sections per SCANNER_REPORT_GENERATOR.md template
+3. **Save to Obsidian vault:** `/Users/AhmedE/Ahmed/Trading Reports/TICKER_SCAN_YYYY-MM-DD.md`
+4. **Store in DB:** `store_trading_prediction()` if 3+ gates pass
 
-| Tool | Purpose |
-|------|---------|
-| `scan_long_candidates()` | Find bullish setups |
-| `scan_short_candidates()` | Find bearish setups |
-| `scan_market_opportunities()` | Both directions |
-| `detect_catalyst_strength()` | Verify catalyst quality |
-| `detect_unusual_options_activity()` | Options flow analysis |
-| `detect_insider_cluster()` | Insider buying/selling patterns |
-
-## Candidate Filters
-
-### LONG Requirements
-- RSI < 50 (not overbought)
-- Brooks Always-In: LONG or transitioning
-- Price above key support
-- Catalyst strength ≥ 60%
-- F-Score ≥ 6
-
-### SHORT Requirements
-- RSI > 50 (not oversold)
-- Brooks Always-In: SHORT or transitioning
-- Price below key resistance
-- Catalyst strength ≥ 60%
-- F-Score ≤ 4
-
-## Catalyst Verification
-
-**Types:** Earnings, Insider Activity, Analyst Upgrades, Institutional Buying, News Events
-
-**Institutional Strength:**
-- ≥ 60%: Trade-worthy
-- < 60%: Skip (weak signal)
-
-**Freshness:** Must be < 7 days old
-
-## Smart Money Detection
-
-**Unusual Options Activity:**
-- Volume > 2x daily average
-- Large block trades (> 500 contracts)
-- P/C ratio changes
-
-**Insider Clusters:**
-- Bullish: 3+ insiders buying within 30 days
-- Bearish: 3+ insiders selling within 30 days
-
-## 4-Gate Validation for Candidates
-
-| Gate | Weight | Passing |
-|------|--------|---------|
-| Catalyst | 15% | ≥ 60% strength |
-| Freshness | 15% | Recent action supports direction |
-| Brooks | 19.6% | Always-In aligned |
-| Quality | 10% | F-Score appropriate for direction |
-
-**Score Interpretation:**
-- ≥ 70%: High-quality (prioritize)
-- 50-70%: Moderate (consider)
-- < 50%: Skip
-
-## Output Format
-
-For each candidate:
-1. Symbol, price, direction
-2. 4-gate score and signal
-3. Catalyst type and strength
-4. Brooks Always-In direction
-5. Entry / Stop / Target levels
-6. R:R ratio (must be ≥ 2:1)
-7. Options strategy (if applicable)
-
-## Examples
+### ROLE 2 Required Tools (ALL must be called)
 
 ```
-"Scan the market for opportunities"
-"Find LONG candidates"
-"Scan for SHORT setups"
-"Find stocks with unusual options activity"
-"Show me insider buying clusters"
+Phase 0: get_questrade_quotes(symbols=[ticker])
+Sec A:   get_ticker_data(ticker), calculate_quality_score(ticker)
+Sec B:   detect_catalyst_strength(ticker), get_earnings_history(ticker),
+         detect_insider_cluster(ticker), get_institutional_holders(ticker)
+Sec C:   analyze_options_mcmillan(ticker), detect_unusual_options_activity(ticker)
+Sec D:   analyze_technical(ticker), calculate_relative_strength_tool(ticker),
+         analyze_volume_tool(ticker), analyze_competitors(ticker)
+Sec E:   (uses dalio_metrics from analyze_volume_tool)
+Sec F:   generate_trading_signal(ticker, direction, account_size=10000)
 ```
+
+### ROLE 2 Report Sections (ALL required)
+
+- **Section A:** Company Overview + Quality Score
+- **Section B:** Catalyst Verification (MANDATORY — NO CATALYST = NO TRADE)
+- **Section C:** McMillan Options Strategy + Smart Money
+- **Section D:** Al Brooks Price Action (CENTRAL)
+- **Section E:** Dalio Economic Machine
+- **Section F:** Trading Signal + 5-Gate Validation + Trading Plan
+
+---
+
+## MANDATORY: DB Storage
+
+**Every ticker passing 3+ gates MUST be stored via `store_trading_prediction()` immediately.**
+
+- If `status: "error"` returned, **report the error to user** (never silently swallow)
+- If multiple stores fail, warn user about MSSQL status
+- Failed stores do NOT stop the scan
+
+---
 
 ## Post-Entry Management
-
-**After entering a position found by scanner:**
 
 | Position Type | Use Skill |
 |--------------|-----------|
 | Stock | Portfolio (4-gate validation) |
 | Options | Position (5-rule management) |
-
-```
-Scanner → find opportunity
-Trading → analyze + trade plan
-Entry → execute
-Stock? → Portfolio skill
-Options? → Position skill
-```
-
-## Important Notes
-
-- Scanner finds NEW opportunities only
-- Use portfolio skill for existing positions
-- Only trade setups with ≥ 60% catalyst strength
-- Brooks alignment is critical
-- Quality filters prevent value traps
-- Look for smart money confirmation
-- All setups must have ≥ 2:1 R:R
-
-## Scan Universe
-
-- S&P 500, NASDAQ 100, Russell 2000
-- Market cap > $1B
-- Average volume > 500K shares
-- Optionable stocks

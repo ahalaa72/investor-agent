@@ -8,6 +8,26 @@ Scan markets for top LONG and SHORT candidates with detailed analysis per stock.
 
 ---
 
+## 📁 REPORT OUTPUT: OBSIDIAN VAULT
+
+**MANDATORY:** After generating the report, save it as a markdown file in the Obsidian vault.
+
+```text
+Path: /Users/AhmedE/Ahmed/Trading Reports/
+Filename: MARKET_SCAN_YYYY-MM-DD.md
+```
+
+**Example:** `/Users/AhmedE/Ahmed/Trading Reports/MARKET_SCAN_2026-02-08.md`
+
+**Rules:**
+
+- Use the `Write` tool to save the complete report to the vault
+- Date format: YYYY-MM-DD (analysis date)
+- If scanning a single ticker (deep dive), use: `TICKER_SCAN_YYYY-MM-DD.md`
+- Always save AFTER generating the full report (not incrementally)
+
+---
+
 ## ⚠️ CRITICAL PRINCIPLE: CATALYST IS MANDATORY
 
 **NO CATALYST = NO TRADE. Period.**
@@ -215,15 +235,21 @@ Sector Rank:      X of Y
 Is Leader:        [YES / NO]
 ```
 
-| Rank | Ticker | RS Score | 30d Perf | 90d Perf |
-|------|--------|----------|----------|----------|
-| 1 | [XXX] | XX | +XX.X% | +XX.X% |
-| 2 | [XXX] | XX | +XX.X% | +XX.X% |
-| 3 | [THIS] | XX | +XX.X% | +XX.X% |
+| Rank | Ticker | RS Score | 30d Perf | 90d Perf | P/E | P/S |
+|------|--------|----------|----------|----------|-----|-----|
+| 1 | [XXX] | XX | +XX.X% | +XX.X% | XX.X | XX.X |
+| 2 | [XXX] | XX | +XX.X% | +XX.X% | XX.X | XX.X |
+| 3 | [THIS] | XX | +XX.X% | +XX.X% | XX.X | XX.X |
 
+**Valuation vs Peers:** [PREMIUM / DISCOUNT / IN-LINE] — P/E XX.X vs peer avg XX.X (+/-XX%)
 **Relative Advantage:** [What makes this stock better/worse than peers]
 
 ---
+
+**Analyst Consensus:** [Strong Buy/Buy/Hold] | Avg PT: $XXX (+/-XX%) | XX analysts [get_ticker_data]
+**Forward P/E:** XX.X vs Trailing P/E: XX.X → [Growth expected / Deceleration] [get_ticker_data]
+**Share Trend:** [BUYBACK -X.X% YoY / DILUTION +X.X% YoY / FLAT] [get_ticker_data]
+**ESG Flag:** [NONE / ⚠️ Material — (issue summary)] — Only flag if sector is HIGH ESG relevance (energy, mining, defense, tobacco) and institutional holders include ESG-focused funds [get_institutional_holders]
 
 **Recent Headlines:**
 1. "[Headline 1]" - [Source, Date] [get_ticker_data]
@@ -262,6 +288,11 @@ Warnings:           [List any items requiring manual verification]
 
 **If NONE → REJECT CANDIDATE. Do not continue analysis.**
 
+**Supplemental Web Search (if time permits):**
+- Search `"[TICKER] analyst upgrade downgrade latest news"` for recent actions not yet in MCP data
+- Tag findings as `[WebSearch]` to distinguish from MCP tool data
+- Cross-reference with `detect_catalyst_strength()` — web data provides context, does NOT override scores
+
 ---
 
 **Why Is This Stock Moving?**
@@ -289,6 +320,16 @@ Warnings:           [List any items requiring manual verification]
 | Q4 2023 | MM/DD | $X.XX | $X.XX | +X.X% ✅ | $XXB |
 
 **Historical Beat Rate:** XX% (X/4 quarters beat) [get_earnings_history]
+
+#### Catalyst Timeline (Multi-Timeframe)
+
+| Timeframe | Catalyst | Date | Impact |
+|-----------|---------|------|--------|
+| Near (0-7d) | [Event] | MM/DD | [HIGH/MED/LOW] |
+| Medium (7-30d) | [Event] | MM/DD | [HIGH/MED/LOW] |
+| Long (30-90d) | [Event] | MM/DD | [HIGH/MED/LOW] |
+
+**Catalyst Density:** [HIGH / MODERATE / LOW]
 
 #### Secondary Catalysts (< 30 days) [get_ticker_data]
 - [Event 1]: [Date] - [Description]
@@ -364,12 +405,16 @@ Largest Bet:        [Description of biggest position]
 - **Current IV:** XX.X%
 - **IV Rank:** XX% [HIGH >70 sell premium / LOW <30 buy premium / NORMAL 30-70]
 - **IV Percentile:** XX%
+- **IV Trend:** [RISING/FALLING/STABLE] — [Rank vs Percentile divergence]
+- **IV vs HV:** XX.X% vs XX.X% → [OVERPRICED/UNDERPRICED/FAIR] [analyze_volatility_tool]
 - **Divergence Check:** [ALIGNED / DIVERGENT: recent spike vs historical norm]
   - Both HIGH = Genuinely elevated → Premium selling optimal
   - Both LOW = Genuinely suppressed → Premium buying optimal
   - Rank HIGH + Percentile LOW = Recent spike → Watch for mean reversion
   - Rank LOW + Percentile HIGH = Unusual compression → Potential breakout
 - **Environment:** [HIGH_IV / LOW_IV / NORMAL_IV]
+- **Term Structure:** [CONTANGO / BACKWARDATION / FLAT] [analyze_iv_term_structure]
+- **Put Skew:** [STEEP / NORMAL / FLAT] [analyze_iv_skew]
 
 #### Expected Moves & Standard Deviation ⭐ NEW
 **📊 PROBABILITY-BASED STRIKE SELECTION:**
@@ -1154,9 +1199,12 @@ GATE 2 STATUS:     [✅ PASS (5/6) / ❌ FAIL (<5/6)]
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │  SIGNAL: [🟢🟢 STRONG_BUY / 🟢 BUY / 🟡 WATCH / 🔴 NO_TRADE] │
+│  CONVICTION: [HIGH / MODERATE / LOW]                         │
 │  CONFIDENCE: XX/100                                         │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+**Conviction Mapping:** HIGH (≥80 score + 5/5 gates) | MODERATE (70-79 + 4/5) | LOW (<70 or <4 gates)
 
 #### Gate Summary
 | Gate | Status | Details |
@@ -1203,6 +1251,14 @@ Win/Loss Record:          XXW / XXL
 ```
 
 **Validation Status:** [STRONG ≥20 setups, >65% / MODERATE 10-20, >55% / WEAK <10]
+
+---
+
+#### Expected Value (Probability-Weighted)
+
+**Expected Value:** +X.X% (Bull XX%: +XX% | Base XX%: +X% | Bear XX%: -X%)
+**Analyst Target Range:** $XXX - $XXX (avg $XXX, +/-XX%) [get_ticker_data]
+**Decision:** [EV > 0% + Win Prob > 50% → PROCEED / EV < 0% → SKIP]
 
 ---
 
@@ -1287,14 +1343,14 @@ Win/Loss Record:          XXW / XXL
 
 ## Top Picks Ranking (with 5-Gate Status)
 
-| Rank | Dir | Ticker | Signal | Score | Gates | Brooks | R/R | Status |
-|------|-----|--------|--------|-------|-------|--------|-----|--------|
-| 1 | LONG | [XXX] | 🟢🟢 | XX/100 | 5/5 | XX% | X.X:1 | EXECUTE |
-| 2 | LONG | [XXX] | 🟢 | XX/100 | 4/5 | XX% | X.X:1 | EXECUTE 75% |
-| 3 | LONG | [XXX] | 🟡 | XX/100 | 3/5 | XX% | X.X:1 | WATCH |
-| 1 | SHORT | [XXX] | 🟢🟢 | XX/100 | 5/5 | XX% | X.X:1 | EXECUTE |
-| 2 | SHORT | [XXX] | 🟢 | XX/100 | 4/5 | XX% | X.X:1 | EXECUTE 75% |
-| 3 | SHORT | [XXX] | 🔴 | XX/100 | 2/5 | XX% | X.X:1 | SKIP |
+| Rank | Dir | Ticker | Signal | Conviction | Score | Gates | Brooks | R/R | Status |
+|------|-----|--------|--------|------------|-------|-------|--------|-----|--------|
+| 1 | LONG | [XXX] | 🟢🟢 | HIGH | XX/100 | 5/5 | XX% | X.X:1 | EXECUTE |
+| 2 | LONG | [XXX] | 🟢 | MODERATE | XX/100 | 4/5 | XX% | X.X:1 | EXECUTE 75% |
+| 3 | LONG | [XXX] | 🟡 | LOW | XX/100 | 3/5 | XX% | X.X:1 | WATCH |
+| 1 | SHORT | [XXX] | 🟢🟢 | HIGH | XX/100 | 5/5 | XX% | X.X:1 | EXECUTE |
+| 2 | SHORT | [XXX] | 🟢 | MODERATE | XX/100 | 4/5 | XX% | X.X:1 | EXECUTE 75% |
+| 3 | SHORT | [XXX] | 🔴 | LOW | XX/100 | 2/5 | XX% | X.X:1 | SKIP |
 
 **Signal Legend:** 🟢🟢 STRONG_BUY/SELL | 🟢 BUY/SELL | 🟡 WATCH | 🔴 NO_TRADE
 
@@ -1316,6 +1372,8 @@ Win/Loss Record:          XXW / XXL
 - **Fear & Greed Index:** XX [get_cnn_fear_greed_index]
 - **Market Bias:** [Risk-On favors LONGS / Risk-Off favors SHORTS / Neutral]
 - **VIX Level:** XX.XX [If available]
+- **Macro Risk Level:** [LOW / MODERATE / ELEVATED / HIGH] — based on F&G + VIX + rate environment
+- **Position Sizing Impact:** [Full size / Normal / Reduce 25-50% / Cash preservation]
 
 ---
 
@@ -1505,6 +1563,9 @@ Create the final ranking table with:
 | Tool | Data |
 |------|------|
 | `analyze_options_mcmillan()` | Full McMillan analysis (IV Rank, P/C Ratio, Max Pain, UOA, Strategy) |
+| `analyze_iv_term_structure()` | IV term structure shape (Contango/Backwardation/Flat) |
+| `analyze_iv_skew()` | IV skew analysis (put/call skew steepness) |
+| `analyze_volatility_tool()` | Historical volatility for IV vs HV comparison |
 
 ### Section D: Al Brooks Analysis + Freshness (Gates 2 & 3)
 | Tool | Data |

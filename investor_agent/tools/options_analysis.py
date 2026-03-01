@@ -2985,6 +2985,47 @@ def register_tools(mcp):
                                                 puts_df = temp_puts_df
                                                 options_source = "questrade"
                                                 logger.info(f"Using Questrade options data for {ticker} (validated strikes near {current_price:.2f})")
+
+                                                # Backfill OI (and volume if needed) from yfinance
+                                                # Questrade API doesn't return openInterest; volume may be 0 off-market
+                                                needs_oi = not calls_df.empty and (calls_df['openInterest'] == 0).all()
+                                                needs_vol = not calls_df.empty and (calls_df['volume'] == 0).all()
+                                                if needs_oi or needs_vol:
+                                                    try:
+                                                        yf_calls_oi, yf_puts_oi = _fetch_yf_option_chain(ticker, nearest_exp)
+                                                        if not yf_calls_oi.empty:
+                                                            if needs_oi and 'openInterest' in yf_calls_oi.columns:
+                                                                yf_oi_map = dict(zip(
+                                                                    yf_calls_oi['strike'].round(2),
+                                                                    yf_calls_oi['openInterest'].fillna(0).astype(int)
+                                                                ))
+                                                                calls_df['openInterest'] = calls_df['strike'].round(2).map(yf_oi_map).fillna(0).astype(int)
+                                                                backfilled = sum(1 for v in yf_oi_map.values() if v > 0)
+                                                                logger.info(f"Backfilled call OI from yfinance for {ticker} ({backfilled} strikes with OI)")
+                                                            if needs_vol and 'volume' in yf_calls_oi.columns:
+                                                                yf_vol_map = dict(zip(
+                                                                    yf_calls_oi['strike'].round(2),
+                                                                    yf_calls_oi['volume'].fillna(0).astype(int)
+                                                                ))
+                                                                calls_df['volume'] = calls_df['strike'].round(2).map(yf_vol_map).fillna(0).astype(int)
+                                                                logger.info(f"Backfilled call volume from yfinance for {ticker}")
+                                                        if not puts_df.empty and not yf_puts_oi.empty:
+                                                            if needs_oi and 'openInterest' in yf_puts_oi.columns:
+                                                                yf_put_oi_map = dict(zip(
+                                                                    yf_puts_oi['strike'].round(2),
+                                                                    yf_puts_oi['openInterest'].fillna(0).astype(int)
+                                                                ))
+                                                                puts_df['openInterest'] = puts_df['strike'].round(2).map(yf_put_oi_map).fillna(0).astype(int)
+                                                                logger.info(f"Backfilled put OI from yfinance for {ticker}")
+                                                            if needs_vol and 'volume' in yf_puts_oi.columns:
+                                                                yf_put_vol_map = dict(zip(
+                                                                    yf_puts_oi['strike'].round(2),
+                                                                    yf_puts_oi['volume'].fillna(0).astype(int)
+                                                                ))
+                                                                puts_df['volume'] = puts_df['strike'].round(2).map(yf_put_vol_map).fillna(0).astype(int)
+                                                                logger.info(f"Backfilled put volume from yfinance for {ticker}")
+                                                    except Exception as oi_err:
+                                                        logger.warning(f"yfinance OI/volume backfill failed for {ticker}: {oi_err}")
                                         else:
                                             logger.warning(f"No strike data from Questrade for {ticker}")
                                     break
@@ -4185,7 +4226,7 @@ def register_tools(mcp):
 
             # Get current price first
             t = yf.Ticker(ticker)
-            current_price = t.info.get('currentPrice') or t.info.get('regularMarketPrice') or t.history(period='1d')['Close'].iloc[-1]
+            current_price = (t.info or {}).get('currentPrice') or (t.info or {}).get('regularMarketPrice') or t.history(period='1d')['Close'].iloc[-1]
 
             # Try Questrade first (has Greeks already)
             calls_df = None
@@ -4581,7 +4622,7 @@ def register_tools(mcp):
 
             # Get current price
             t = yf.Ticker(ticker)
-            current_price = t.info.get('currentPrice') or t.info.get('regularMarketPrice') or t.history(period='1d')['Close'].iloc[-1]
+            current_price = (t.info or {}).get('currentPrice') or (t.info or {}).get('regularMarketPrice') or t.history(period='1d')['Close'].iloc[-1]
 
             term_structure = []
             options_source = "yfinance"
@@ -4850,7 +4891,7 @@ def register_tools(mcp):
 
             # Get current price
             t = yf.Ticker(ticker)
-            current_price = t.info.get('currentPrice') or t.info.get('regularMarketPrice') or t.history(period='1d')['Close'].iloc[-1]
+            current_price = (t.info or {}).get('currentPrice') or (t.info or {}).get('regularMarketPrice') or t.history(period='1d')['Close'].iloc[-1]
 
             # Get option chain for this expiration
             calls_df, puts_df = _fetch_yf_option_chain(t, expiry)
@@ -5543,7 +5584,7 @@ def register_tools(mcp):
 
                 # Fall back to yfinance
                 t = yf.Ticker(ticker)
-                current_price = t.info.get('currentPrice') or t.info.get('regularMarketPrice') or t.history(period='1d')['Close'].iloc[-1]
+                current_price = (t.info or {}).get('currentPrice') or (t.info or {}).get('regularMarketPrice') or t.history(period='1d')['Close'].iloc[-1]
 
                 # Get options chain
                 if expiration is None:

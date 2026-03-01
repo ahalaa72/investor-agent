@@ -1,4 +1,4 @@
-# Investor Agent - Claude Configuration
+# Investor Agent - Gemini Configuration
 
 ## 🧠 CORE MEMORY
 
@@ -150,20 +150,6 @@ WRONG:
 
 **⚠️ IMPORTANT:** Questrade API requires special configuration to work. If you encounter `HTTP Error 403: Forbidden`, see `QUESTRADE_SETUP.md` immediately.
 
-### Key Requirements
-
-1. **User-Agent Header Required** - Questrade API is protected by Cloudflare which blocks requests without User-Agent headers (error code: 1010). A monkey-patch in `investor_agent/questrade.py` handles this automatically.
-
-2. **Token Persistence** - Tokens are stored in Docker volume `questrade-tokens` mounted to `/root`. Never delete this volume.
-
-3. **Single-Use Tokens** - Questrade refresh tokens are consumed on first use. Never test tokens manually with Python scripts - use MCP tools only.
-
-4. **Setup Documentation** - For initial setup, troubleshooting, or token issues, refer to:
-   - `QUESTRADE_SETUP.md` - Complete setup guide with Cloudflare fix
-   - `QUESTRADE_TOKEN_GUIDE.md` - Token lifecycle and best practices
-
-5. **DO NOT** - Never run manual Python test scripts that make Questrade API calls - this consumes the single-use token before MCP can use it.
-
 ### Automatic Troubleshooting Protocol
 
 When Questrade API fails, follow this protocol **WITHOUT asking the user to manually fix it**:
@@ -175,30 +161,8 @@ When Questrade API fails, follow this protocol **WITHOUT asking the user to manu
 **AUTO-FIX STEPS:**
 
 1. Tell user: "Questrade token expired. I'll guide you through the refresh."
-2. Instruct user to:
-   - Go to <https://login.questrade.com/APIAccess/UserApps.aspx>
-   - Click "Generate new token"
-   - Copy the new token
-
-3. Once user provides new token, execute:
-
-```bash
-# Update .env file
-echo "QUESTRADE_REFRESH_TOKEN=NEW_TOKEN_HERE" > /Users/AhmedE/git/investor-agent/.env
-
-# Update running container
-docker exec investor-agent-mcp bash -c 'cat > /root/.questrade.json << "EOF"
-{
-  "refresh_token": "NEW_TOKEN_HERE",
-  "token_type": "Bearer"
-}
-EOF'
-
-# Verify
-docker exec investor-agent-mcp cat /root/.questrade.json
-```
-
-4. Test with `get_questrade_accounts` to confirm working
+2. Instruct user to generate a new token at <https://login.questrade.com/APIAccess/UserApps.aspx>
+3. Once user provides new token, execute the update commands (see "How to Fix Token Issues" above).
 
 #### Error: HTTP 403 (Forbidden)
 
@@ -207,104 +171,24 @@ docker exec investor-agent-mcp cat /root/.questrade.json
 **AUTO-FIX STEPS:**
 
 1. Check if monkey-patch exists:
-
-```bash
-docker exec investor-agent-mcp grep -A 5 "_urlopen_with_user_agent" /app/investor_agent/questrade.py
-```
-
+   ```bash
+   docker exec investor-agent-mcp grep -A 5 "_urlopen_with_user_agent" /app/investor_agent/questrade.py
+   ```
 2. If missing, rebuild container:
-
-```bash
-bash /Users/AhmedE/git/investor-agent/rebuild.sh
-```
+   ```bash
+   bash /Users/AhmedE/git/investor-agent/rebuild.sh
+   ```
 
 #### Fallback to Yahoo Finance
 
 **When MCP tools return `data_source: "YAHOO_FINANCE"`:**
 
 **MANDATORY DISCLOSURE:**
-
 - **ALWAYS state clearly:** "Using Yahoo Finance data (delayed 15-20 min) - Questrade unavailable"
 - **Label all prices:** "Price: $249.53 (Yahoo Finance, may be stale)"
-- **Warn user:** "This is NOT real-time data. Verify current price with your broker before trading."
-- **Attempt fix:** After reporting data, attempt to fix Questrade connection using protocol above
-
-**NEVER:**
-
-- Present Yahoo Finance data as if it's real-time
-- Make trading recommendations based on delayed data without disclosure
-- Ignore the `data_source` field in API responses
 
 ## Critical Principle: Intellectual Honesty
 
-This is serious work involving real money. When uncertain, say "I don't know."
-
-- If you lack data or information to answer a question accurately, admit it
-- If analysis results are unclear or inconclusive, state that explicitly
-- If multiple interpretations exist, present them with their uncertainties
-- NEVER guess, speculate, or make up information about stocks, options, or market conditions
-- It's better to acknowledge limitations than to provide false confidence
-
-Investment decisions require accuracy. Uncertainty is acceptable; false certainty is dangerous.
-
-## 📁 MANDATORY: Save All Trading Reports to Obsidian Vault
-
-**⚠️ CRITICAL: Every trading analysis report MUST be automatically saved to the Obsidian vault. Do NOT just display in chat — ALWAYS write the file.**
-
-### Vault Path
-`/Users/AhmedE/Ahmed/`
-
-### File Naming Convention
-- Format: `[TICKER]_[TYPE]_[DATE].md`
-- Date format: `YYYY-MM-DD`
-- Types: `COMPREHENSIVE`, `CONCISE`, `DEEP_DIVE`, `OPTIONS_TRADE_PLAN`, `PORTFOLIO`
-
-**Examples:**
-- `AAPL_COMPREHENSIVE_2026-02-18.md`
-- `TSLA_CONCISE_2026-02-18.md`
-- `NVDA_OPTIONS_TRADE_PLAN_2026-02-18.md`
-- `PORTFOLIO_DAILY_2026-02-18.md`
-
-### When to Save (ALL of these trigger a save)
-1. **Any stock scan/analysis** (`scan`, `analyze`, `generate_trading_signal`)
-2. **Options trade plans** (`generate_options_trade_plan`, `analyze_options_mcmillan`)
-3. **Portfolio reviews** (`get_portfolio_summary`, portfolio validation)
-4. **Market scans** (`scan_market_opportunities`, `scan_long_candidates`, `scan_short_candidates`)
-5. **Sector rotation reports** (`scan_market_by_sector`)
-6. **Any report displayed to the user** — if it's worth showing, it's worth saving
-
-### Save Workflow
-```
-1. Run MCP analysis tools
-2. Generate formatted markdown report
-3. Write to Obsidian vault: /Users/AhmedE/Ahmed/[TICKER]_[TYPE]_[DATE].md
-4. Display report summary in chat
-5. Confirm: "✅ Report saved to: [[TICKER_TYPE_DATE]]"
-```
-
-### Report Must Include
-- Executive summary table (ticker, price, signal, gates passed)
-- Data source disclosure (Questrade real-time vs Yahoo Finance delayed)
-- 5-gate status table
-- Catalyst analysis
-- Technical indicators
-- Support/resistance levels
-- Options environment (if applicable)
-- Trading recommendation with entry/stop/target
-- Risk assessment
-- Generated timestamp and signal version
-
-### Storage Rules
-1. **ALWAYS save** — Never just display in chat without saving
-2. **One file per ticker per day** — Overwrite if same ticker analyzed twice in one day
-3. **Use Write tool** — Save full markdown report content
-4. **Confirm to user** — Always tell user the file was saved with Obsidian link
-5. **Market scans** — Save as `MARKET_SCAN_LONG_DATE.md` or `SECTOR_ROTATION_DATE.md`
-
----
-
-## Example Queries
-
-- "Show my portfolio" -> Use `get_questrade_accounts` then `get_portfolio_summary`
-- "Analyze AAPL" -> Use `generate_trading_signal` with ticker="AAPL"
-- "Scan for opportunities" -> Use `scan_market_opportunities`
+- If you lack data, admit it.
+- If analysis is unclear, state it.
+- NEVER guess or speculate about market data.

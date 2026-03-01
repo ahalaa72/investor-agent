@@ -245,7 +245,7 @@ def analyze_technical_impl(
                 'error': f'Trend strength analysis failed: {str(e)}',
             }
 
-    return result
+    return convert_numpy_types(result)
 
 
 def find_support_resistance_impl(
@@ -260,7 +260,7 @@ def find_support_resistance_impl(
         raise ValueError(f"No historical data found for {ticker}")
 
     levels = TechnicalAnalysis.find_support_resistance(history)
-    return {"symbol": ticker, "lookback_period": lookback_period, **levels}
+    return convert_numpy_types({"symbol": ticker, "lookback_period": lookback_period, **levels})
 
 
 def analyze_volume_tool_impl(
@@ -344,7 +344,7 @@ def analyze_volume_tool_impl(
                 'interpretation': 'Volume quality analysis unavailable',
             }
 
-    return result
+    return convert_numpy_types(result)
 
 
 def analyze_volatility_tool_impl(
@@ -353,7 +353,7 @@ def analyze_volatility_tool_impl(
 ) -> dict:
     """Comprehensive volatility analysis with ATR, HV, beta, and position sizing."""
     ticker = validate_ticker(ticker)
-    return analyze_volatility(ticker, period)
+    return convert_numpy_types(analyze_volatility(ticker, period))
 
 
 def calculate_relative_strength_tool_impl(
@@ -364,7 +364,7 @@ def calculate_relative_strength_tool_impl(
     """IBD-style relative strength rating (0-100) vs benchmark."""
     ticker = validate_ticker(ticker)
     benchmark = validate_ticker(benchmark)
-    return calculate_relative_strength(ticker, benchmark, period)
+    return convert_numpy_types(calculate_relative_strength(ticker, benchmark, period))
 
 
 def calculate_fundamental_scores_tool_impl(
@@ -373,7 +373,7 @@ def calculate_fundamental_scores_tool_impl(
 ) -> dict:
     """Piotroski F-Score and Altman Z-Score analysis."""
     ticker = validate_ticker(ticker)
-    return calculate_fundamental_scores(ticker, max_periods)
+    return convert_numpy_types(calculate_fundamental_scores(ticker, max_periods))
 
 
 def register_tools(mcp):
@@ -457,7 +457,7 @@ def register_tools(mcp):
                 except Exception as e:
                     comparisons.append({"symbol": t, "error": str(e)})
 
-            return {"period": period, "comparison": comparisons}
+            return convert_numpy_types({"period": period, "comparison": comparisons})
 
     # 4 NEW bootstrap tools (previously only in server.py)
     if _bootstrap_available:

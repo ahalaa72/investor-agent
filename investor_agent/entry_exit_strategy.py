@@ -481,12 +481,12 @@ def determine_entry_strategy(
                 entry_confidence += 0.05
 
             else:
-                # Support >10% away - no clear entry
-                entry_price = None  # Signal no entry
+                # Support >10% away - no clear entry at current price
+                entry_price = support_price  # Recommended pullback target (NOT current price)
                 entry_strategy = "NO_CLEAR_ENTRY"
                 entry_rationale = (
-                    f"No entry recommended. Price ${current_price:.2f} is {pullback_distance*100:.1f}% above support ${support_price:.2f}. "
-                    f"Wait for either: (1) pullback to ${support_price:.2f}, or (2) clearer setup with closer S/R levels."
+                    f"No entry at current price. Price ${current_price:.2f} is {pullback_distance*100:.1f}% above support ${support_price:.2f}. "
+                    f"Wait for pullback to ${support_price:.2f} or clearer setup with closer S/R levels."
                 )
                 entry_confidence -= 0.2
 
@@ -577,6 +577,38 @@ def determine_entry_strategy(
                     f"Strength: {resistance_strength:.0%}."
                 )
                 entry_confidence += 0.25
+
+            # Moderate resistance 3-5% above
+            elif 0.03 < pullback_distance <= 0.05 and resistance_strength > 0.2:
+                entry_price = resistance_price
+                entry_strategy = "PULLBACK_TO_RESISTANCE"
+                entry_rationale = (
+                    f"Aggressive entry: Wait for rally to resistance at ${resistance_price:.2f} "
+                    f"({pullback_distance*100:.1f}% above current). "
+                    f"May require patience. Strength: {resistance_strength:.0%}."
+                )
+                entry_confidence += 0.1
+
+            # Resistance 5-10% away - wait for partial rally
+            elif 0.05 < pullback_distance <= 0.10:
+                midpoint = (current_price + resistance_price) / 2
+                entry_price = midpoint
+                entry_strategy = "WAIT_FOR_PULLBACK"
+                entry_rationale = (
+                    f"Wait for rally to ${midpoint:.2f} (midpoint between current ${current_price:.2f} and resistance ${resistance_price:.2f}). "
+                    f"Resistance is {pullback_distance*100:.1f}% away - too far to short now, but offers good R/R on rally."
+                )
+                entry_confidence += 0.05
+
+            # Resistance >10% away - no clear entry
+            elif pullback_distance > 0.10:
+                entry_price = resistance_price  # Recommended rally target (NOT current price)
+                entry_strategy = "NO_CLEAR_ENTRY"
+                entry_rationale = (
+                    f"No entry at current price. Price ${current_price:.2f} is {pullback_distance*100:.1f}% below resistance ${resistance_price:.2f}. "
+                    f"Wait for rally to ${resistance_price:.2f} or clearer setup with closer S/R levels."
+                )
+                entry_confidence -= 0.2
 
             else:
                 entry_price = current_price
@@ -671,17 +703,43 @@ def determine_entry_strategy(
     total_score = technical_score + fundamental_score + macro_score
     entry_confidence = min(entry_confidence + total_score, 1.0)
 
+    # Guard: entry_price should always be set by now (NO_CLEAR_ENTRY uses support/resistance)
+    if entry_price is None:
+        logger.warning(f"entry_price was None for {ticker} - falling back to current_price")
+        entry_price = current_price
+        entry_strategy = "CURRENT_PRICE"
+        entry_confidence = max(entry_confidence, 0.3)
+
     # Position size recommendation
     if entry_confidence > 0.8 and entry_strategy in ["AT_SUPPORT", "AT_RESISTANCE", "PULLBACK_TO_SUPPORT", "PULLBACK_TO_RESISTANCE"]:
         position_size_multiplier = 1.5  # Max 3% risk (vs 2% base)
-    elif entry_confidence < 0.5 or entry_strategy == "CURRENT_PRICE":
+    elif entry_confidence < 0.5 or entry_strategy in ["CURRENT_PRICE", "NO_CLEAR_ENTRY", "WAIT_FOR_PULLBACK"]:
         position_size_multiplier = 0.5  # Reduce to 1% risk
     else:
         position_size_multiplier = 1.0  # Normal 2% risk
 
+    # Determine entry_status
+    ACTIONABLE_STRATEGIES = {"AT_SUPPORT", "AT_RESISTANCE", "CURRENT_PRICE"}
+    WAIT_STRATEGIES = {"PULLBACK_TO_SUPPORT", "PULLBACK_TO_RESISTANCE", "WAIT_FOR_PULLBACK",
+                       "BREAKOUT_CONFIRMATION", "BREAKOUT_ABOVE_ATH", "BREAKDOWN_CONFIRMATION"}
+
+    if entry_strategy in ACTIONABLE_STRATEGIES:
+        entry_status = "ACTIONABLE"
+    elif entry_strategy == "NO_CLEAR_ENTRY":
+        entry_status = "WAIT"
+    elif entry_strategy in WAIT_STRATEGIES:
+        entry_status = "WAIT"
+    else:
+        entry_status = "ACTIONABLE"
+
+    # Calculate entry_zone (±1% around entry_price)
+    entry_zone = {"low": round(entry_price * 0.99, 2), "high": round(entry_price * 1.01, 2)}
+
     return {
         'entry_price': float(entry_price),
         'entry_strategy': entry_strategy,
+        'entry_status': entry_status,
+        'entry_zone': entry_zone,
         'entry_rationale': entry_rationale,
         'entry_confidence': float(entry_confidence),
         'position_size_multiplier': position_size_multiplier,

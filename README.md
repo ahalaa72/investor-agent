@@ -51,6 +51,33 @@ The **investor-agent** is a Model Context Protocol (MCP) server that provides co
 
 The server integrates with [yfinance](https://pypi.org/project/yfinance/) for market data and automatically optimizes data volume for better performance.
 
+## Analyst Server — 3-Stage AI Pipeline
+
+A local web app (`analyst_server.py`) that routes every analysis request through three sequential AI stages before it reaches you.
+
+```
+Your Prompt → Claude Code + MCP tools → Gemini 2.0 Audit → Claude Code Resolve → Vault + Email
+```
+
+| Stage | Model | Role |
+|-------|-------|------|
+| ① Generator | Claude Code CLI | Reads CLAUDE.md + instructions.md, calls live MCP tools, produces draft report |
+| ② Auditor | Gemini 2.0 Flash | Adversarial review — recalculates every number, challenges options mechanics, verifies CCPC tax claims |
+| ③ Resolver | Claude Code CLI | Fresh session acts as objective judge, applies valid corrections, flags uncertain items |
+| ⬡ Vault | — | Saves DRAFT · AUDIT · FINAL to `/Users/AhmedE/Ahmed/Trading Reports/` |
+| ✉ Email | Gmail SMTP | Sends final report to `ahalaa@yahoo.com` |
+
+**Run:**
+```bash
+cd /Users/AhmedE/git/investor-agent
+python3 analyst_server.py
+# Open: http://localhost:7799
+```
+
+See **[ANALYST_SERVER.md](ANALYST_SERVER.md)** for full documentation including UI walkthrough, email setup, vault structure, and troubleshooting.
+
+---
+
 ## Architecture & Performance
 
 **Robust Caching & Error Handling Strategy:**
@@ -231,7 +258,7 @@ Add to your `claude_desktop_config.json` or `.mcp.json`:
   "mcpServers": {
     "investor-agent": {
       "command": "docker",
-      "args": ["exec", "-i", "investor-agent-mcp", "python", "-m", "investor_agent.server"]
+      "args": ["exec", "-i", "investor-agent-mcp", "python", "-m", "investor_agent.server_modular"]
     }
   }
 }

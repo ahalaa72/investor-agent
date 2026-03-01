@@ -143,7 +143,7 @@ Options? → POSITION skill (5-rule management)
   "mcpServers": {
     "investor-agent": {
       "command": "docker",
-      "args": ["exec", "-i", "investor-agent-mcp", "python", "-m", "investor_agent.server"]
+      "args": ["exec", "-i", "investor-agent-mcp", "python", "-m", "investor_agent.server_modular"]
     }
   }
 }

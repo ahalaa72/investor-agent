@@ -22,6 +22,25 @@ If HTTP 400 errors occur, token is consumed. See [CLAUDE.md](CLAUDE.md) or skill
 
 ---
 
+## 📁 REPORT OUTPUT: OBSIDIAN VAULT
+
+**MANDATORY:** After generating the report, save it as a markdown file in the Obsidian vault.
+
+```text
+Path: /Users/AhmedE/Ahmed/Trading Reports/
+Filename: PORTFOLIO_YYYY-MM-DD.md
+```
+
+**Example:** `/Users/AhmedE/Ahmed/Trading Reports/PORTFOLIO_2026-02-08.md`
+
+**Rules:**
+
+- Use the `Write` tool to save the complete report to the vault
+- Date format: YYYY-MM-DD (analysis date)
+- Always save AFTER generating the full report (not incrementally)
+
+---
+
 ## CRITICAL PRINCIPLE: CONTINUOUS VALIDATION
 
 **ENTRY is only half the battle. VALIDATION is ongoing.**
@@ -239,6 +258,11 @@ fear_greed = get_cnn_fear_greed_index()
 | Metric | Value | Signal |
 |--------|-------|--------|
 | Fear & Greed | XX | [Fear/Neutral/Greed] |
+| Macro Risk | [HIGH/MEDIUM/LOW] | [Brief explanation] |
+
+**Macro Risk Assessment:**
+- Interest Rate Impact: [Favorable/Neutral/Unfavorable] for portfolio
+- Sector Rotation: [Risk-On favors LONGS / Risk-Off favors SHORTS]
 
 ## TOP 5 POSITIONS (By Value)
 
@@ -375,6 +399,8 @@ GATES HOLDING: X/5
 | **LOW** | Old news (>3 days) or unknown source | ❌ Stale - DO NOT TRADE |
 | **UNVERIFIED** | Could not verify | 🚫 BLOCKED until verified |
 
+**Analyst View:** [Consensus Rating] | Target: $XXX (+/-XX% from current) | XX analysts [get_ticker_data]
+
 **Catalyst Status:** [ACTIVE / EXHAUSTED / WAITING]
 **GATE 1:** [PASS / WARN / FAIL]
 
@@ -503,6 +529,8 @@ GATES HOLDING: X/5
 | P/C Ratio | X.XX | X.XX | [Shift direction] |
 | IV Rank | XX% | XX% | [Higher/Lower] |
 | Unusual Activity | [Type] | [Type] | [Signal] |
+
+**IV Trend:** [RISING/FALLING/STABLE] | Term Structure: [CONTANGO/BACKWARDATION] [analyze_iv_term_structure] | Skew: [STEEP/NORMAL/FLAT] [analyze_iv_skew]
 
 **Options Verdict:** [SUPPORTS / NEUTRAL / OPPOSES]
 
@@ -974,6 +1002,7 @@ strike_16delta_put = round(current_price - expected_moves[45]["1sd_move"], 0)
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │  ACTION: [STRONG_HOLD / HOLD / TRIM XX% / CLOSE]           │
+│  CONVICTION: [HIGH / MODERATE / LOW]                        │
 │  CONFIDENCE: XX/100                                         │
 │  GATES: X/5 holding                                         │
 │  DIRECTION: [LONG/SHORT] (XX% weighted vote)                │
@@ -1158,6 +1187,8 @@ def detect_asset_type(symbol: str) -> str:
 | `detect_insider_cluster` | Insider sentiment change | 5s |
 | `detect_unusual_options_activity` | Options flow shift | 5s |
 | `analyze_options_mcmillan` | Full McMillan + Greeks | 15s |
+| `analyze_iv_term_structure` | IV term structure shape (contango/backwardation) | 5s |
+| `analyze_iv_skew` | IV skew analysis (put skew steepness) | 5s |
 | `get_institutional_holders` | 13F accumulation | 5s |
 
 ### Context Tools

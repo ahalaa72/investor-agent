@@ -22,6 +22,29 @@ The server provides **47 tools** for comprehensive financial analysis.
 
 ---
 
+## 📁 REPORT OUTPUT: OBSIDIAN VAULT
+
+**MANDATORY:** After generating any report, save it as a markdown file in the Obsidian vault.
+
+```text
+Path: /Users/AhmedE/Ahmed/Trading Reports/
+```
+
+**Naming Convention by Report Type:**
+
+- Comprehensive: `TICKER_COMPREHENSIVE_YYYY-MM-DD.md`
+- Concise: `TICKER_CONCISE_YYYY-MM-DD.md`
+- Scanner: `MARKET_SCAN_YYYY-MM-DD.md` (or `TICKER_SCAN_YYYY-MM-DD.md` for single-ticker deep dives)
+- Portfolio: `PORTFOLIO_YYYY-MM-DD.md`
+
+**Rules:**
+
+- Use the `Write` tool to save the complete report to the vault
+- Date format: YYYY-MM-DD (analysis date)
+- Always save AFTER generating the full report (not incrementally)
+
+---
+
 ## INSTITUTIONAL 10-PHASE FRAMEWORK
 
 **CRITICAL RULES:**
@@ -355,6 +378,28 @@ The server provides **47 tools** for comprehensive financial analysis.
 
 ---
 
+### Supplemental Research Tools (Web-Enhanced Context)
+
+30. **`WebSearch(query)`** — Built-in Claude tool
+    - Real-time web search for financial news, analyst actions, competitive landscape
+    - Use for: Phase 0 supplemental research (Comprehensive reports only)
+    - **SUPPLEMENTAL ONLY** — never overrides MCP tool outputs
+    - Tag all web-sourced data with `[WebSearch]`
+
+31. **`WebFetch(url, prompt)`** — Built-in Claude tool
+    - Fetch and extract specific data from web pages
+    - Use for: Deep-dive on specific articles, press releases, SEC filings
+    - **SUPPLEMENTAL ONLY** — never overrides MCP tool outputs
+    - Tag all web-sourced data with `[WebFetch]`
+
+**Web Research Rules:**
+- Web research is **OPTIONAL** and **SUPPLEMENTAL** — MCP tools remain authoritative
+- Use for Comprehensive reports only; skip for time-sensitive scans
+- If web data conflicts with MCP data, note the discrepancy
+- Stale web data (>7 days for news, >30 days for analysis) = flag as potentially outdated
+
+---
+
 ### Position Management Tools (Phase 4 - NEW) ⭐
 
 30. **`evaluate_options_position_management(...)`** ⭐ **POSITION LIFECYCLE**
@@ -411,6 +456,13 @@ Execute in order (see COMPREHENSIVE_INSTITUTIONAL_FRAMEWORK.md for details):
 ```python
 # PHASE 0: Real-Time Context (ALWAYS FIRST) ⭐
 get_questrade_quotes(symbols=[ticker])  # Real-time price, bid/ask, pre-market activity
+
+# PHASE 0B: Supplemental Research (OPTIONAL — Comprehensive Reports Only) 🔍
+# WebSearch("[TICKER] earnings revenue growth 2026")         # Financial performance
+# WebSearch("[TICKER] analyst price target upgrade 2026")    # Analyst consensus
+# WebSearch("[TICKER] competitor market share analysis 2026") # Market positioning
+# Rules: SUPPLEMENTAL ONLY — tag all data with [WebSearch], never overrides MCP tools
+# Skip for: Concise reports, Scanner reports, time-sensitive analysis
 
 # PHASE 1: Fundamentals (19.6%)
 get_ticker_data(ticker, max_news=10)  # Fundamentals, news, earnings (delayed is OK here)
@@ -931,6 +983,19 @@ Every data point must show its source: `**RSI:** 73.78 [analyze_technical]`
 | 70-80 | >60% | <50 | Any | CONSIDER ⚠️ Options caution |
 | <70 | >60% | Any | Any | WAIT ⚠️ Weak fundamentals |
 | Any | <50% | Any | Any | SKIP ✗ Low probability |
+
+### Conviction Level Mapping ⭐
+
+**Map scores and gates to conviction labels for all reports:**
+
+| Score | Gates Passed | Signal | Conviction | Position Size |
+|-------|-------------|--------|-----------|---------------|
+| ≥80 | 5/5 | STRONG_BUY/SELL | **HIGH** | Full size (within 2% risk) |
+| 70-79 | 4/5 | BUY/SELL | **MODERATE** | Reduced size (50-75%) |
+| 60-69 | 3/5 | WATCH | **LOW** | Do not trade |
+| <60 | <3 | NO_TRADE | **NONE** | Skip |
+
+**Usage:** Include conviction label in Executive Summary, Trade Plan, and Verdict sections of all reports.
 
 ---
 

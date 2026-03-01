@@ -200,6 +200,8 @@ def find_similar_historical_setups_impl(
 
 
 def register_tools(mcp):
+    from .scanning import _get_ohlcv_cached
+
     @mcp.tool()
     def find_similar_historical_setups(
         ticker: str,
@@ -827,6 +829,7 @@ def register_tools(mcp):
         ticker = validate_ticker(ticker)
 
         # Get returns (Questrade primary, Yahoo fallback, cached)
+        from .scanning import _get_ohlcv_cached
         hist = _get_ohlcv_cached(ticker, period="1y")
         if hist is None or hist.empty:
             return {"error": f"No data for {ticker}"}
@@ -927,6 +930,7 @@ def register_tools(mcp):
         """
         try:
             # Get historical data (Questrade primary, Yahoo fallback, cached)
+            from .scanning import _get_ohlcv_cached
             hist = _get_ohlcv_cached(ticker, period=period)
 
             if hist is None or hist.empty or len(hist) < forward_window + 20:

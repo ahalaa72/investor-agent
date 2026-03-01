@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+# ─────────────────────────────────────────────────────────────────────────────
+# start-analyst.sh
+# One script: Server + Cloudflare Tunnel + Email URL to phone
+# ─────────────────────────────────────────────────────────────────────────────
+set -euo pipefail
+
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+LOG_DIR="$REPO_DIR/logs"
+SERVER="$REPO_DIR/analyst_server.py"
+PORT=7799
+AUTH="admin:admin"
+
+SERVER_PID_FILE="$LOG_DIR/analyst-server.pid"
+SERVER_LOG="$LOG_DIR/analyst-server.log"
+TUNNEL_PID_FILE="$LOG_DIR/tunnel.pid"
+TUNNEL_LOG="$LOG_DIR/tunnel.log"
+URL_FILE="$LOG_DIR/tunnel-url.txt"
+
+mkdir -p "$LOG_DIR"
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+cleanup_stale() {
+  local pid_file=$1 name=$2
+  if [ -f "$pid_file" ]; then
+    local old_pid
+    old_pid=$(cat "$pid_file")
+    if kill -0 "$old_pid" 2>/dev/null; then
+      echo "⚠️   $name already running (PID $old_pid) — stopping…"
+      kill "$old_pid" 2>/dev/null; sleep 2
+      kill -9 "$old_pid" 2>/dev/null || true
+    fi
+    rm -f "$pid_file"
+  fi
+}
+
+# ── Preflight ────────────────────────────────────────────────────────────────
+if [ ! -f "$SERVER" ]; then echo "❌ analyst_server.py not found"; exit 1; fi
+if ! command -v python3 &>/dev/null; then echo "❌ python3 not found"; exit 1; fi
+if ! command -v cloudflared &>/dev/null; then echo "❌ cloudflared not found — brew install cloudflared"; exit 1; fi
+
+# ── Stop previous instances ──────────────────────────────────────────────────
+cleanup_stale "$SERVER_PID_FILE" "Server"
+cleanup_stale "$TUNNEL_PID_FILE" "Tunnel"
+# Kill anything still holding the port
+lsof -ti :"$PORT" | xargs kill -9 2>/dev/null || true
+sleep 1
+
+# ── Rotate logs ──────────────────────────────────────────────────────────────
+for f in "$SERVER_LOG" "$TUNNEL_LOG"; do
+  if [ -f "$f" ] && [ "$(wc -c < "$f")" -gt 10485760 ]; then
+    mv "$f" "${f%.log}-$(date +%Y%m%d-%H%M%S).log"
+  fi
+done
+
+# ── 1. Start Server ─────────────────────────────────────────────────────────
+cd "$REPO_DIR"
+PYTHONUNBUFFERED=1 nohup python3 -u "$SERVER" >> "$SERVER_LOG" 2>&1 &
+SERVER_PID=$!
+echo "$SERVER_PID" > "$SERVER_PID_FILE"
+sleep 2
+
+if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+  echo "❌ Server failed to start — check $SERVER_LOG"
+  exit 1
+fi
+echo "✅ Server started (PID $SERVER_PID) on port $PORT"
+
+# ── 2. Start Cloudflare Tunnel ──────────────────────────────────────────────
+nohup cloudflared tunnel --url "http://localhost:$PORT" > "$TUNNEL_LOG" 2>&1 &
+TUNNEL_PID=$!
+echo "$TUNNEL_PID" > "$TUNNEL_PID_FILE"
+
+echo "⏳ Waiting for Cloudflare tunnel…"
+TUNNEL_URL=""
+for i in $(seq 1 30); do
+  TUNNEL_URL=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$TUNNEL_LOG" 2>/dev/null | head -1 || true)
+  if [ -n "$TUNNEL_URL" ]; then break; fi
+  sleep 1
+done
+
+if [ -z "$TUNNEL_URL" ]; then
+  echo "❌ Tunnel failed to start — check $TUNNEL_LOG"
+  kill "$TUNNEL_PID" 2>/dev/null || true
+  rm -f "$TUNNEL_PID_FILE"
+  echo "   Server still running at http://localhost:$PORT"
+  exit 1
+fi
+
+echo "$TUNNEL_URL" > "$URL_FILE"
+echo "✅ Tunnel ready: $TUNNEL_URL"
+
+# ── 3. Email the URL (via server's /notify endpoint) ────────────────────────
+EMAIL_BODY="Ahmed's Analyst Server is live.
+
+Tap to open: $TUNNEL_URL
+
+Login: admin / admin
+3 concurrent scans · Claude + Gemini + Claude pipeline
+Reports auto-saved to vault and emailed"
+
+RESULT=$(curl -s -u "$AUTH" -X POST "http://localhost:$PORT/notify" \
+  -H "Content-Type: application/json" \
+  -d "{\"subject\":\"Analyst Server — $TUNNEL_URL\",\"message\":$(python3 -c "import json,sys;print(json.dumps(sys.argv[1]))" "$EMAIL_BODY")}" 2>/dev/null)
+
+if echo "$RESULT" | grep -q "EMAIL_SENT"; then
+  echo "✉️  URL emailed"
+else
+  echo "⚠️  Email: $RESULT"
+fi
+
+# ── Summary ──────────────────────────────────────────────────────────────────
+echo ""
+echo "══════════════════════════════════════════════════"
+echo "  Ahmed's Analyst Server"
+echo "══════════════════════════════════════════════════"
+echo "  Local  : http://localhost:$PORT"
+echo "  Public : $TUNNEL_URL"
+echo "  Login  : admin / admin"
+echo "  Server : PID $SERVER_PID  (log: $SERVER_LOG)"
+echo "  Tunnel : PID $TUNNEL_PID  (log: $TUNNEL_LOG)"
+echo "══════════════════════════════════════════════════"
+echo "  Logs   : tail -f $SERVER_LOG"
+echo "  Stop   : bash $REPO_DIR/scripts/stop-analyst.sh"
+echo "══════════════════════════════════════════════════"

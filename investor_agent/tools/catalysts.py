@@ -1241,7 +1241,8 @@ def register_tools(mcp):
                 chain = t.option_chain(nearest_exp)
 
                 if chain.calls is not None and not chain.calls.empty:
-                    current_price = t.info.get('currentPrice') or t.info.get('regularMarketPrice', 0)
+                    info = t.info or {}
+                    current_price = info.get('currentPrice') or info.get('regularMarketPrice', 0)
                     if current_price > 0:
                         atm_calls = chain.calls[
                             (chain.calls['strike'] >= current_price * 0.95) &
@@ -1979,7 +1980,8 @@ def register_tools(mcp):
 
         try:
             t = yf.Ticker(ticker)
-            current_price = t.info.get('currentPrice') or t.info.get('regularMarketPrice', 0)
+            info = t.info or {}
+            current_price = info.get('currentPrice') or info.get('regularMarketPrice', 0)
 
             if not t.options or len(t.options) == 0:
                 result["error"] = "No options available"

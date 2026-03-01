@@ -9,7 +9,8 @@
         "python",
         "-m",
         "investor_agent.server_modular"
-      ]
+      ],
+      "timeout": 300
     }
   }
 }

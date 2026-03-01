@@ -7,7 +7,7 @@ tools/*.py modules or investor_agent.core/*.
 Usage:
     python -m investor_agent.server_modular
 
-Modules (13 total, 72 tools):
+Modules (14 total, 73 tools):
     tools/market_data.py        6 tools
     tools/financial_data.py     5 tools
     tools/options_analysis.py   7 tools
@@ -21,6 +21,7 @@ Modules (13 total, 72 tools):
     tools/scanning.py           5 tools
     tools/catalysts.py          5 tools
     tools/signals.py            2 tools
+    tools/sector_scanner.py     1 tool
 """
 from dotenv import load_dotenv
 load_dotenv()
@@ -62,6 +63,7 @@ from .tools import (
     scanning,
     catalysts,
     signals,
+    sector_scanner,
 )
 
 _modules = [
@@ -78,6 +80,7 @@ _modules = [
     scanning,
     catalysts,
     signals,
+    sector_scanner,
 ]
 
 for mod in _modules:

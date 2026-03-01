@@ -1,11 +1,12 @@
-# Use Python 3.12 slim image as base
-FROM python:3.12-slim
+# ============================================================
+# STAGE 1: Builder — compile dependencies with build tools
+# ============================================================
+FROM python:3.12-slim AS builder
 
-# Set working directory
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
+# Install build dependencies (only in this stage — won't ship to final image)
+RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     curl \
     git \
@@ -17,15 +18,18 @@ RUN apt-get update && apt-get install -y \
 RUN curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg \
     && echo "deb [arch=amd64,armhf,arm64 signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/debian/12/prod bookworm main" > /etc/apt/sources.list.d/mssql-release.list \
     && apt-get update \
-    && ACCEPT_EULA=Y apt-get install -y msodbcsql18 \
+    && ACCEPT_EULA=Y apt-get install -y --no-install-recommends msodbcsql18 \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv package manager
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.local/bin:$PATH"
 
-# Install all dependencies in one go for faster builds
-RUN /root/.local/bin/uv pip install --system \
+# Install all Python dependencies
+# FIX: cryptography>=46.0.5 resolves CVE-2026-26007 (Critical 8.2)
+# FIX: pip upgraded to resolve CVE-2025-8869 and CVE-2026-1703
+RUN pip install --upgrade pip && \
+    /root/.local/bin/uv pip install --system \
     alpaca-py \
     "finvizfinance>=0.14.0" \
     "fredapi>=0.5.0" \
@@ -44,12 +48,46 @@ RUN /root/.local/bin/uv pip install --system \
     "scipy>=1.14.0" \
     "scikit-learn>=1.3.0" \
     "statsmodels>=0.14.0" \
-    "cryptography>=42.0.0" \
+    "cryptography>=46.0.5" \
     "tradingview-screener>=1.0.0" \
     "sqlalchemy>=2.0.0" \
     "pyodbc>=5.0.0"
 
-# Copy only the investor_agent package (the source code we need)
+# ============================================================
+# STAGE 2: Runtime — minimal image, no build tools
+# Eliminates: build-essential, binutils, gcc, git (removes ~30+ CVEs)
+# ============================================================
+FROM python:3.12-slim AS runtime
+
+WORKDIR /app
+
+# FIX: Upgrade all Debian packages to latest security patches
+# Addresses fixable CVEs in gnutls, tar, and other system packages
+RUN apt-get update && apt-get upgrade -y --no-install-recommends \
+    && apt-get install -y --no-install-recommends \
+    unixodbc \
+    libkrb5-3 \
+    libgssapi-krb5-2 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy ODBC driver from builder
+COPY --from=builder /opt/microsoft /opt/microsoft
+COPY --from=builder /usr/lib/*/libmsodbcsql* /usr/lib/x86_64-linux-gnu/
+COPY --from=builder /usr/lib/*/libodbc* /usr/lib/x86_64-linux-gnu/
+COPY --from=builder /etc/odbcinst.ini /etc/odbcinst.ini
+COPY --from=builder /usr/share/keyrings/microsoft-prod.gpg /usr/share/keyrings/microsoft-prod.gpg
+
+# Copy installed Python packages from builder
+COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
+
+# FIX: Remove pip & setuptools from runtime — not needed at runtime
+# Eliminates CVE-2025-8869 (Medium) & CVE-2026-1703 (Low)
+RUN python -m pip install --upgrade pip && \
+    python -m pip uninstall -y pip setuptools && \
+    rm -rf /root/.cache/pip /tmp/*
+
+# Copy application code
 COPY investor_agent ./investor_agent
 
 # Copy entrypoint script

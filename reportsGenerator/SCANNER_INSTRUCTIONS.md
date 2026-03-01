@@ -18,6 +18,26 @@ If HTTP 400 errors occur, token is consumed. See [CLAUDE.md](CLAUDE.md) or skill
 
 ---
 
+## 📁 REPORT OUTPUT: OBSIDIAN VAULT
+
+**MANDATORY:** After generating the report, save it as a markdown file in the Obsidian vault.
+
+```text
+Path: /Users/AhmedE/Ahmed/Trading Reports/
+Filename: MARKET_SCAN_YYYY-MM-DD.md
+```
+
+**Example:** `/Users/AhmedE/Ahmed/Trading Reports/MARKET_SCAN_2026-02-08.md`
+
+**Rules:**
+
+- Use the `Write` tool to save the complete report to the vault
+- Date format: YYYY-MM-DD (analysis date)
+- For single-ticker deep dives, use: `TICKER_SCAN_YYYY-MM-DD.md`
+- Always save AFTER generating the full report (not incrementally)
+
+---
+
 ## CRITICAL PRINCIPLE: CATALYST IS MANDATORY
 
 **NO CATALYST = NO TRADE. Period.**
@@ -682,12 +702,12 @@ Every trading signal must pass through 5 gates:
 
 ### Signal Classification
 
-| Signal | Gates Required | Confidence |
-|--------|----------------|------------|
-| **STRONG_BUY/SELL** | 5/5passed + Score ≥80 | 70-100% |
-| **BUY/SELL** | 4/5 passed + Score ≥65 | 55-70% |
-| **WATCH** | 2/4 passed OR Score 50-64 | 40-55% |
-| **NO_TRADE** | <2/4 passed OR No Catalyst | <40% |
+| Signal | Gates Required | Confidence | Conviction |
+|--------|----------------|------------|-----------|
+| **STRONG_BUY/SELL** | 5/5 passed + Score ≥80 | 70-100% | **HIGH** |
+| **BUY/SELL** | 4/5 passed + Score ≥65 | 55-70% | **MODERATE** |
+| **WATCH** | 2/4 passed OR Score 50-64 | 40-55% | **LOW** |
+| **NO_TRADE** | <2/4 passed OR No Catalyst | <40% | **NONE** |
 
 ---
 
@@ -1272,7 +1292,7 @@ for chunk in chunks_of_20:
 | Role | Tools |
 |------|-------|
 | **Role 1: Market Scan** | `get_raw_scan_candidates()` → `scan_long_candidates()` → `scan_short_candidates()` |
-| **Role 2: Ticker Scan** | All analysis tools + `generate_trading_signal()` |
+| **Role 2: Ticker Scan** | All analysis tools + `generate_trading_signal()` + `WebSearch` (supplemental) |
 
 ### Tools by Section (Role 2)
 
@@ -1280,19 +1300,19 @@ for chunk in chunks_of_20:
 |---------|-------|
 | Overview | `get_ticker_data()`, `calculate_quality_score()` |
 | Catalyst | `detect_catalyst_strength()`, `detect_insider_cluster()`, `get_earnings_history()`, `get_institutional_holders()` |
-| McMillan Options | `analyze_options_mcmillan()`, `detect_unusual_options_activity()` |
+| McMillan Options | `analyze_options_mcmillan()`, `detect_unusual_options_activity()`, `analyze_iv_term_structure()`, `analyze_iv_skew()` |
 | Al Brooks | `analyze_technical()`, `calculate_relative_strength_tool()`, `analyze_competitors()` |
 | **Dalio Economic Machine** | `analyze_volume_tool()` → `dalio_metrics` section |
 | Trading Signal | `generate_trading_signal()` → includes `dalio_economic_machine` in output |
 
 ### Score Interpretation
 
-| Score | Gates | Signal | Action |
-|-------|-------|--------|--------|
-| 80-100 | 5/5| STRONG_BUY/SELL | High conviction, full size |
-| 65-79 | 4/5 | BUY/SELL | Good setup, reduced size if needed |
-| 50-64 | 2/4 | WATCH | Wait for confirmation |
-| 0-49 | <2/4 | NO_TRADE | Skip - low probability |
+| Score | Gates | Signal | Conviction | Action |
+|-------|-------|--------|-----------|--------|
+| 80-100 | 5/5 | STRONG_BUY/SELL | **HIGH** | Full size (within 2% risk) |
+| 65-79 | 4/5 | BUY/SELL | **MODERATE** | Reduced size (50-75%) |
+| 50-64 | 2/4 | WATCH | **LOW** | Wait for confirmation |
+| 0-49 | <2/4 | NO_TRADE | **NONE** | Skip - low probability |
 
 ---
 

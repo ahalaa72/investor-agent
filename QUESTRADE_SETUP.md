@@ -204,7 +204,7 @@ docker exec investor-agent-mcp bash -c 'cat > /root/.questrade.json << "EOF"
 EOF'
 
 # Test
-docker exec investor-agent-mcp python -m investor_agent.server
+docker exec investor-agent-mcp python -m investor_agent.server_modular
 # Or in Claude Code: get_questrade_accounts()
 ```
 

@@ -6,6 +6,25 @@
 
 ---
 
+## 📁 REPORT OUTPUT: OBSIDIAN VAULT
+
+**MANDATORY:** After generating the report, save it as a markdown file in the Obsidian vault.
+
+```text
+Path: /Users/AhmedE/Ahmed/Trading Reports/
+Filename: PORTFOLIO_YYYY-MM-DD.md
+```
+
+**Example:** `/Users/AhmedE/Ahmed/Trading Reports/PORTFOLIO_2026-02-08.md`
+
+**Rules:**
+
+- Use the `Write` tool to save the complete report to the vault
+- Date format: YYYY-MM-DD (analysis date)
+- Always save AFTER generating the full report (not incrementally)
+
+---
+
 ## CRITICAL PRINCIPLE: CONTINUOUS VALIDATION
 
 > **"Entry is half the battle. The OTHER half is knowing when the thesis breaks."**
@@ -100,6 +119,9 @@
 | VIX Level | XX.XX | [High Vol/Normal/Low Vol] |
 | Market Trend | [Bullish/Bearish/Neutral] | Based on SPY |
 | Sector Rotation | [Risk-On/Risk-Off/Mixed] | XLK vs XLU ratio |
+| **Macro Risk** | [LOW/MODERATE/ELEVATED/HIGH] | Based on F&G + VIX + rates |
+
+**Macro Position Sizing:** [Full size / Normal / Reduce 25-50% / Cash preservation]
 
 **Today's Earnings:** [List stocks reporting today that affect positions]
 **Macro Events:** [Fed, CPI, Jobs if applicable]
@@ -135,6 +157,7 @@
 ### [SYMBOL] - [Company Name]
 
 **Position:** XX shares @ $XX.XX avg | **Current:** $XX.XX | **P&L:** +/-$XXX (+/-X.X%)
+**Analyst View:** [Consensus Rating] | Target: $XXX.XX (+/-XX% from current) | XX analysts [get_ticker_data]
 
 #### 🚦 5-GATE STATUS
 
@@ -173,6 +196,8 @@
 - Only news ≤3 days old counts toward score; today's news = 2x weight
 - Insider selling discounted 75% if 10b5-1 pre-planned sale detected
 
+**Catalyst Timeline:** Near (0-7d): [Event or "None"] | Medium (7-30d): [Event or "None"] | Long (30-90d): [Event or "None"]
+**Catalyst Density:** [HIGH: 2+ in 30d / MODERATE: 1 / LOW: none upcoming]
 **Catalyst Verdict:** [ACTIVE ✅ / EXHAUSTED ⚠️ / FAILED ❌]
 
 ---
@@ -334,6 +359,8 @@
 | Z-Score | X.XX | [Safe >2.99 / Caution 1.81-2.99 / Distress <1.81] |
 | ROE | XX.X% | [Strong >15% / Weak <10%] |
 | Debt/Equity | X.XX | [Healthy <1 / Concern 1-2 / Danger >2] |
+| Share Trend | [BUYBACK / DILUTION / FLAT] | YoY change: +/-X.X% |
+| ESG Risk | [NONE / MATERIAL] | [Flag only if HIGH-relevance sector: energy, mining, defense] |
 
 **Quality Verdict:** [STRONG ✅ / ADEQUATE ⚠️ / DETERIORATING ❌]
 
@@ -346,6 +373,8 @@
 | **Options Flow** | [BULLISH/BEARISH/MIXED/NONE] | [Smart money view] |
 | Unusual Activity | [Yes/No] | [Details if yes] |
 | IV Rank | XX% | [HIGH >70 / NORMAL / LOW <30] |
+| **IV Trend** | [RISING/FALLING/STABLE] | [Rank vs Percentile divergence] |
+| **Term Structure** | [CONTANGO/BACKWARDATION/FLAT] | [analyze_iv_term_structure] |
 | P/C Ratio | X.XX | Contrarian: [BULLISH >1.2 / BEARISH <0.5] |
 | **Insider Activity** | [BUYING/SELLING/MIXED/NONE] | Last X days |
 | Cluster Strength | [STRONG/MODERATE/WEAK/NONE] | [X buys in 30d] |
@@ -592,6 +621,7 @@ Max Pain is the strike price where **most options expire worthless**, causing ma
 | RS vs Sector | XX | [Outperforming/Underperforming] |
 | RS vs SPY | XX | [Leader >70 / Laggard <30] |
 | Best Competitor | [TICKER] | RS: XX |
+| **P/E vs Peer Avg** | XX.X vs XX.X | [PREMIUM/DISCOUNT/IN-LINE] |
 
 **Leadership Verdict:** [LEADER ✅ / MIDDLE ⚠️ / LAGGARD ❌]
 
@@ -640,6 +670,7 @@ Max Pain is the strike price where **most options expire worthless**, causing ma
 ---
 
 **ACTION: [STRONG_HOLD / HOLD / TRIM XX% / CLOSE XX% / CLOSE]**
+**Conviction:** [HIGH / MODERATE / LOW] — Based on gates passing + smart money + sector position
 
 **Rationale:** [2-3 sentences explaining gate status and action]
 
