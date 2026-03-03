@@ -9,7 +9,15 @@ REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 LOG_DIR="$REPO_DIR/logs"
 SERVER="$REPO_DIR/analyst_server.py"
 PORT=7799
-AUTH="admin:admin"
+
+# Read auth from .env (FIX-01: no more hardcoded admin:admin)
+AUTH_USER=$(grep -m1 '^ANALYST_USER=' "$REPO_DIR/.env" 2>/dev/null | cut -d= -f2 || true)
+AUTH_PASS=$(grep -m1 '^ANALYST_PASS=' "$REPO_DIR/.env" 2>/dev/null | cut -d= -f2 || true)
+if [ -z "$AUTH_PASS" ]; then
+  echo "❌ ANALYST_PASS not set in .env — add ANALYST_USER=... and ANALYST_PASS=... first"
+  exit 1
+fi
+AUTH="${AUTH_USER:-admin}:${AUTH_PASS}"
 
 SERVER_PID_FILE="$LOG_DIR/analyst-server.pid"
 SERVER_LOG="$LOG_DIR/analyst-server.log"
@@ -125,7 +133,7 @@ EMAIL_BODY="Ahmed's Analyst Server is live.
 
 Tap to open: $TUNNEL_URL
 
-Login: admin / admin
+Login: ${AUTH_USER:-admin} (password in .env)
 3 concurrent scans · Claude + Gemini + Claude pipeline
 Reports auto-saved to vault and emailed"
 
@@ -146,7 +154,7 @@ echo "  Ahmed's Analyst Server"
 echo "══════════════════════════════════════════════════"
 echo "  Local  : http://localhost:$PORT"
 echo "  Public : $TUNNEL_URL"
-echo "  Login  : admin / admin"
+echo "  Login  : ${AUTH_USER:-admin} / ****"
 echo "  Server : PID $SERVER_PID  (log: $SERVER_LOG)"
 echo "  Tunnel : PID $TUNNEL_PID  (log: $TUNNEL_LOG)"
 echo "══════════════════════════════════════════════════"
