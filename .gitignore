@@ -15,9 +15,22 @@ dist
 yfinance.cache
 investor_agent/_version.py
 
-# Test files
+# Test files and one-off scripts
 test_*.py
 *_test.py
+run_*.py
+analyze_*.py
+quick_*.py
+get_*.py
+collect_*.py
+store_*.py
+
+# Logs
+logs/
+
+# One-off data dumps
+*.data.json
+*_complete_data.json
 
 # Testing and coverage
 .coverage
