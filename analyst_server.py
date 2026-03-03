@@ -151,10 +151,16 @@ GMAIL_PASS = ENV.get("GMAIL_APP_PASSWORD", "")
 
 AUDITOR_SYS = """You are a hostile financial auditor. You are paid per error found. Zero reward for agreement.
 
+TOOLS: Use google_web_search to verify factual claims NOT already in the COMPACT MCP DATA REFERENCE. Do NOT use run_shell_command, read_file, or any file/code tools.
+
+DATA PRIORITY: If a COMPACT MCP DATA REFERENCE is provided below, it contains authoritative live numbers (prices, technicals, positions, quality scores). Cross-check the report's numbers against this reference. Only use web search for EXTERNAL claims (analyst targets, earnings dates, CRA rules, news) not in the reference.
+
 Your mandate:
-- Recalculate every number from scratch
+- Cross-check the report's numbers against the COMPACT MCP DATA REFERENCE — flag any misquotes or misinterpretations
+- Recalculate every derived number from scratch (R/R ratios, position sizing, tax amounts)
+- Use web search to verify analyst price targets, earnings dates, and news claims NOT in MCP data
 - Challenge every options mechanic (ITM/OTM direction, premium flow, assignment risk, Greeks)
-- Verify every Canadian CCPC tax claim against actual CRA rules (interest ~50.17%, cap gains ~25.08%, RDTOH)
+- Verify every Canadian CCPC tax claim against actual CRA rules (interest ~50.17%, cap gains ~25.08%, RDTOH) — search CRA.gc.ca if needed
 - Find internal contradictions between sections
 - Flag missing risks, exit conditions, unsupported recommendations
 - Challenge every Al Brooks pattern interpretation and probability claim
@@ -167,6 +173,7 @@ QUOTE: [exact verbatim text from report]
 ERROR_TYPE: [Math | Options_Mechanics | Tax | Logic | Omission | Contradiction | Brooks | Dalio]
 WHAT_IS_WRONG: [specific explanation]
 CORRECT_ANSWER: [corrected version with reasoning]
+SOURCE: [URL if verified via web search, or "calculation" if math-based]
 CONFIDENCE: [High | Medium | Low]
 
 If a section is clean: SECTION_CLEAR: [section name]
@@ -178,12 +185,14 @@ Most critical: [one sentence on the most dangerous error Ahmed could act on]"""
 
 RESOLVER_SYS = """You are Ahmed's senior portfolio manager and final decision-maker.
 
-You receive an original analysis and an adversarial audit from Gemini AI.
+You receive an original analysis, an adversarial audit from Gemini AI, and a COMPACT MCP DATA REFERENCE with authoritative live numbers.
 Act as objective judge — zero favoritism to either side.
 
+DATA PRIORITY: The COMPACT MCP DATA REFERENCE contains authoritative live data (prices, technicals, positions, quality scores). Use it to resolve factual disputes about numbers. Only use WebSearch for EXTERNAL facts not in the reference (analyst targets, earnings dates, CRA tax rules, breaking news).
+
 For each Gemini finding:
-  VALID     — error is real, apply the correction
-  INVALID   — explain precisely why original was correct
+  VALID     — error is real, apply the correction (cite reference data or web source)
+  INVALID   — explain precisely why original was correct (cite reference data or web source)
   UNCERTAIN — flag for Ahmed's manual review before trading
 
 OUTPUT STRUCTURE (use exactly these headers):
@@ -221,7 +230,12 @@ def push(pq, stage, status, message="", chunk=""):
 
 # ── Direct MCP Tool Calls (parallel, bypass claude -p) ───────────────────────
 
-def _call_mcp_tool(tool_name: str, arguments: dict, timeout: int = 120) -> dict:
+_SLOW_TOOLS = {"scan_long_candidates", "scan_short_candidates", "scan_market_opportunities",
+                "scan_market_by_sector", "scan_stocks_by_setup"}
+
+def _call_mcp_tool(tool_name: str, arguments: dict, timeout: int = 0) -> dict:
+    if timeout <= 0:
+        timeout = 300 if tool_name in _SLOW_TOOLS else 120
     """Call a single MCP tool via docker exec + JSON-RPC. Returns result dict."""
     init_req = json.dumps({
         "jsonrpc": "2.0", "method": "initialize", "id": 0,
@@ -480,6 +494,252 @@ def _format_mcp_results(results: dict) -> str:
     return "\n\n" + "=" * 70 + "\nPRE-FETCHED MCP DATA (live from investor-agent)\n" + "=" * 70 + "\n\n" + "\n\n---\n\n".join(sections) + "\n"
 
 
+def _compact_mcp_summary(mcp_data: dict) -> str:
+    """Create a token-efficient reference sheet from MCP tool results.
+
+    Reduces 50-100K of raw JSON to ~2-4K of key numbers.
+    Generator gets full mcp_text; stages 2 and 3 get this compact version.
+    """
+    lines = ["=== COMPACT MCP DATA REFERENCE (key numbers for verification) ===", ""]
+
+    def _try_parse(result):
+        raw = result.get("data", "")
+        if not raw:
+            return None
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return None
+
+    def _n(val, fmt=".2f"):
+        """Safe numeric format — returns '?' for None/non-numeric."""
+        if val is None:
+            return "?"
+        try:
+            return f"{float(val):{fmt}}"
+        except (ValueError, TypeError):
+            return str(val)
+
+    for label, result in mcp_data.items():
+        if "error" in result:
+            lines.append(f"[{label}]: ERROR — {result['error'][:80]}")
+            continue
+
+        d = _try_parse(result)
+        if d is None:
+            # Unparseable — include first 200 chars as fallback
+            lines.append(f"[{label}]: {result.get('data', '')[:200]}")
+            continue
+
+        # ── Quotes ──
+        if label.startswith("quotes_"):
+            for q in d.get("quotes", []):
+                sym = q.get("symbol", "?")
+                price = q.get("lastTradePrice")
+                bid = q.get("bidPrice")
+                ask = q.get("askPrice")
+                vol = q.get("volume", 0)
+                vwap = q.get("VWAP")
+                prev = q.get("prevDayClosePrice")
+                chg = (price or 0) - (prev or 0) if price and prev else 0
+                chg_pct = (chg / prev * 100) if prev else 0
+                lines.append(
+                    f"PRICE ({sym}): ${_n(price)} ({chg:+.2f} / {chg_pct:+.1f}%) | "
+                    f"Bid ${_n(bid)} / Ask ${_n(ask)} | Vol {vol:,.0f} | VWAP ${_n(vwap)}"
+                )
+            lines.append(f"  Source: {d.get('data_source', '?')} | {d.get('data_quality', '')}")
+
+        # ── Trading Signal ──
+        elif label.startswith("signal_"):
+            gs = d.get("gate_status", {})
+            gate_icons = []
+            for g in ["catalyst", "freshness", "brooks", "quality", "options_tradability"]:
+                short = {"catalyst": "Cat", "freshness": "Fresh", "brooks": "Brooks",
+                         "quality": "Qual", "options_tradability": "Opts"}[g]
+                gate_icons.append(f"{'✓' if gs.get(g) else '✗'}{short}")
+            tp = d.get("trading_plan", {})
+            lines.append(
+                f"SIGNAL: {d.get('signal', '?')} | {d.get('data_direction', '?')} | "
+                f"Confidence {d.get('confidence', '?')} | Gates {d.get('gates_passed', '?')}/5 ({' '.join(gate_icons)})"
+            )
+            if tp.get("entry_price"):
+                lines.append(
+                    f"  Entry ${_n(tp.get('entry_price'))} | Stop ${_n(tp.get('stop_loss'))} | "
+                    f"T1 ${_n(tp.get('target_1'))} | T2 ${_n(tp.get('target_2'))} | R/R {_n(tp.get('risk_reward_ratio'), '.1f')}"
+                )
+            brooks = d.get("brooks_analysis", {})
+            if brooks:
+                lines.append(f"  Brooks: {brooks.get('pattern', '?')} | Prob {brooks.get('probability', '?')}% | Trap {brooks.get('trap_risk', '?')}")
+            ot = d.get("options_tradability", {})
+            if ot:
+                lines.append(f"  Opts: allowed={ot.get('options_allowed')} | IV rank {ot.get('iv_rank', '?')} | {ot.get('liquidity_tier', '?')} | Earnings {ot.get('days_to_earnings', '?')}d")
+
+        # ── Technical ──
+        elif label.startswith("technical_"):
+            a = d.get("analysis", d)
+            rsi = a.get("rsi", {})
+            macd = a.get("macd", {})
+            bb = a.get("bollinger_bands", {})
+            ma = a.get("moving_averages", {})
+            adx = a.get("adx", {})
+            lines.append(
+                f"TECHNICAL: ${_n(a.get('current_price'))} | RSI {_n(rsi.get('value'), '.1f')} ({rsi.get('signal', '?')}) | "
+                f"MACD {macd.get('trend', '?')} ({_n(macd.get('value'), '.2f')}/{_n(macd.get('signal_line'), '.2f')}) | ADX {_n(adx.get('value'), '.0f')} {adx.get('trend_strength', '?')}"
+            )
+            lines.append(
+                f"  BB: ${_n(bb.get('upper'))}/{_n(bb.get('middle'))}/{_n(bb.get('lower'))} | "
+                f"SMA20 ${_n(ma.get('sma_20'))} SMA50 ${_n(ma.get('sma_50'))} SMA200 ${_n(ma.get('sma_200'))} | {ma.get('trend', '?')}"
+            )
+            ab = a.get("al_brooks_analysis", {})
+            if ab:
+                lines.append(f"  Brooks: {ab.get('pattern', '?')} | Prob {ab.get('probability', '?')}% | Trap {ab.get('trap_risk', '?')}")
+            ml = d.get("ml_probability_layer", {})
+            if ml and ml.get("similar_setups_found"):
+                rate = ml.get("historical_success_rate_10d", 0)
+                lines.append(f"  ML: {ml.get('similar_setups_found')} setups | {rate*100 if isinstance(rate, (int, float)) else '?'}% win | E[R] {_n(ml.get('expected_return'), '.1f')}%")
+
+        # ── Support/Resistance ──
+        elif label.startswith("support_resistance_"):
+            sups = d.get("support_levels", [])[:3]
+            ress = d.get("resistance_levels", [])[:3]
+            sup_str = " | ".join([f"${_n(s.get('level'))} ({s.get('strength', '?')})" for s in sups])
+            res_str = " | ".join([f"${_n(r.get('level'))} ({r.get('strength', '?')})" for r in ress])
+            lines.append(f"SUPPORT: {sup_str or 'none'}")
+            lines.append(f"RESISTANCE: {res_str or 'none'}")
+
+        # ── Catalyst ──
+        elif label.startswith("catalysts_"):
+            lines.append(
+                f"CATALYST: {d.get('catalyst_direction', '?')} {d.get('catalyst_score', '?')}/100 | "
+                f"{d.get('catalyst_strength', '?')} | {d.get('primary_catalyst', '?')[:80]}"
+            )
+            cats = d.get("catalysts_detected", [])
+            if cats:
+                lines.append(f"  Detected: {', '.join(str(c) for c in cats[:5])}")
+            warns = d.get("warnings", [])
+            if warns:
+                lines.append(f"  Warnings: {'; '.join(str(w)[:60] for w in warns[:3])}")
+
+        # ── Quality ──
+        elif label.startswith("quality_"):
+            comp = d.get("components", {})
+            lines.append(
+                f"QUALITY: {d.get('quality_score', '?')}/100 Grade {d.get('quality_grade', '?')} | "
+                f"F-Score {comp.get('f_score', '?')}/9 | Z-Score {_n(comp.get('z_score'), '.2f')} {comp.get('z_score_zone', '?')}"
+            )
+            lines.append(f"  ROE {comp.get('roe', '?')} | D/E {comp.get('debt_to_equity', '?')} | Margin {comp.get('net_margin', '?')}")
+            red = d.get("red_flags", [])
+            if red:
+                lines.append(f"  Red flags: {'; '.join(str(r)[:50] for r in red[:3])}")
+
+        # ── Options McMillan ──
+        elif label.startswith("options_mcmillan_"):
+            iv = d.get("iv_analysis", {})
+            pc = d.get("put_call_analysis", {})
+            oi = d.get("open_interest_analysis", {})
+            inst = d.get("institutional", {})
+            lines.append(
+                f"OPTIONS: IV Rank {iv.get('iv_rank', '?')} | IV%ile {iv.get('iv_percentile', '?')} | "
+                f"IV {iv.get('current_iv', '?')} | {iv.get('iv_regime', '?')}"
+            )
+            lines.append(
+                f"  P/C {_n(pc.get('overall_ratio'), '.2f')} ({pc.get('sentiment', '?')}) | "
+                f"Max Pain ${_n(oi.get('max_pain'))} | Grade {inst.get('liquidity_grade', '?')} {inst.get('liquidity_tier', '?')}"
+            )
+
+        # ── Options Trade Plan ──
+        elif label.startswith("options_plan_"):
+            sp = d.get("stock_plan", {})
+            op = d.get("options_plan", {})
+            if sp and sp.get("entry_price"):
+                lines.append(
+                    f"STOCK PLAN: Entry ${_n(sp.get('entry_price'))} | Stop ${_n(sp.get('stop_loss'))} "
+                    f"({_n(sp.get('stop_loss_pct'), '.1f')}%) | T1 ${_n(sp.get('target_1'))} | T2 ${_n(sp.get('target_2'))}"
+                )
+            if op:
+                status = op.get("status", "?")
+                if status == "SKIP":
+                    lines.append(f"OPTIONS PLAN: SKIP — {op.get('reason', '?')[:80]}")
+                else:
+                    legs = op.get("legs", [])
+                    leg_str = " / ".join([
+                        f"{l.get('action','?')} {_n(l.get('strike'), '.0f')}{str(l.get('type','?'))[0]} @{_n(l.get('premium'))}"
+                        for l in legs[:4]
+                    ])
+                    ps = op.get("position_sizing", {})
+                    lines.append(f"OPTIONS PLAN: {op.get('strategy', '?')} | {leg_str}")
+                    lines.append(f"  Max profit ${_n(ps.get('max_profit'), '.0f')} | Max loss ${_n(ps.get('max_loss'), '.0f')}")
+
+        # ── Ticker Data (fundamentals) ──
+        elif label.startswith("ticker_data_"):
+            basics = d.get("basic_info", [])
+            bdict = {}
+            for b in basics:
+                if isinstance(b, dict):
+                    bdict[b.get("metric", "")] = b.get("value")
+            ne = d.get("next_earnings", {})
+            lines.append(
+                f"FUNDAMENTALS: MCap {bdict.get('marketCap', '?')} | P/E {bdict.get('pe', '?')} | "
+                f"Div {bdict.get('dividendYield', '?')}%"
+            )
+            if ne:
+                lines.append(f"  Next earnings: {ne.get('date', '?')} ({ne.get('days_away', '?')}d)")
+            news = d.get("news", [])
+            for n in news[:2]:
+                if isinstance(n, dict):
+                    lines.append(f"  News: {str(n.get('title', '?'))[:80]} ({n.get('date', '?')})")
+            recs = d.get("recommendations", "")
+            if isinstance(recs, str) and len(recs) > 20:
+                rec_lines = recs.strip().split("\n")[1:4]
+                for rl in rec_lines:
+                    lines.append(f"  Rec: {rl.strip()[:80]}")
+            upgrades = d.get("upgrades_downgrades", "")
+            if isinstance(upgrades, str) and len(upgrades) > 20:
+                upg_lines = upgrades.strip().split("\n")[1:4]
+                for ul in upg_lines:
+                    lines.append(f"  Upgrade: {ul.strip()[:80]}")
+
+        # ── Positions ──
+        elif label.startswith("positions_"):
+            acct = label.replace("positions_", "")
+            positions = d.get("positions", [])
+            for p in positions:
+                lines.append(
+                    f"POSITION ({acct}): {p.get('symbol', '?')} {p.get('openQuantity', 0)}sh "
+                    f"@${_n(p.get('averageEntryPrice'))} | MV ${_n(p.get('currentMarketValue'), ',.2f')} | "
+                    f"PnL ${_n(p.get('openPnl'), '+,.2f')}"
+                )
+            # Skip empty accounts — save tokens
+
+        # ── Market scans / fear-greed / other ──
+        elif label.startswith("fear_greed"):
+            fg = d.get("value") or d.get("score") or d.get("fear_greed_index")
+            classification = d.get("classification") or d.get("rating", "?")
+            lines.append(f"FEAR/GREED: {fg} ({classification})")
+
+        elif label.startswith("scan_"):
+            # Market scan results — just count and top picks
+            candidates = d.get("candidates", d.get("results", []))
+            if isinstance(candidates, list):
+                lines.append(f"[{label}]: {len(candidates)} candidates found")
+                for c in candidates[:5]:
+                    if isinstance(c, dict):
+                        sym = c.get("ticker", c.get("symbol", "?"))
+                        sig = c.get("signal", c.get("rating", "?"))
+                        score = c.get("score", c.get("confidence", "?"))
+                        lines.append(f"  {sym}: {sig} (score {score})")
+            else:
+                lines.append(f"[{label}]: {str(d)[:150]}")
+
+        else:
+            # Unknown tool — first 150 chars
+            lines.append(f"[{label}]: {result.get('data', '')[:150]}")
+
+    lines.append("")
+    lines.append("=== END COMPACT REFERENCE ===")
+    return "\n".join(lines)
+
+
 def _extract_ticker(prompt: str) -> str:
     """Extract first stock ticker from prompt. Returns '' if not found."""
     tickers = _extract_all_tickers(prompt)
@@ -526,19 +786,22 @@ def _drain_stderr(proc, log_fn):
     except Exception:
         pass
 
-# Track active Claude processes — kill stale ones before starting new
-_active_claude: dict = {}  # {pid: {"proc": Popen, "stage": str, "started": float}}
+# Track active Claude processes per job — only kill stale ones from SAME job
+_active_claude: dict = {}  # {pid: {"proc": Popen, "stage": str, "started": float, "job_id": str}}
 _active_claude_lock = threading.Lock()
 
-def _cleanup_stale_claude(log):
-    """Kill any previous Claude processes that are still running."""
+def _cleanup_stale_claude(log, job_id: str = ""):
+    """Kill previous Claude processes from the SAME job only. Never touch other jobs' processes."""
     with _active_claude_lock:
         to_remove = []
         for pid, info in _active_claude.items():
+            # Only kill processes belonging to the same job (or finished processes)
+            if info.get("job_id") != job_id and info["proc"].poll() is None:
+                continue  # Different job, still running — leave it alone
             proc = info["proc"]
             if proc.poll() is None:
                 age = time.time() - info["started"]
-                log(f"Killing stale Claude PID {pid} ({info['stage']}, {age:.0f}s old)")
+                log(f"Killing stale Claude PID {pid} ({info['stage']}, {age:.0f}s old, job={job_id[:8]})")
                 try:
                     proc.kill()
                     proc.wait(timeout=5)
@@ -548,10 +811,10 @@ def _cleanup_stale_claude(log):
         for pid in to_remove:
             del _active_claude[pid]
 
-def _track_claude(proc, stage):
+def _track_claude(proc, stage, job_id: str = ""):
     """Register a Claude process for cleanup tracking."""
     with _active_claude_lock:
-        _active_claude[proc.pid] = {"proc": proc, "stage": stage, "started": time.time()}
+        _active_claude[proc.pid] = {"proc": proc, "stage": stage, "started": time.time(), "job_id": job_id}
 
 def _untrack_claude(proc):
     """Remove a Claude process from tracking."""
@@ -559,7 +822,7 @@ def _untrack_claude(proc):
         _active_claude.pop(proc.pid, None)
 
 
-def _run_claude_once(prompt: str, stage: str, pq, env: dict, needs_mcp: bool = True) -> str:
+def _run_claude_once(prompt: str, stage: str, pq, env: dict, needs_mcp: bool = True, job_id: str = "") -> str:
     """Single Claude execution with stream-json output for live tool visibility.
 
     Prompt is piped via stdin using --input-format stream-json to avoid OS
@@ -571,7 +834,7 @@ def _run_claude_once(prompt: str, stage: str, pq, env: dict, needs_mcp: bool = T
     log = lambda msg: print(f"  [{stage}] {msg}", flush=True)
 
     # Kill any stale Claude processes from previous jobs before starting a new one
-    _cleanup_stale_claude(log)
+    _cleanup_stale_claude(log, job_id=job_id)
 
     base_cmd = [CLAUDE_BIN, "-p", "--dangerously-skip-permissions",
                 "--output-format", "stream-json", "--verbose",
@@ -598,7 +861,7 @@ def _run_claude_once(prompt: str, stage: str, pq, env: dict, needs_mcp: bool = T
             text=True, bufsize=1, start_new_session=True,
         )
 
-        _track_claude(proc, stage)
+        _track_claude(proc, stage, job_id=job_id)
         log(f"PID {proc.pid} started")
 
         # Feed prompt via stdin as stream-json user message, then close stdin
@@ -625,7 +888,7 @@ def _run_claude_once(prompt: str, stage: str, pq, env: dict, needs_mcp: bool = T
         fd = proc.stdout.fileno()
         last_activity = time.time()
         STARTUP_TIMEOUT = 600
-        IDLE_TIMEOUT = 300    # longer — tool calls can take 60s+ each
+        IDLE_TIMEOUT = 600    # rate limits can stall 5+ min mid-generation
         empty_reads = 0
 
         while True:
@@ -794,7 +1057,12 @@ def _run_claude_once(prompt: str, stage: str, pq, env: dict, needs_mcp: bool = T
                     log(f"TIMEOUT: No activity for {elapsed:.0f}s — killing")
                     proc.kill()
                     proc.wait()
-                    result_text = f"[TIMEOUT — no activity for {elapsed:.0f}s]"
+                    # Preserve already-generated text instead of throwing it away
+                    if text_parts:
+                        result_text = "".join(text_parts)
+                        log(f"TIMEOUT: Salvaged {len(result_text):,} chars from {len(text_parts)} parts")
+                    else:
+                        result_text = f"[TIMEOUT — no activity for {elapsed:.0f}s]"
                     break
                 # Heartbeat so UI shows progress during MCP init
                 if elapsed > 5:
@@ -877,20 +1145,31 @@ def _build_clean_env() -> dict:
         # Temp dir
         "TMPDIR": os.environ.get("TMPDIR", "/tmp"),
     }
-    # Auth: persistent setup-token bypasses Keychain naming bug (Issue #9403)
-    # Generated via `claude setup-token` — pass through from parent env
+    # Auth: read OAuth token from (1) parent env, or (2) macOS Keychain directly
     oauth = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "")
+    if not oauth:
+        # Read from macOS Keychain — works regardless of how server was started
+        try:
+            raw = subprocess.check_output(
+                ["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
+                text=True, timeout=5, stderr=subprocess.DEVNULL
+            ).strip()
+            import json as _json
+            oauth = _json.loads(raw).get("claudeAiOauth", {}).get("accessToken", "")
+        except Exception:
+            pass
     if oauth:
         env["CLAUDE_CODE_OAUTH_TOKEN"] = oauth
     else:
         print("  ⚠️  CLAUDE_CODE_OAUTH_TOKEN not set — claude -p will fail auth", flush=True)
     env["CLAUDE_CODE_DONT_INHERIT_ENV"] = "1"
+    env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = "128000"
     return {k: v for k, v in env.items() if v}
 
 
 def run_claude(prompt: str, stage: str, pq,
                validate_mcp: bool = False, max_retries: int = 2,
-               needs_mcp: bool = True) -> str:
+               needs_mcp: bool = True, job_id: str = "") -> str:
     """
     Run Claude Code CLI → return output text.
     If validate_mcp=True, checks output for real MCP data and retries on failure.
@@ -901,7 +1180,7 @@ def run_claude(prompt: str, stage: str, pq,
 
     env = _build_clean_env()
 
-    result_text = _run_claude_once(prompt, stage, pq, env, needs_mcp=needs_mcp)
+    result_text = _run_claude_once(prompt, stage, pq, env, needs_mcp=needs_mcp, job_id=job_id)
 
     # Retry loop for MCP validation failures
     if validate_mcp and not _mcp_output_valid(result_text):
@@ -910,7 +1189,7 @@ def run_claude(prompt: str, stage: str, pq,
             push(pq, stage, "running",
                  f"MCP tools didn't load — retrying ({attempt}/{max_retries})…")
             time.sleep(5)
-            result_text = _run_claude_once(prompt, stage, pq, env, needs_mcp=needs_mcp)
+            result_text = _run_claude_once(prompt, stage, pq, env, needs_mcp=needs_mcp, job_id=job_id)
             if _mcp_output_valid(result_text):
                 log(f"MCP VALIDATION PASSED on retry {attempt}")
                 break
@@ -931,8 +1210,8 @@ def run_gemini(prompt: str, stage: str, pq) -> str:
     env = _build_clean_env()
     env.pop("GEMINI_API_KEY", None)   # Gemini uses Google login, not API key
 
-    cmd = [GEMINI_BIN, "-p", ""]
-    log(f"CMD: gemini -p")
+    cmd = [GEMINI_BIN, "-p", "", "--approval-mode", "yolo"]
+    log(f"CMD: gemini -p --approval-mode yolo")
     log(f"Prompt: {len(prompt):,} chars")
 
     try:
@@ -1030,6 +1309,54 @@ def send_email(subject: str, body: str) -> str:
         return f"EMAIL_FAILED: {e}"
 
 
+def _postprocess_final(text: str) -> str:
+    """Clean resolver output: strip meta-text before RESOLUTION_LOG, ensure proper ordering."""
+    # Find the first meaningful section header
+    for marker in ["RESOLUTION_LOG", "FINAL_REPORT"]:
+        idx = text.find(marker)
+        if idx > 0:
+            # Strip anything before the first section (Claude thinking out loud, etc.)
+            pre = text[:idx]
+            # Only strip if pre-section text is short meta-text, not real content
+            if len(pre.strip()) < 500 and not re.search(r'^#{1,4}\s', pre, re.MULTILINE):
+                text = text[idx:]
+                break
+    # Strip trailing Claude meta-commentary after HUMAN_REVIEW_REQUIRED section
+    hr_match = re.search(r'(HUMAN_REVIEW_REQUIRED\s*\n=+\n)', text)
+    if hr_match:
+        # Find end of the HUMAN_REVIEW section (next double newline after numbered list ends)
+        after_hr = text[hr_match.end():]
+        # Keep content until we hit a clear ending (double blank line after content)
+        lines = after_hr.split('\n')
+        content_end = len(lines)
+        found_content = False
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped:
+                found_content = True
+            elif found_content and i > 0 and not lines[i-1].strip():
+                # Double blank line after content = end of section
+                # Check if remaining lines are meta-commentary
+                remaining = '\n'.join(lines[i:]).strip()
+                if remaining and not remaining.startswith(('#', '-', '*', '1', '2', '3', '4', '5', '6', '7', '8', '9')):
+                    content_end = i
+                    break
+        text = text[:hr_match.end()] + '\n'.join(lines[:content_end])
+    return text.strip()
+
+
+def _classify_report_type(text: str) -> str:
+    """Classify report type by content length and depth for vault naming."""
+    length = len(text)
+    sections = len(re.findall(r'^#{1,4}\s', text, re.MULTILINE))
+    if length > 15000 or sections > 15:
+        return "DEEP_DIVE"
+    elif length > 5000 or sections > 8:
+        return "COMPREHENSIVE"
+    else:
+        return "CONCISE"
+
+
 # ── Pipeline ──────────────────────────────────────────────────────────────────
 
 def pipeline(job_id, prompt, name, pq):
@@ -1056,10 +1383,145 @@ def pipeline(job_id, prompt, name, pq):
         tool_list = _build_tool_list(req_type, tickers)
         ticker = tickers[0] if tickers else ""
 
-        # Build vault filename with ticker (e.g., AVGO_CONCISE_2026-03-01.md)
+        # Vault filename decided AFTER final report is generated (smart type classification)
         date_str = datetime.now().strftime("%Y-%m-%d")
+        print(f"  [generator] Type: {req_type} | Tickers: {tickers} | Tools: {len(tool_list)}", flush=True)
+
+        mcp_text = ""       # Full MCP data for generator
+        mcp_compact = ""    # Compact reference sheet for auditor/resolver (saves 50-100K tokens)
+
+        if tool_list:
+            # ── Parallel MCP path: gather data first, then Claude writes report ──
+            mcp_data = gather_mcp_data(tool_list, pq, "generator")
+            mcp_text = _format_mcp_results(mcp_data)
+            mcp_compact = _compact_mcp_summary(mcp_data)
+            successful = sum(1 for r in mcp_data.values() if "error" not in r)
+            print(f"  [generator] MCP data gathered: {successful}/{len(mcp_data)} tools OK "
+                  f"(full={len(mcp_text):,} chars, compact={len(mcp_compact):,} chars)", flush=True)
+
+            gen_prompt = f"""You are Ahmed's senior financial analyst. Write a comprehensive trading report using the LIVE MCP data below.
+
+REPORT FORMAT (follow EXACTLY):
+{REPORT_FORMAT}
+
+{mcp_text}
+
+AHMED'S REQUEST: {prompt}
+
+INSTRUCTIONS:
+- The MCP data above is LIVE from {len(mcp_data)} parallel tool calls — use it directly. Do NOT call MCP tools (data is already gathered).
+- USE WebSearch to verify and enrich: analyst price targets, recent upgrades/downgrades, earnings dates, breaking news, sector catalysts, institutional activity. This adds real-time context the MCP data may miss.
+- Follow the report format above EXACTLY.
+- Apply 5-gate validation: Catalyst + Freshness + Al Brooks + Quality + Institutional.
+- Include ALL data: price, signal, catalysts, technicals, support/resistance, quality score.
+- POSITIONS: Data includes positions from all 7 Questrade accounts. Report any holdings of analyzed tickers with account, quantity, cost basis, P&L. If none, state clearly.
+- OPTIONS: Include full McMillan analysis and options trade plan with specific strikes, expiries, strategy.
+- SOURCES: Cite URLs from web searches in relevant sections (e.g., analyst upgrade source, news article).
+
+End with:
+AUDIT_TARGETS
+=============
+[Numbered list of every verifiable claim — include source URLs where available]
+"""
+            draft_text = run_claude(gen_prompt, "generator", pq, validate_mcp=False, needs_mcp=False, job_id=job_id)
+        else:
+            # ── Fallback: no tools selected (general/unknown) → Claude uses MCP directly ──
+            print(f"  [generator] General request — Claude will use MCP tools directly", flush=True)
+            gen_prompt = f"""You are Ahmed's senior financial analyst. Use the investor-agent MCP tools to execute this request.
+
+{CONTEXT}
+
+AHMED'S REQUEST: {prompt}
+
+Call whatever MCP tools are needed. Also USE WebSearch to verify analyst targets, recent news, earnings dates, and sector catalysts.
+Follow the report format from SCANNER_REPORT_GENERATOR.md. Use SCANNER_INSTRUCTIONS.md for methodology.
+Cite source URLs in relevant sections.
+
+End with:
+AUDIT_TARGETS
+=============
+[Numbered list of every verifiable claim]
+"""
+            draft_text = run_claude(gen_prompt, "generator", pq, validate_mcp=True, job_id=job_id)
+
+        with _jobs_lock:
+            if job_id in _jobs:
+                _jobs[job_id]["stage"] = "auditor"
+
+        if len(draft_text.strip()) < 100:
+            push(pq, "error", "error", "Generator failed — no draft produced")
+            update_job(status="error", error="Generator failed — no draft produced")
+            return
+
+        # ── Content quality gate — verify draft has real analysis ─────────
+        _draft_headings = len(re.findall(r'^#{1,4}\s', draft_text, re.MULTILINE))
+        _draft_prices = len(re.findall(r'\$\d+', draft_text))
+        if _draft_headings < 2 or _draft_prices < 2 or len(draft_text) < 1500:
+            print(f"  [quality] WARNING: Draft looks thin — {_draft_headings} headings, {_draft_prices} prices, {len(draft_text):,} chars", flush=True)
+            push(pq, "generator", "running", f"⚠️ Draft thin: {_draft_headings} headings, {_draft_prices} prices, {len(draft_text):,} chars")
+        else:
+            push(pq, "generator", "done", f"Draft complete: {len(draft_text):,} chars, {_draft_headings} sections")
+
+        # ── Stage transition: Generator → Auditor ────────────────────────
+        mcp_shared = f" + {len(mcp_compact):,} chars compact ref" if mcp_compact else ""
+        push(pq, "auditor", "running", f"Sending {len(draft_text):,} char draft{mcp_shared} to Gemini auditor…")
+
+        # ── Stage 2: Auditor (Gemini) reads draft + compact MCP reference ─
+        mcp_section = ""
+        if mcp_compact:
+            mcp_section = f"""
+
+{mcp_compact}
+
+"""
+        audit_prompt = f"""{AUDITOR_SYS}
+{mcp_section}
+{'='*70}
+REPORT TO AUDIT
+{'='*70}
+
+{draft_text}"""
+        audit_text = run_gemini(audit_prompt, "auditor", pq)
+
+        with _jobs_lock:
+            if job_id in _jobs:
+                _jobs[job_id]["stage"] = "resolver"
+
+        # ── Stage transition: Auditor → Resolver ─────────────────────────
+        audit_findings = len(re.findall(r'FINDING #\d+', audit_text or ""))
+        push(pq, "resolver", "running",
+             f"Audit complete: {len(audit_text or ''):,} chars, {audit_findings} findings → Resolver starting…")
+
+        # ── Stage 3: Resolver (Claude) reads draft + audit + compact MCP ref → FINAL ──
+        res_prompt = f"""{RESOLVER_SYS}
+
+{'='*70}
+ORIGINAL REPORT (Claude Code with live MCP data)
+{'='*70}
+{draft_text}
+
+{'='*70}
+GEMINI ADVERSARIAL AUDIT
+{'='*70}
+{audit_text or "[No audit]"}
+{f'''
+
+{mcp_compact}
+
+''' if mcp_compact else ""}
+Now produce RESOLUTION_LOG, then FINAL_REPORT, then CONFIDENCE_SUMMARY, then HUMAN_REVIEW_REQUIRED.
+Use WebSearch ONLY for facts not already in the compact reference above. The MCP data is authoritative for prices, technicals, positions, and quality scores.
+"""
+        final_text = run_claude(res_prompt, "resolver", pq, needs_mcp=False, job_id=job_id)
+
+        # ── Post-process: strip meta-text, clean output ──────────────────
+        final_text = _postprocess_final(final_text)
+        print(f"  [resolver] Post-processed: {len(final_text):,} chars", flush=True)
+
+        # ── Smart vault naming based on final report ─────────────────────
+        report_type = _classify_report_type(final_text)
         if ticker:
-            vault_name = f"{ticker}_CONCISE_{date_str}"
+            vault_name = f"{ticker}_{report_type}_{date_str}"
         elif req_type == "market_scan":
             vault_name = f"MARKET_SCAN_{date_str}"
         elif req_type == "market_scan_long":
@@ -1072,99 +1534,12 @@ def pipeline(job_id, prompt, name, pq):
             safe = re.sub(r"[^A-Z0-9_]", "_", name.upper())[:35]
             vault_name = f"{safe}_{date_str}"
         final_file = VAULT / f"{vault_name}.md"
-        print(f"  [generator] Type: {req_type} | Tickers: {tickers} | Tools: {len(tool_list)}", flush=True)
 
-        if tool_list:
-            # ── Parallel MCP path: gather data first, then Claude writes report ──
-            mcp_data = gather_mcp_data(tool_list, pq, "generator")
-            mcp_text = _format_mcp_results(mcp_data)
-            successful = sum(1 for r in mcp_data.values() if "error" not in r)
-            print(f"  [generator] MCP data gathered: {successful}/{len(mcp_data)} tools OK", flush=True)
-
-            gen_prompt = f"""You are Ahmed's senior financial analyst. Write a comprehensive trading report using the LIVE MCP data below.
-
-REPORT FORMAT (follow EXACTLY):
-{REPORT_FORMAT}
-
-{mcp_text}
-
-AHMED'S REQUEST: {prompt}
-
-INSTRUCTIONS:
-- The MCP data above is LIVE from {len(mcp_data)} parallel tool calls — use it directly. Do NOT call any tools.
-- Follow the report format above EXACTLY.
-- Apply 5-gate validation: Catalyst + Freshness + Al Brooks + Quality + Institutional.
-- Include ALL data: price, signal, catalysts, technicals, support/resistance, quality score.
-- POSITIONS: Data includes positions from all 7 Questrade accounts. Report any holdings of analyzed tickers with account, quantity, cost basis, P&L. If none, state clearly.
-- OPTIONS: Include full McMillan analysis and options trade plan with specific strikes, expiries, strategy.
-
-End with:
-AUDIT_TARGETS
-=============
-[Numbered list of every verifiable claim]
-"""
-            draft_text = run_claude(gen_prompt, "generator", pq, validate_mcp=False, needs_mcp=False)
-        else:
-            # ── Fallback: no tools selected (general/unknown) → Claude uses MCP directly ──
-            print(f"  [generator] General request — Claude will use MCP tools directly", flush=True)
-            gen_prompt = f"""You are Ahmed's senior financial analyst. Use the investor-agent MCP tools to execute this request.
-
-{CONTEXT}
-
-AHMED'S REQUEST: {prompt}
-
-Call whatever MCP tools are needed. Follow the report format from SCANNER_REPORT_GENERATOR.md. Use SCANNER_INSTRUCTIONS.md for methodology.
-
-End with:
-AUDIT_TARGETS
-=============
-[Numbered list of every verifiable claim]
-"""
-            draft_text = run_claude(gen_prompt, "generator", pq, validate_mcp=True)
-
-        with _jobs_lock:
-            if job_id in _jobs:
-                _jobs[job_id]["stage"] = "auditor"
-
-        if len(draft_text.strip()) < 100:
-            push(pq, "error", "error", "Generator failed — no draft produced")
-            update_job(status="error", error="Generator failed — no draft produced")
-            return
-
-        # ── Stage 2: Auditor (Gemini) reads draft → audit text in memory ─
-        audit_prompt = f"""{AUDITOR_SYS}
-
-Audit this financial analysis aggressively:
-
-{draft_text}"""
-        audit_text = run_gemini(audit_prompt, "auditor", pq)
-
-        with _jobs_lock:
-            if job_id in _jobs:
-                _jobs[job_id]["stage"] = "resolver"
-
-        # ── Stage 3: Resolver (Claude) reads draft + audit → FINAL file ──
-        res_prompt = f"""{RESOLVER_SYS}
-
-{'='*70}
-ORIGINAL REPORT (Claude Code with live MCP data)
-{'='*70}
-{draft_text}
-
-{'='*70}
-GEMINI ADVERSARIAL AUDIT
-{'='*70}
-{audit_text or "[No audit]"}
-
-Now produce RESOLUTION_LOG, then FINAL_REPORT, then CONFIDENCE_SUMMARY, then HUMAN_REVIEW_REQUIRED.
-"""
-        final_text = run_claude(res_prompt, "resolver", pq, needs_mcp=False)
-
-        # ── Save only the FINAL report to vault ──────────────────────────
+        # ── Save the FINAL report to vault ────────────────────────────────
         report_title = f"{ticker} Analysis" if ticker else name
         header = f"# {report_title}\nGenerated: {datetime.now():%Y-%m-%d %H:%M}\n\n---\n\n"
         final_file.write_text(header + final_text, encoding="utf-8")
-        print(f"  [vault] Saved: {final_file} ({final_file.stat().st_size:,} bytes)", flush=True)
+        print(f"  [vault] Saved: {final_file} ({final_file.stat().st_size:,} bytes, type={report_type})", flush=True)
 
         with _jobs_lock:
             if job_id in _jobs:

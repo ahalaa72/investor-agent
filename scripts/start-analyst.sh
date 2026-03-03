@@ -40,19 +40,23 @@ if ! command -v python3 &>/dev/null; then echo "❌ python3 not found"; exit 1; 
 if ! command -v cloudflared &>/dev/null; then echo "❌ cloudflared not found — brew install cloudflared"; exit 1; fi
 if ! command -v claude &>/dev/null; then echo "❌ claude not found"; exit 1; fi
 
-# ── 0. Get OAuth token (auto-generates via claude setup-token) ────────────
+# ── 0. Get OAuth token ─────────────────────────────────────────────────────
+# Priority: (1) env var already set, (2) claude setup-token, (3) macOS Keychain
 if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
-  echo "🔑 Generating OAuth token via claude setup-token…"
+  echo "🔑 Trying claude setup-token…"
   CLAUDE_CODE_OAUTH_TOKEN=$(claude setup-token 2>/dev/null || true)
-  if [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
-    echo "❌ Failed to generate token — run 'claude setup-token' manually"
-    exit 1
-  fi
-  export CLAUDE_CODE_OAUTH_TOKEN
-  echo "✅ OAuth token generated"
-else
-  echo "✅ Using existing CLAUDE_CODE_OAUTH_TOKEN"
 fi
+if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+  echo "🔑 Reading from macOS Keychain…"
+  CLAUDE_CODE_OAUTH_TOKEN=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null \
+    | python3 -c "import sys,json; print(json.load(sys.stdin).get('claudeAiOauth',{}).get('accessToken',''))" 2>/dev/null || true)
+fi
+if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+  echo "❌ No OAuth token found — run 'claude setup-token' or log in to Claude Code first"
+  exit 1
+fi
+export CLAUDE_CODE_OAUTH_TOKEN
+echo "✅ OAuth token ready (${#CLAUDE_CODE_OAUTH_TOKEN} chars)"
 
 # ── Stop previous instances ──────────────────────────────────────────────────
 cleanup_stale "$SERVER_PID_FILE" "Server"
