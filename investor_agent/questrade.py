@@ -157,9 +157,9 @@ class QuestradeClient:
                 if not stored_refresh_token:
                     logger.error("No refresh token found in token file")
                     # File is corrupt, try ENV as fallback
+                    # CRITICAL: Do NOT unlink() — another process may have just refreshed it
                     if env_token:
-                        logger.info("Falling back to ENV token")
-                        token_file_path.unlink()
+                        logger.info("Falling back to ENV token (file had no refresh_token)")
                         client = Questrade(refresh_token=env_token)
                         self._auto_encrypt_token()
                         return client
@@ -181,14 +181,29 @@ class QuestradeClient:
                         self._auto_encrypt_token()
                         return client
                     except Exception as file_token_error:
-                        # File token failed (likely HTTP 400 - consumed)
+                        # File token failed (likely HTTP 400 - consumed by parallel process)
+                        # CRITICAL: Do NOT unlink() — another process may have JUST written
+                        # a fresh token to this file. Deleting it kills their valid token.
+                        # Instead, re-read the file in case it was refreshed by another process.
+                        try:
+                            with open(token_file_path, 'r') as f2:
+                                fresh_data = json.load(f2)
+                            fresh_refresh = fresh_data.get('refresh_token')
+                            if fresh_refresh and fresh_refresh != stored_refresh_token:
+                                # Another process refreshed the token — use the new one
+                                logger.info("Another process refreshed token — retrying with new token")
+                                client = Questrade(refresh_token=fresh_refresh)
+                                self._auto_encrypt_token()
+                                return client
+                        except Exception:
+                            pass  # File read failed, fall through to ENV fallback
+
                         # Try ENV as fallback - user may have generated fresh token
                         if env_token and env_token != stored_refresh_token:
                             logger.warning(
                                 f"File token failed ({file_token_error}). "
-                                f"Trying ENV token as fallback..."
+                                f"Trying ENV token as fallback (no file deletion)..."
                             )
-                            token_file_path.unlink()
                             client = Questrade(refresh_token=env_token)
                             logger.info("Questrade API client connected with ENV token")
                             self._auto_encrypt_token()

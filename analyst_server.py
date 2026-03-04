@@ -76,6 +76,7 @@ class BroadcastQueue:
 # ── Job Store ─────────────────────────────────────────────────────────────────
 _jobs = {}                              # job_id → job dict
 _jobs_lock = threading.Lock()
+_mcp_lock = threading.Lock()            # serialize MCP data gathering (Questrade token safety)
 _pool = ThreadPoolExecutor(max_workers=3)
 
 
@@ -298,7 +299,7 @@ def _validate_mcp_response(tool_name: str, data_str: str) -> tuple:
                 return False, f"Suspicious price: {price}"
     if "trading_signal" in tool_name and isinstance(data, dict):
         signal = data.get("signal", "")
-        valid = {"STRONG_BUY", "BUY", "WATCH", "SELL", "STRONG_SELL", "NO_SIGNAL", ""}
+        valid = {"STRONG_BUY", "BUY", "WATCH", "SELL", "STRONG_SELL", "NO_SIGNAL", "NO_TRADE", "HOLD", ""}
         if signal and signal not in valid:
             return False, f"Invalid signal: {signal}"
     if "quality_score" in tool_name and isinstance(data, dict):
@@ -421,7 +422,7 @@ def _build_tool_list(request_type: str, tickers: list) -> list:
 
     if request_type == "ticker_analysis":
         t = tickers[0]
-        # Full analysis battery
+        # Full analysis battery — core tools
         tools += [
             (f"quotes_{t}",              "get_questrade_quotes",      {"symbols": [t]}),
             (f"signal_{t}",              "generate_trading_signal",   {"ticker": t}),
@@ -432,6 +433,17 @@ def _build_tool_list(request_type: str, tickers: list) -> list:
             (f"support_resistance_{t}",  "find_support_resistance",   {"ticker": t}),
             (f"quality_{t}",             "calculate_quality_score",   {"ticker": t}),
             (f"options_plan_{t}",        "generate_options_trade_plan", {"ticker": t}),
+        ]
+        # Extended analysis tools — high-value data previously unused
+        tools += [
+            (f"volume_{t}",             "analyze_volume_tool",                {"ticker": t}),
+            (f"volatility_{t}",         "analyze_volatility_tool",            {"ticker": t}),
+            (f"historical_{t}",         "find_similar_historical_setups",     {"ticker": t}),
+            (f"iv_skew_{t}",            "analyze_iv_skew",                    {"ticker": t}),
+            (f"rel_strength_{t}",       "calculate_relative_strength_tool",   {"ticker": t}),
+            (f"insider_cluster_{t}",    "detect_insider_cluster",             {"ticker": t}),
+            (f"unusual_options_{t}",    "detect_unusual_options_activity",    {"ticker": t}),
+            (f"candles_{t}",            "get_questrade_candles",              {"symbol": t, "interval": "OneDay", "window": 60}),
         ]
         # Positions across all accounts
         for acct in QUESTRADE_ACCOUNTS:
@@ -503,9 +515,27 @@ def gather_mcp_data(tools: list, pq, stage: str = "generator") -> dict:
     """Fire a list of MCP tools in PARALLEL. tools = [(label, real_tool_name, args)].
     Runs the FIRST tool alone to warm up the Questrade token (single-use refresh),
     then fires the rest in parallel using the cached access_token.
+
+    CRITICAL: Uses _mcp_lock to serialize across concurrent jobs. Two jobs
+    gathering MCP data simultaneously would race on Questrade token refresh,
+    corrupting the single-use token and killing API access for 30 days.
     """
     log = lambda msg: print(f"  [{stage}] {msg}", flush=True)
     total = len(tools)
+
+    # Serialize MCP access across concurrent pipeline jobs
+    if _mcp_lock.locked():
+        log("Waiting for another job's MCP calls to finish…")
+        push(pq, stage, "running", "Waiting for MCP lock (another job gathering data)…")
+    _mcp_lock.acquire()
+    try:
+        return _gather_mcp_data_inner(tools, pq, stage, log, total)
+    finally:
+        _mcp_lock.release()
+
+
+def _gather_mcp_data_inner(tools, pq, stage, log, total):
+    """Inner MCP gathering — must be called under _mcp_lock."""
     log(f"Firing {total} MCP tools ({total-1} parallel after token warmup)")
     push(pq, stage, "running", f"Firing {total} MCP tools ({total-1} parallel after token warmup)…")
     results = {}
@@ -602,6 +632,7 @@ def _compact_mcp_summary(mcp_data: dict) -> str:
             return str(val)
 
     for label, result in mcp_data.items():
+      try:
         if "error" in result:
             lines.append(f"[{label}]: ERROR — {result['error'][:80]}")
             continue
@@ -683,8 +714,16 @@ def _compact_mcp_summary(mcp_data: dict) -> str:
         elif label.startswith("support_resistance_"):
             sups = d.get("support_levels", [])[:3]
             ress = d.get("resistance_levels", [])[:3]
-            sup_str = " | ".join([f"${_n(s.get('level'))} ({s.get('strength', '?')})" for s in sups])
-            res_str = " | ".join([f"${_n(r.get('level'))} ({r.get('strength', '?')})" for r in ress])
+            def _fmt_sr(items):
+                parts = []
+                for s in items:
+                    if isinstance(s, dict):
+                        parts.append(f"${_n(s.get('level'))} ({s.get('strength', '?')})")
+                    else:
+                        parts.append(str(s))
+                return " | ".join(parts)
+            sup_str = _fmt_sr(sups)
+            res_str = _fmt_sr(ress)
             lines.append(f"SUPPORT: {sup_str or 'none'}")
             lines.append(f"RESISTANCE: {res_str or 'none'}")
 
@@ -692,7 +731,7 @@ def _compact_mcp_summary(mcp_data: dict) -> str:
         elif label.startswith("catalysts_"):
             lines.append(
                 f"CATALYST: {d.get('catalyst_direction', '?')} {d.get('catalyst_score', '?')}/100 | "
-                f"{d.get('catalyst_strength', '?')} | {d.get('primary_catalyst', '?')[:80]}"
+                f"{d.get('catalyst_strength', '?')} | {str(d.get('primary_catalyst', '?'))[:80]}"
             )
             cats = d.get("catalysts_detected", [])
             if cats:
@@ -792,6 +831,102 @@ def _compact_mcp_summary(mcp_data: dict) -> str:
                 )
             # Skip empty accounts — save tokens
 
+        # ── Volume Analysis ──
+        elif label.startswith("volume_"):
+            vol_prof = d.get("volume_profile", d.get("analysis", {}))
+            if isinstance(vol_prof, dict):
+                trend = vol_prof.get("volume_trend", d.get("volume_trend", "?"))
+                avg = vol_prof.get("avg_volume", d.get("avg_volume", "?"))
+                rel = vol_prof.get("relative_volume", d.get("relative_volume", "?"))
+                ad = vol_prof.get("accumulation_distribution", d.get("ad_line", "?"))
+                lines.append(f"VOLUME: Trend {trend} | Avg {avg} | Rel Vol {_n(rel, '.2f')} | A/D {ad}")
+                obv = vol_prof.get("obv_trend", d.get("obv_trend", ""))
+                if obv:
+                    lines.append(f"  OBV: {obv}")
+            else:
+                lines.append(f"[{label}]: {str(d)[:200]}")
+
+        # ── Volatility Analysis ──
+        elif label.startswith("volatility_"):
+            hv = d.get("historical_volatility", d.get("hv", "?"))
+            iv = d.get("implied_volatility", d.get("iv", "?"))
+            regime = d.get("volatility_regime", d.get("regime", "?"))
+            squeeze = d.get("bollinger_squeeze", d.get("squeeze", "?"))
+            lines.append(f"VOLATILITY: HV {_n(hv, '.1f')}% | IV {_n(iv, '.1f')}% | Regime {regime} | Squeeze {squeeze}")
+            ratio = d.get("iv_hv_ratio", d.get("iv_over_hv", ""))
+            if ratio:
+                lines.append(f"  IV/HV Ratio: {_n(ratio, '.2f')}")
+
+        # ── Similar Historical Setups (ML) ──
+        elif label.startswith("historical_"):
+            setups = d.get("similar_setups", d.get("setups", []))
+            count = d.get("total_setups_found", len(setups) if isinstance(setups, list) else 0)
+            win_rate = d.get("win_rate", d.get("historical_win_rate", "?"))
+            avg_ret = d.get("avg_return", d.get("expected_return", "?"))
+            lines.append(f"HISTORICAL: {count} similar setups | Win rate {win_rate} | Avg return {_n(avg_ret, '.1f')}%")
+            if isinstance(setups, list):
+                for s in setups[:3]:
+                    if isinstance(s, dict):
+                        lines.append(f"  {s.get('date', '?')}: {s.get('pattern', '?')} → {s.get('outcome', '?')}")
+
+        # ── IV Skew ──
+        elif label.startswith("iv_skew_"):
+            skew_val = d.get("skew", d.get("iv_skew", "?"))
+            skew_type = d.get("skew_type", d.get("skew_direction", "?"))
+            put_iv = d.get("put_iv", d.get("avg_put_iv", "?"))
+            call_iv = d.get("call_iv", d.get("avg_call_iv", "?"))
+            lines.append(f"IV SKEW: {_n(skew_val, '.2f')} ({skew_type}) | Put IV {_n(put_iv, '.1f')}% | Call IV {_n(call_iv, '.1f')}%")
+            tail = d.get("tail_risk", d.get("tail_risk_indicator", ""))
+            if tail:
+                lines.append(f"  Tail risk: {tail}")
+
+        # ── Relative Strength ──
+        elif label.startswith("rel_strength_"):
+            rs = d.get("relative_strength", d.get("rs_rating", "?"))
+            sector = d.get("sector", d.get("sector_name", "?"))
+            rank = d.get("sector_rank", d.get("rank", "?"))
+            perf = d.get("performance_vs_sector", d.get("vs_sector", "?"))
+            lines.append(f"REL STRENGTH: RS {rs} | Sector {sector} | Rank {rank} | vs Sector {perf}")
+
+        # ── Insider Cluster ──
+        elif label.startswith("insider_cluster_"):
+            clusters = d.get("clusters", d.get("insider_clusters", []))
+            total_buys = d.get("total_buys", d.get("buy_count", 0))
+            total_sells = d.get("total_sells", d.get("sell_count", 0))
+            net = d.get("net_signal", d.get("signal", "?"))
+            lines.append(f"INSIDER CLUSTER: {total_buys} buys / {total_sells} sells | Signal {net}")
+            if isinstance(clusters, list):
+                for c in clusters[:3]:
+                    if isinstance(c, dict):
+                        lines.append(f"  {c.get('insider', '?')}: {c.get('type', '?')} {c.get('shares', '?')} shares @ ${_n(c.get('price'))} ({c.get('date', '?')})")
+
+        # ── Unusual Options Activity ──
+        elif label.startswith("unusual_options_"):
+            alerts = d.get("alerts", d.get("unusual_activity", []))
+            signal = d.get("overall_signal", d.get("signal", "?"))
+            lines.append(f"UNUSUAL OPTIONS: {len(alerts) if isinstance(alerts, list) else '?'} alerts | Signal {signal}")
+            if isinstance(alerts, list):
+                for a in alerts[:3]:
+                    if isinstance(a, dict):
+                        lines.append(f"  {a.get('type', '?')}: {a.get('strike', '?')} {a.get('expiry', '?')} vol={a.get('volume', '?')} OI={a.get('open_interest', '?')}")
+
+        # ── Candles (price action) ──
+        elif label.startswith("candles_"):
+            candles = d.get("candles", [])
+            if isinstance(candles, list) and candles:
+                lines.append(f"CANDLES: {len(candles)} daily bars")
+                # Last 5 candles summary
+                for c in candles[-5:]:
+                    if isinstance(c, dict):
+                        lines.append(
+                            f"  {c.get('start', c.get('date', '?'))[:10]}: "
+                            f"O ${_n(c.get('open'))} H ${_n(c.get('high'))} "
+                            f"L ${_n(c.get('low'))} C ${_n(c.get('close'))} "
+                            f"Vol {c.get('volume', '?')}"
+                        )
+            else:
+                lines.append(f"[{label}]: {str(d)[:150]}")
+
         # ── Market scans / fear-greed / other ──
         elif label.startswith("fear_greed"):
             fg = d.get("value") or d.get("score") or d.get("fear_greed_index")
@@ -816,6 +951,9 @@ def _compact_mcp_summary(mcp_data: dict) -> str:
             # Unknown tool — first 150 chars
             lines.append(f"[{label}]: {result.get('data', '')[:150]}")
 
+      except Exception as exc:
+        lines.append(f"[{label}]: PARSE_ERROR — {str(exc)[:80]}")
+
     lines.append("")
     lines.append("=== END COMPACT REFERENCE ===")
     return "\n".join(lines)
@@ -825,6 +963,17 @@ def _extract_ticker(prompt: str) -> str:
     """Extract first stock ticker from prompt. Returns '' if not found."""
     tickers = _extract_all_tickers(prompt)
     return tickers[0] if tickers else ""
+
+
+def _extract_price(text: str, pattern: str) -> float | None:
+    """Extract a price value from report text using regex. Returns float or None."""
+    match = re.search(pattern, text, re.IGNORECASE)
+    if match:
+        try:
+            return float(match.group(1))
+        except (ValueError, IndexError):
+            return None
+    return None
 
 
 def _mcp_output_valid(text: str) -> bool:
@@ -1438,16 +1587,153 @@ def _classify_report_type(text: str) -> str:
         return "CONCISE"
 
 
+def _score_report(text: str) -> dict:
+    """Score report quality (0-100) before email. Returns {score, grade, details, warnings}."""
+    details = {}
+    warnings = []
+    lower = text.lower()
+
+    # 1. Table cells filled — no UNKNOWN, N/A, TBD placeholders (20 pts)
+    placeholder_count = len(re.findall(r'\b(?:UNKNOWN|N/A|TBD|TODO|PENDING|~)\b', text, re.IGNORECASE))
+    if placeholder_count == 0:
+        details["completeness"] = 20
+    elif placeholder_count <= 2:
+        details["completeness"] = 15
+    elif placeholder_count <= 5:
+        details["completeness"] = 10
+        warnings.append(f"{placeholder_count} placeholder values (UNKNOWN/N/A/TBD)")
+    else:
+        details["completeness"] = 5
+        warnings.append(f"{placeholder_count} placeholder values — report has significant gaps")
+
+    # 2. Price data present with $ amounts (15 pts)
+    price_count = len(re.findall(r'\$\d+\.?\d*', text))
+    if price_count >= 10:
+        details["price_data"] = 15
+    elif price_count >= 5:
+        details["price_data"] = 10
+    elif price_count >= 2:
+        details["price_data"] = 5
+    else:
+        details["price_data"] = 0
+        warnings.append("Almost no price data found in report")
+
+    # 3. Gates have definitive PASS/FAIL (15 pts)
+    gate_pass = len(re.findall(r'\bPASS\b', text))
+    gate_fail = len(re.findall(r'\bFAIL\b', text))
+    gate_total = gate_pass + gate_fail
+    if gate_total >= 4:
+        details["gates"] = 15
+    elif gate_total >= 3:
+        details["gates"] = 10
+    elif gate_total >= 1:
+        details["gates"] = 5
+    else:
+        details["gates"] = 0
+        warnings.append("No gate PASS/FAIL results found")
+
+    # 4. Support/resistance levels are numeric (10 pts)
+    sr_count = len(re.findall(r'(?:support|resistance)[:\s]*\$?\d+\.?\d*', lower))
+    if sr_count >= 3:
+        details["support_resistance"] = 10
+    elif sr_count >= 1:
+        details["support_resistance"] = 5
+    else:
+        details["support_resistance"] = 0
+        warnings.append("No support/resistance levels found")
+
+    # 5. Options section has real data or explicit SKIP (10 pts)
+    has_options = bool(re.search(r'(?:options?\s+(?:plan|strategy|trade)|mcmillan|iv\s+rank|strike)', lower))
+    has_options_skip = bool(re.search(r'(?:options?\s+(?:skip|not\s+available|no\s+options)|stock\s+only)', lower))
+    if has_options:
+        details["options"] = 10
+    elif has_options_skip:
+        details["options"] = 7  # Explicit skip is acceptable
+    else:
+        details["options"] = 0
+        warnings.append("Options section missing or empty")
+
+    # 6. Has required structural sections (15 pts)
+    required_sections = ["RESOLUTION_LOG", "FINAL_REPORT", "CONFIDENCE_SUMMARY"]
+    found = sum(1 for s in required_sections if s in text)
+    details["structure"] = int(found / len(required_sections) * 15)
+    if found < len(required_sections):
+        missing = [s for s in required_sections if s not in text]
+        warnings.append(f"Missing sections: {', '.join(missing)}")
+
+    # 7. Report length (10 pts)
+    length = len(text)
+    if length > 10000:
+        details["length"] = 10
+    elif length > 5000:
+        details["length"] = 7
+    elif length > 2000:
+        details["length"] = 4
+    else:
+        details["length"] = 0
+        warnings.append(f"Report too short ({length:,} chars)")
+
+    # 8. HUMAN_REVIEW_REQUIRED section present (5 pts)
+    if "HUMAN_REVIEW_REQUIRED" in text:
+        details["human_review"] = 5
+    else:
+        details["human_review"] = 0
+
+    score = sum(details.values())
+    grade = "A" if score >= 85 else "B" if score >= 70 else "C" if score >= 55 else "D" if score >= 40 else "F"
+
+    return {
+        "score": score,
+        "grade": grade,
+        "details": details,
+        "warnings": warnings,
+    }
+
+
+# ── Checkpointing ─────────────────────────────────────────────────────────────
+
+CHECKPOINT_DIR = VAULT / ".checkpoints"
+
+def _save_checkpoint(job_id: str, stage: str, data: dict):
+    """Save intermediate pipeline artifacts to disk for resume capability."""
+    CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
+    cp_file = CHECKPOINT_DIR / f"{job_id}_{stage}.json"
+    cp_file.write_text(json.dumps(data, default=str), encoding="utf-8")
+    print(f"  [checkpoint] Saved: {stage} ({cp_file.stat().st_size:,} bytes)", flush=True)
+
+
+def _load_checkpoint(job_id: str, stage: str) -> dict | None:
+    """Load a checkpoint if it exists. Returns data dict or None."""
+    cp_file = CHECKPOINT_DIR / f"{job_id}_{stage}.json"
+    if cp_file.exists():
+        try:
+            data = json.loads(cp_file.read_text(encoding="utf-8"))
+            print(f"  [checkpoint] Loaded: {stage} ({cp_file.stat().st_size:,} bytes)", flush=True)
+            return data
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"  [checkpoint] Failed to load {stage}: {e}", flush=True)
+    return None
+
+
+def _cleanup_checkpoints(job_id: str):
+    """Remove all checkpoint files for a completed job."""
+    if CHECKPOINT_DIR.exists():
+        for f in CHECKPOINT_DIR.glob(f"{job_id}_*.json"):
+            f.unlink()
+        print(f"  [checkpoint] Cleaned up checkpoints for {job_id[:12]}", flush=True)
+
+
 # ── Pipeline ──────────────────────────────────────────────────────────────────
 
 def pipeline(job_id, prompt, name, pq):
     """
-    File-based async pipeline:
-      Stage 1 → DRAFT file   (Claude + MCP tools)
-      Stage 2 → AUDIT file   (Gemini reads DRAFT)
+    File-based async pipeline with checkpointing:
+      Stage 1 → DRAFT file   (Claude + MCP tools) → checkpoint
+      Stage 2 → AUDIT file   (Gemini reads DRAFT)  → checkpoint
       Stage 3 → FINAL file   (Claude reads DRAFT + AUDIT)
       Email   → sends FINAL
     Each stage is independent — reads input from files, writes output to files.
+    Checkpoints allow resume from last completed stage on crash.
     """
     def update_job(**kwargs):
         with _jobs_lock:
@@ -1458,6 +1744,11 @@ def pipeline(job_id, prompt, name, pq):
     try:
         update_job(status="running", stage="generator")
         VAULT.mkdir(parents=True, exist_ok=True)
+
+        # ── Check for existing checkpoints (resume support) ──────────────
+        cp_mcp = _load_checkpoint(job_id, "mcp_data")
+        cp_draft = _load_checkpoint(job_id, "draft")
+        cp_audit = _load_checkpoint(job_id, "audit")
 
         # ── Stage 1: Generator (Claude) → draft text in memory ──────────
         req_type, tickers = _classify_request(prompt)
@@ -1473,9 +1764,23 @@ def pipeline(job_id, prompt, name, pq):
 
         if tool_list:
             # ── Parallel MCP path: gather data first, then Claude writes report ──
-            mcp_data = gather_mcp_data(tool_list, pq, "generator")
-            mcp_text = _format_mcp_results(mcp_data)
-            mcp_compact = _compact_mcp_summary(mcp_data)
+            if cp_mcp:
+                # Resume from checkpoint — skip MCP gathering
+                mcp_data = cp_mcp.get("mcp_data", {})
+                mcp_text = cp_mcp.get("mcp_text", "")
+                mcp_compact = cp_mcp.get("mcp_compact", "")
+                print(f"  [checkpoint] Resumed MCP data from checkpoint ({len(mcp_text):,} chars)", flush=True)
+                push(pq, "generator", "running", f"Resumed MCP data from checkpoint ({len(mcp_text):,} chars)")
+            else:
+                mcp_data = gather_mcp_data(tool_list, pq, "generator")
+                mcp_text = _format_mcp_results(mcp_data)
+                mcp_compact = _compact_mcp_summary(mcp_data)
+                # Save MCP checkpoint (most expensive step to redo)
+                _save_checkpoint(job_id, "mcp_data", {
+                    "mcp_data": mcp_data,
+                    "mcp_text": mcp_text,
+                    "mcp_compact": mcp_compact,
+                })
             successful = sum(1 for r in mcp_data.values() if "error" not in r)
             print(f"  [generator] MCP data gathered: {successful}/{len(mcp_data)} tools OK "
                   f"(full={len(mcp_text):,} chars, compact={len(mcp_compact):,} chars)", flush=True)
@@ -1495,8 +1800,15 @@ INSTRUCTIONS:
 - Follow the report format above EXACTLY.
 - Apply 5-gate validation: Catalyst + Freshness + Al Brooks + Quality + Institutional.
 - Include ALL data: price, signal, catalysts, technicals, support/resistance, quality score.
+- VOLUME ANALYSIS: Use the volume profile data (accumulation/distribution, OBV, relative volume) to confirm trend conviction.
+- VOLATILITY: Use HV vs IV, volatility regime, Bollinger squeeze data to inform options strategy selection.
+- RELATIVE STRENGTH: Report the ticker's sector-relative performance and ranking.
+- HISTORICAL SETUPS: If similar historical setups are found, include win rate and expected return from ML analysis.
+- INSIDER CLUSTER: If insider cluster buys/sells are detected, feature prominently in catalyst section.
+- UNUSUAL OPTIONS ACTIVITY: If smart money flow or unusual volume detected, include in options analysis.
+- CANDLES: Use daily candle data for Al Brooks price action analysis (support/resistance confirmation).
 - POSITIONS: Data includes positions from all 7 Questrade accounts. Report any holdings of analyzed tickers with account, quantity, cost basis, P&L. If none, state clearly.
-- OPTIONS: Include full McMillan analysis and options trade plan with specific strikes, expiries, strategy.
+- OPTIONS: Include full McMillan analysis and options trade plan with specific strikes, expiries, strategy. Include IV skew analysis if available.
 - SOURCES: Cite URLs from web searches in relevant sections (e.g., analyst upgrade source, news article).
 
 End with:
@@ -1504,7 +1816,12 @@ AUDIT_TARGETS
 =============
 [Numbered list of every verifiable claim — include source URLs where available]
 """
-            draft_text = run_claude(gen_prompt, "generator", pq, validate_mcp=False, needs_mcp=False, job_id=job_id)
+            if cp_draft:
+                draft_text = cp_draft.get("draft_text", "")
+                print(f"  [checkpoint] Resumed draft from checkpoint ({len(draft_text):,} chars)", flush=True)
+                push(pq, "generator", "running", f"Resumed draft from checkpoint ({len(draft_text):,} chars)")
+            else:
+                draft_text = run_claude(gen_prompt, "generator", pq, validate_mcp=False, needs_mcp=False, job_id=job_id)
         else:
             # ── Fallback: no tools selected (general/unknown) → Claude uses MCP directly ──
             print(f"  [generator] General request — Claude will use MCP tools directly", flush=True)
@@ -1523,7 +1840,16 @@ AUDIT_TARGETS
 =============
 [Numbered list of every verifiable claim]
 """
-            draft_text = run_claude(gen_prompt, "generator", pq, validate_mcp=True, job_id=job_id)
+            if cp_draft:
+                draft_text = cp_draft.get("draft_text", "")
+                print(f"  [checkpoint] Resumed draft from checkpoint ({len(draft_text):,} chars)", flush=True)
+                push(pq, "generator", "running", f"Resumed draft from checkpoint ({len(draft_text):,} chars)")
+            else:
+                draft_text = run_claude(gen_prompt, "generator", pq, validate_mcp=True, job_id=job_id)
+
+        # Save draft checkpoint (if not already from checkpoint)
+        if not cp_draft and len(draft_text.strip()) >= 100:
+            _save_checkpoint(job_id, "draft", {"draft_text": draft_text})
 
         with _jobs_lock:
             if job_id in _jobs:
@@ -1547,25 +1873,75 @@ AUDIT_TARGETS
         mcp_shared = f" + {len(mcp_compact):,} chars compact ref" if mcp_compact else ""
         push(pq, "auditor", "running", f"Sending {len(draft_text):,} char draft{mcp_shared} to Gemini auditor…")
 
-        # ── Stage 2: Auditor (Gemini) reads draft + compact MCP reference ─
+        # ── Stage 2a: Auditor verification MCP pass ──────────────────────
+        # Run a small verification subset of MCP tools so the Auditor can
+        # independently cross-check the Generator's numbers (not just trust them)
+        audit_verify_text = ""
+        if ticker and mcp_compact:
+            verify_tools = [
+                (f"verify_quotes_{ticker}",    "get_questrade_quotes", {"symbols": [ticker]}),
+                (f"verify_technical_{ticker}",  "analyze_technical",    {"ticker": ticker}),
+                (f"verify_quality_{ticker}",    "calculate_quality_score", {"ticker": ticker}),
+            ]
+            push(pq, "auditor", "running", f"Running {len(verify_tools)} MCP verification tools for Auditor…")
+            print(f"  [auditor] Running {len(verify_tools)} verification MCP tools", flush=True)
+            verify_data = gather_mcp_data(verify_tools, pq, "auditor")
+            audit_verify_compact = _compact_mcp_summary(verify_data)
+            successful_v = sum(1 for r in verify_data.values() if "error" not in r)
+            print(f"  [auditor] Verification data: {successful_v}/{len(verify_data)} OK ({len(audit_verify_compact):,} chars)", flush=True)
+            audit_verify_text = "\n" + _wrap_data_section(
+                "FRESH_MCP_VERIFICATION_DATA",
+                f"These are INDEPENDENT fresh MCP calls — use to cross-check the report's numbers:\n\n{audit_verify_compact}"
+            ) + "\n"
+
+        # ── Stage 2b: Auditor (Gemini) reads draft + compact ref + fresh verification ─
         mcp_section = ""
         if mcp_compact:
             mcp_section = "\n" + _wrap_data_section("COMPACT_MCP_REFERENCE", mcp_compact) + "\n"
         audit_prompt = f"""{AUDITOR_SYS}
-{mcp_section}
+{mcp_section}{audit_verify_text}
 {_wrap_data_section("REPORT_TO_AUDIT", draft_text)}"""
-        audit_text = run_gemini(audit_prompt, "auditor", pq)
+
+        if cp_audit:
+            audit_text = cp_audit.get("audit_text", "")
+            print(f"  [checkpoint] Resumed audit from checkpoint ({len(audit_text):,} chars)", flush=True)
+            push(pq, "auditor", "running", f"Resumed audit from checkpoint ({len(audit_text):,} chars)")
+        else:
+            audit_text = run_gemini(audit_prompt, "auditor", pq)
+            # Save audit checkpoint
+            if audit_text and len(audit_text.strip()) > 50:
+                _save_checkpoint(job_id, "audit", {"audit_text": audit_text})
 
         with _jobs_lock:
             if job_id in _jobs:
                 _jobs[job_id]["stage"] = "resolver"
 
-        # ── Stage transition: Auditor → Resolver ─────────────────────────
+        # ── Stage 2c: Re-query for disputed findings ─────────────────────
         audit_findings = len(re.findall(r'FINDING #\d+', audit_text or ""))
+        high_findings = len(re.findall(r'CONFIDENCE:\s*High', audit_text or "", re.IGNORECASE))
+        requery_text = ""
+        if ticker and audit_findings >= 3 and high_findings >= 2:
+            # Enough serious findings to warrant a targeted re-query
+            push(pq, "resolver", "running",
+                 f"Audit has {audit_findings} findings ({high_findings} high confidence) → re-querying MCP for disputed data…")
+            print(f"  [requery] {audit_findings} findings, {high_findings} high → running targeted re-query", flush=True)
+            requery_tools = [
+                (f"requery_quotes_{ticker}",    "get_questrade_quotes",    {"symbols": [ticker]}),
+                (f"requery_technical_{ticker}",  "analyze_technical",       {"ticker": ticker}),
+            ]
+            requery_data = gather_mcp_data(requery_tools, pq, "resolver")
+            requery_compact = _compact_mcp_summary(requery_data)
+            successful_rq = sum(1 for r in requery_data.values() if "error" not in r)
+            print(f"  [requery] Re-query data: {successful_rq}/{len(requery_data)} OK ({len(requery_compact):,} chars)", flush=True)
+            requery_text = "\n" + _wrap_data_section(
+                "FRESH_REQUERY_DATA",
+                f"Fresh MCP data gathered AFTER audit to resolve disputed findings:\n\n{requery_compact}"
+            ) + "\n"
+
         push(pq, "resolver", "running",
              f"Audit complete: {len(audit_text or ''):,} chars, {audit_findings} findings → Resolver starting…")
 
-        # ── Stage 3: Resolver (Claude) reads draft + audit + compact MCP ref → FINAL ──
+        # ── Stage 3: Resolver (Claude) reads draft + audit + compact MCP ref + requery → FINAL ──
         mcp_res_section = ""
         if mcp_compact:
             mcp_res_section = "\n" + _wrap_data_section("COMPACT_MCP_REFERENCE", mcp_compact) + "\n"
@@ -1574,15 +1950,28 @@ AUDIT_TARGETS
 {_wrap_data_section("ORIGINAL_REPORT", draft_text)}
 
 {_wrap_data_section("GEMINI_ADVERSARIAL_AUDIT", audit_text or "[No audit]")}
-{mcp_res_section}
+{mcp_res_section}{requery_text}
 Now produce RESOLUTION_LOG, then FINAL_REPORT, then CONFIDENCE_SUMMARY, then HUMAN_REVIEW_REQUIRED.
-Use WebSearch ONLY for facts not already in the compact reference above. The MCP data is authoritative for prices, technicals, positions, and quality scores.
+Use WebSearch ONLY for facts not already in the compact reference above. The MCP data is authoritative for prices, technicals, positions, and quality scores.{' FRESH_REQUERY_DATA is the most current — prefer it for resolving disputed numbers.' if requery_text else ''}
 """
         final_text = run_claude(res_prompt, "resolver", pq, needs_mcp=False, job_id=job_id)
 
         # ── Post-process: strip meta-text, clean output ──────────────────
         final_text = _postprocess_final(final_text)
         print(f"  [resolver] Post-processed: {len(final_text):,} chars", flush=True)
+
+        # ── Quality gate — score report before email ─────────────────────
+        quality = _score_report(final_text)
+        q_score = quality["score"]
+        q_grade = quality["grade"]
+        q_warnings = quality["warnings"]
+        print(f"  [quality] Score: {q_score}/100 (Grade {q_grade})", flush=True)
+        for w in q_warnings:
+            print(f"  [quality] WARNING: {w}", flush=True)
+        push(pq, "quality", "done",
+             f"Quality score: {q_score}/100 (Grade {q_grade}) | {len(q_warnings)} warnings")
+        _audit_log("quality_gate", job_id=job_id, score=q_score, grade=q_grade,
+                   details=quality["details"], warnings=q_warnings)
 
         # ── Smart vault naming based on final report ─────────────────────
         report_type = _classify_report_type(final_text)
@@ -1603,7 +1992,8 @@ Use WebSearch ONLY for facts not already in the compact reference above. The MCP
 
         # ── Save the FINAL report to vault ────────────────────────────────
         report_title = f"{ticker} Analysis" if ticker else name
-        header = f"# {report_title}\nGenerated: {datetime.now():%Y-%m-%d %H:%M}\n\n---\n\n"
+        quality_badge = f"Quality: {q_score}/100 ({q_grade})"
+        header = f"# {report_title}\nGenerated: {datetime.now():%Y-%m-%d %H:%M} | {quality_badge}\n\n---\n\n"
         final_file.write_text(header + final_text, encoding="utf-8")
         print(f"  [vault] Saved: {final_file} ({final_file.stat().st_size:,} bytes, type={report_type})", flush=True)
 
@@ -1611,19 +2001,70 @@ Use WebSearch ONLY for facts not already in the compact reference above. The MCP
             if job_id in _jobs:
                 _jobs[job_id]["files"]["FINAL"] = str(final_file)
                 _jobs[job_id]["stage"] = "email"
+                _jobs[job_id]["quality"] = quality
 
-        # ── Email FINAL report ───────────────────────────────────────────
-        push(pq, "email", "running", f"Emailing to {EMAIL_TO}…")
-        subject = f"[Analyst] {report_title} — {datetime.now():%Y-%m-%d %H:%M}"
-        email_status = send_email(subject, final_text)
-        push(pq, "email", "done", email_status)
+        # ── Prediction tracking — store entry/stop/target for accuracy tracking ──
+        if ticker and q_score >= 50:
+            try:
+                entry = _extract_price(final_text, r'entry[:\s]*\$?([\d.]+)')
+                stop = _extract_price(final_text, r'stop[:\s]*\$?([\d.]+)')
+                target1 = _extract_price(final_text, r'(?:target\s*1|t1)[:\s]*\$?([\d.]+)')
+                target2 = _extract_price(final_text, r'(?:target\s*2|t2)[:\s]*\$?([\d.]+)')
+                signal_match = re.search(r'(?:signal|recommendation)[:\s]*(STRONG_BUY|BUY|WATCH|SELL|STRONG_SELL|NO_TRADE|HOLD)', final_text, re.IGNORECASE)
+                signal = signal_match.group(1).upper() if signal_match else "UNKNOWN"
+
+                if entry and signal not in ("NO_TRADE", "HOLD", "UNKNOWN"):
+                    pred_args = {
+                        "ticker": ticker,
+                        "signal": signal,
+                        "entry_price": entry,
+                        "quality_score": q_score,
+                    }
+                    if stop:
+                        pred_args["stop_loss"] = stop
+                    if target1:
+                        pred_args["target_1"] = target1
+                    if target2:
+                        pred_args["target_2"] = target2
+
+                    push(pq, "prediction", "running", f"Storing prediction: {ticker} {signal} @ ${entry}")
+                    pred_result = _call_mcp_tool("store_trading_prediction", pred_args, timeout=30)
+                    if "error" in pred_result:
+                        print(f"  [prediction] ERROR: {pred_result['error'][:80]}", flush=True)
+                        push(pq, "prediction", "done", f"Prediction store failed: {pred_result['error'][:60]}")
+                    else:
+                        print(f"  [prediction] Stored: {ticker} {signal} @ ${entry}", flush=True)
+                        push(pq, "prediction", "done", f"Prediction stored: {ticker} {signal} @ ${entry}")
+                else:
+                    print(f"  [prediction] Skipped — no entry price or signal is {signal}", flush=True)
+            except Exception as pred_err:
+                print(f"  [prediction] ERROR: {pred_err}", flush=True)
+
+        # ── Email FINAL report (quality-gated) ───────────────────────────
+        if q_score < 40:
+            # Score too low — save draft only, no email
+            email_status = f"EMAIL_SKIPPED: Quality score {q_score}/100 (Grade {q_grade}) too low for email"
+            print(f"  [email] SKIPPED — quality score {q_score} < 40", flush=True)
+            push(pq, "email", "done", email_status)
+        else:
+            push(pq, "email", "running", f"Emailing to {EMAIL_TO}…")
+            quality_tag = f"[LOW QUALITY] " if q_score < 60 else ""
+            subject = f"{quality_tag}[Analyst] {report_title} — {datetime.now():%Y-%m-%d %H:%M}"
+            email_status = send_email(subject, final_text)
+            push(pq, "email", "done", email_status)
 
         final_files = {"FINAL": str(final_file)}
         update_job(status="done", stage="complete", files=final_files)
-        _audit_log("job_complete", job_id=job_id, status="done", file=str(final_file), report_type=report_type)
+        _audit_log("job_complete", job_id=job_id, status="done", file=str(final_file),
+                   report_type=report_type, quality_score=q_score, quality_grade=q_grade)
+
+        # Clean up checkpoints on successful completion
+        _cleanup_checkpoints(job_id)
+
         pq.put({
             "stage": "complete", "status": "done", "message": "Pipeline complete",
             "files": final_files, "email_status": email_status,
+            "quality": quality,
         })
 
     except Exception as e:
@@ -1661,23 +2102,7 @@ class Handler(BaseHTTPRequestHandler):
         ip = self.client_address[0]
         now = time.time()
 
-        # ── Rate limiting: lockout after 5 failures within 5 minutes ──
-        if ip in _auth_failures:
-            count, first_time = _auth_failures[ip]
-            if count >= 5 and now - first_time < _AUTH_LOCKOUT:
-                retry = int(_AUTH_LOCKOUT - (now - first_time))
-                body = json.dumps({"error": "Too many failed attempts. Try again later."}).encode()
-                self.send_response(429)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(body)))
-                self.send_header("Retry-After", str(retry))
-                self._cors(); self.end_headers()
-                self.wfile.write(body); self.wfile.flush()
-                _audit_log("auth_lockout", ip=ip, retry_after=retry)
-                return False
-            elif now - first_time >= _AUTH_LOCKOUT:
-                del _auth_failures[ip]  # Reset after lockout expires
-
+        # Check credentials FIRST — correct creds always succeed and clear lockout
         # Check Authorization header (fetch/curl)
         auth = self.headers.get("Authorization", "")
         if auth.startswith("Basic "):
@@ -1703,6 +2128,23 @@ class Handler(BaseHTTPRequestHandler):
                     return True
             except Exception:
                 pass
+
+        # Credentials wrong — check if locked out (rate limiting)
+        if ip in _auth_failures:
+            count, first_time = _auth_failures[ip]
+            if now - first_time >= _AUTH_LOCKOUT:
+                del _auth_failures[ip]  # Expired — reset
+            elif count >= 5:
+                retry = int(_AUTH_LOCKOUT - (now - first_time))
+                body = json.dumps({"error": "Too many failed attempts. Try again later."}).encode()
+                self.send_response(429)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Retry-After", str(retry))
+                self._cors(); self.end_headers()
+                self.wfile.write(body); self.wfile.flush()
+                _audit_log("auth_lockout", ip=ip, retry_after=retry)
+                return False
 
         # Auth failed — track for rate limiting
         if ip in _auth_failures:
@@ -1817,10 +2259,7 @@ class Handler(BaseHTTPRequestHandler):
             })
             return
 
-        # All other endpoints require auth
-        if not self._check_auth():
-            return
-
+        # UI page — no auth (credentials handled by JS, not browser Basic Auth dialog)
         if path in ("/", "/index.html"):
             body = UI.encode()
             self.send_response(200)
@@ -1828,14 +2267,20 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self._cors(); self.end_headers()
             self.wfile.write(body); self.wfile.flush()
+            return
 
-        elif path == "/jobs":
+        # All other endpoints require auth
+        if not self._check_auth():
+            return
+
+        if path == "/jobs":
             _cleanup_old_jobs()
             with _jobs_lock:
                 jobs_list = [{
                     "id": j["id"], "name": j["name"], "status": j["status"],
                     "stage": j["stage"], "created": j["created"],
                     "files": j["files"], "error": j["error"],
+                    "quality": j.get("quality"),
                 } for j in _jobs.values()]
             self._json(200, {"jobs": sorted(jobs_list, key=lambda x: x["created"], reverse=True)})
 
@@ -2332,11 +2777,26 @@ textarea::placeholder{color:var(--muted)}
 
 <script>
 /* ── Auth ──────────────────────────────────────────────────────────────────── */
-const _cred=btoa('admin:admin');
-const authHdr={'Authorization':'Basic '+_cred};
-function afetch(url,opts={}){
-  opts.headers=Object.assign({},opts.headers||{},authHdr);
-  return fetch(url,opts);
+let _cred=localStorage.getItem('analyst_cred')||'';
+function _promptCred(){
+  const u=prompt('Username:','admin');
+  const p=prompt('Password:');
+  if(u&&p){_cred=btoa(u+':'+p);localStorage.setItem('analyst_cred',_cred);return true}
+  return false;
+}
+if(!_cred)_promptCred();
+async function afetch(url,opts={}){
+  opts.headers=Object.assign({},opts.headers||{},{'Authorization':'Basic '+_cred});
+  const r=await fetch(url,opts);
+  if(r.status===401){
+    // Credentials rejected — clear stale cache and re-prompt
+    localStorage.removeItem('analyst_cred');_cred='';
+    if(_promptCred()){
+      opts.headers['Authorization']='Basic '+_cred;
+      return fetch(url,opts);
+    }
+  }
+  return r;
 }
 
 /* ── State ─────────────────────────────────────────────────────────────────── */
@@ -2820,9 +3280,9 @@ async function loadJobs(){
   }catch{}
 }
 
-// Initial load + periodic refresh
-loadJobs();
-setInterval(()=>{loadJobs();updateSidebar()},15000);
+// Initial load + periodic refresh (only if we have credentials)
+if(_cred){loadJobs()}
+setInterval(()=>{if(_cred)loadJobs();updateSidebar()},15000);
 </script>
 </body>
 </html>"""
