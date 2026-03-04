@@ -1081,6 +1081,7 @@ def _run_claude_once(prompt: str, stage: str, pq, env: dict, needs_mcp: bool = T
     text_parts = []       # collected final text output
     result_text = ""
     _chars_logged = [0]   # mutable counter for periodic progress logging
+    _last_tool_name = ""  # track which tool is being called for result logging
     try:
         proc = subprocess.Popen(
             cmd,
@@ -1176,6 +1177,7 @@ def _run_claude_once(prompt: str, stage: str, pq, env: dict, needs_mcp: bool = T
                     cb = ev.get("content_block", {})
                     if cb.get("type") == "tool_use":
                         tool_name = cb.get("name", "?")
+                        _last_tool_name = tool_name
                         log(f"Tool call: {tool_name}")
                         push(pq, stage, "running", f"Calling {tool_name}…")
 
@@ -1239,12 +1241,14 @@ def _run_claude_once(prompt: str, stage: str, pq, env: dict, needs_mcp: bool = T
                             is_err = block.get("is_error", False)
                             content = block.get("content", "")
                             clen = len(str(content))
+                            tname = _last_tool_name if _last_tool_name else f"tool_{tid}"
                             if is_err:
-                                log(f"Tool result: error ({clen} chars)")
-                                push(pq, stage, "running", f"✗ Tool error ({clen} chars)")
+                                log(f"Tool result: ✗ {tname} error ({clen} chars)")
+                                push(pq, stage, "running", f"✗ {tname} error ({clen} chars)")
                             else:
-                                log(f"Tool result: OK ({clen:,} chars)")
-                                push(pq, stage, "running", f"✓ Tool result ({clen:,} chars)")
+                                log(f"Tool result: ✓ {tname} ({clen:,} chars)")
+                                push(pq, stage, "running", f"✓ {tname} ({clen:,} chars)")
+                            _last_tool_name = ""
                             break
                     else:
                         log(f"Event: {etype}")
