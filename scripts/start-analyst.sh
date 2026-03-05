@@ -48,23 +48,14 @@ if ! command -v python3 &>/dev/null; then echo "❌ python3 not found"; exit 1; 
 if ! command -v cloudflared &>/dev/null; then echo "❌ cloudflared not found — brew install cloudflared"; exit 1; fi
 if ! command -v claude &>/dev/null; then echo "❌ claude not found"; exit 1; fi
 
-# ── 0. Get OAuth token ─────────────────────────────────────────────────────
-# Priority: (1) env var already set, (2) claude setup-token, (3) macOS Keychain
-if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
-  echo "🔑 Trying claude setup-token…"
-  CLAUDE_CODE_OAUTH_TOKEN=$(claude setup-token 2>/dev/null || true)
-fi
-if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
-  echo "🔑 Reading from macOS Keychain…"
-  CLAUDE_CODE_OAUTH_TOKEN=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null \
-    | python3 -c "import sys,json; print(json.load(sys.stdin).get('claudeAiOauth',{}).get('accessToken',''))" 2>/dev/null || true)
-fi
-if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
-  echo "❌ No OAuth token found — run 'claude setup-token' or log in to Claude Code first"
+# ── 0. Verify OAuth token exists in Keychain ─────────────────────────────
+# claude -p reads the Keychain directly — we just verify it's there
+if security find-generic-password -s "Claude Code-credentials" -w &>/dev/null; then
+  echo "✅ OAuth token found in macOS Keychain"
+else
+  echo "❌ No OAuth token in Keychain — run 'claude' interactively to log in first"
   exit 1
 fi
-export CLAUDE_CODE_OAUTH_TOKEN
-echo "✅ OAuth token ready (${#CLAUDE_CODE_OAUTH_TOKEN} chars)"
 
 # ── Stop previous instances ──────────────────────────────────────────────────
 cleanup_stale "$SERVER_PID_FILE" "Server"
@@ -92,7 +83,6 @@ env -i \
   PYTHONUNBUFFERED=1 \
   TMPDIR="${TMPDIR:-/tmp}" \
   NVM_DIR="${NVM_DIR:-$HOME/.nvm}" \
-  CLAUDE_CODE_OAUTH_TOKEN="${CLAUDE_CODE_OAUTH_TOKEN:-}" \
   nohup python3 -u "$SERVER" >> "$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
 echo "$SERVER_PID" > "$SERVER_PID_FILE"

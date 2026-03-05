@@ -147,6 +147,9 @@ def load_env():
 
 ENV = load_env()
 GMAIL_PASS = ENV.get("GMAIL_APP_PASSWORD", "")
+WEBHOOK_URL = ENV.get("WEBHOOK_URL", "")
+if WEBHOOK_URL:
+    print(f"  Webhook: {WEBHOOK_URL[:60]}...")
 
 # ── Auth credentials from .env ──────────────────────────────────────────────
 AUTH_USER = ENV.get("ANALYST_USER", "")
@@ -364,31 +367,36 @@ def _classify_request(prompt: str) -> tuple:
     lower = prompt.lower()
     tickers = _extract_all_tickers(prompt)
 
-    # Portfolio / positions review
+    # ── Priority 1: Ticker + action verb → always ticker_analysis ──
+    # Fixes: "scan AVGO using portfolio instructions" was misrouted to portfolio_review
+    action_words = ["scan", "analyze", "analysis", "check", "review", "look at",
+                    "examine", "evaluate", "screen"]
+    has_action = any(w in lower for w in action_words)
+    if tickers and has_action:
+        return ("ticker_analysis", tickers)
+
+    # ── Priority 2: Portfolio (no ticker + action combo) ──
     if any(w in lower for w in ["portfolio", "positions", "holdings", "balances", "accounts"]):
         return ("portfolio_review", tickers)
 
-    # Market scanning — but if a specific ticker is given with "scan", treat as ticker analysis
+    # ── Priority 3: Market scanning (no tickers — they'd be caught by Priority 1) ──
     if any(w in lower for w in ["scan", "screen", "find opportunities", "market opportunities"]):
-        if tickers:
-            # "scan AAPL" = analyze AAPL, not full market scan
-            return ("ticker_analysis", tickers)
         if any(w in lower for w in ["short", "bear", "put"]):
             return ("market_scan_short", tickers)
         elif any(w in lower for w in ["long", "bull", "call", "buy"]):
             return ("market_scan_long", tickers)
         return ("market_scan", tickers)
 
-    # Comparison (2+ tickers)
+    # ── Priority 4: Comparison (2+ tickers, no action word) ──
     if len(tickers) >= 2:
         return ("comparison", tickers)
 
-    # Options-focused
+    # ── Priority 5: Options-focused ──
     if any(w in lower for w in ["option", "options", "put spread", "call spread", "iron condor",
                                  "straddle", "strangle", "covered call", "mcmillan"]):
         return ("options_focus", tickers)
 
-    # Single ticker analysis (default if ticker found)
+    # ── Priority 6: Single ticker (default if ticker found) ──
     if tickers:
         return ("ticker_analysis", tickers)
 
@@ -432,7 +440,6 @@ def _build_tool_list(request_type: str, tickers: list) -> list:
             (f"options_mcmillan_{t}",    "analyze_options_mcmillan",  {"ticker": t}),
             (f"support_resistance_{t}",  "find_support_resistance",   {"ticker": t}),
             (f"quality_{t}",             "calculate_quality_score",   {"ticker": t}),
-            (f"options_plan_{t}",        "generate_options_trade_plan", {"ticker": t}),
         ]
         # Extended analysis tools — high-value data previously unused
         tools += [
@@ -456,7 +463,6 @@ def _build_tool_list(request_type: str, tickers: list) -> list:
                 (f"quotes_{t}",            "get_questrade_quotes",        {"symbols": [t]}),
                 (f"technical_{t}",         "analyze_technical",           {"ticker": t}),
                 (f"options_mcmillan_{t}",  "analyze_options_mcmillan",    {"ticker": t}),
-                (f"options_plan_{t}",      "generate_options_trade_plan", {"ticker": t}),
                 (f"signal_{t}",            "generate_trading_signal",     {"ticker": t}),
                 (f"catalysts_{t}",         "detect_catalyst_strength",    {"ticker": t}),
                 (f"ticker_data_{t}",       "get_ticker_data",             {"ticker": t}),
@@ -465,13 +471,27 @@ def _build_tool_list(request_type: str, tickers: list) -> list:
                 tools.append((f"positions_{acct}", "get_questrade_positions", {"account_number": acct}))
 
     elif request_type == "comparison":
-        for t in tickers[:4]:  # max 4 tickers
+        for t in tickers[:2]:  # max 2 tickers for extended comparison (~30 tools total)
+            # Core tools
             tools += [
-                (f"quotes_{t}",     "get_questrade_quotes",    {"symbols": [t]}),
-                (f"signal_{t}",     "generate_trading_signal", {"ticker": t}),
-                (f"technical_{t}",  "analyze_technical",       {"ticker": t}),
-                (f"catalysts_{t}",  "detect_catalyst_strength",{"ticker": t}),
-                (f"quality_{t}",    "calculate_quality_score", {"ticker": t}),
+                (f"quotes_{t}",              "get_questrade_quotes",      {"symbols": [t]}),
+                (f"signal_{t}",              "generate_trading_signal",   {"ticker": t}),
+                (f"catalysts_{t}",           "detect_catalyst_strength",  {"ticker": t}),
+                (f"technical_{t}",           "analyze_technical",         {"ticker": t}),
+                (f"quality_{t}",             "calculate_quality_score",   {"ticker": t}),
+                (f"options_mcmillan_{t}",    "analyze_options_mcmillan",  {"ticker": t}),
+                (f"support_resistance_{t}",  "find_support_resistance",   {"ticker": t}),
+            ]
+            # Extended analysis tools
+            tools += [
+                (f"volume_{t}",             "analyze_volume_tool",                {"ticker": t}),
+                (f"volatility_{t}",         "analyze_volatility_tool",            {"ticker": t}),
+                (f"historical_{t}",         "find_similar_historical_setups",     {"ticker": t}),
+                (f"iv_skew_{t}",            "analyze_iv_skew",                    {"ticker": t}),
+                (f"rel_strength_{t}",       "calculate_relative_strength_tool",   {"ticker": t}),
+                (f"insider_cluster_{t}",    "detect_insider_cluster",             {"ticker": t}),
+                (f"unusual_options_{t}",    "detect_unusual_options_activity",    {"ticker": t}),
+                (f"candles_{t}",            "get_questrade_candles",              {"symbol": t, "interval": "OneDay", "window": 60}),
             ]
 
     elif request_type == "market_scan_long":
@@ -668,21 +688,33 @@ def _compact_mcp_summary(mcp_data: dict) -> str:
             for g in ["catalyst", "freshness", "brooks", "quality", "options_tradability"]:
                 short = {"catalyst": "Cat", "freshness": "Fresh", "brooks": "Brooks",
                          "quality": "Qual", "options_tradability": "Opts"}[g]
-                gate_icons.append(f"{'✓' if gs.get(g) else '✗'}{short}")
-            tp = d.get("trading_plan", {})
+                gval = gs.get(g)
+                passed = gval is True or (isinstance(gval, str) and gval.upper() in ("PASS", "PASSED", "TRUE", "YES"))
+                gate_icons.append(f"{'✓' if passed else '✗'}{short}")
+            tp = d.get("trading_plan") or {}
+            sig_val = d.get("signal", "?")
             lines.append(
-                f"SIGNAL: {d.get('signal', '?')} | {d.get('data_direction', '?')} | "
+                f"SIGNAL: {sig_val} | {d.get('data_direction', '?')} | "
                 f"Confidence {d.get('confidence', '?')} | Gates {d.get('gates_passed', '?')}/5 ({' '.join(gate_icons)})"
             )
-            if tp.get("entry_price"):
+            if sig_val in ("NO_TRADE", "HOLD"):
+                rec = d.get("recommendation", "")
+                if rec:
+                    lines.append(f"  Reason: {str(rec)[:200]}")
+            if isinstance(tp, dict) and tp.get("entry_price"):
+                def _tp_price(val):
+                    """Extract price from scalar or nested dict like {'price': 82.77}."""
+                    if isinstance(val, dict):
+                        return val.get("price", val.get("level", "?"))
+                    return val
                 lines.append(
-                    f"  Entry ${_n(tp.get('entry_price'))} | Stop ${_n(tp.get('stop_loss'))} | "
-                    f"T1 ${_n(tp.get('target_1'))} | T2 ${_n(tp.get('target_2'))} | R/R {_n(tp.get('risk_reward_ratio'), '.1f')}"
+                    f"  Entry ${_n(tp.get('entry_price'))} | Stop ${_n(_tp_price(tp.get('stop_loss')))} | "
+                    f"T1 ${_n(_tp_price(tp.get('target_1')))} | T2 ${_n(_tp_price(tp.get('target_2')))} | R/R {_n(tp.get('risk_reward_ratio'), '.1f')}"
                 )
-            brooks = d.get("brooks_analysis", {})
+            brooks = d.get("brooks_analysis") or {}
             if brooks:
                 lines.append(f"  Brooks: {brooks.get('pattern', '?')} | Prob {brooks.get('probability', '?')}% | Trap {brooks.get('trap_risk', '?')}")
-            ot = d.get("options_tradability", {})
+            ot = d.get("options_tradability") or {}
             if ot:
                 lines.append(f"  Opts: allowed={ot.get('options_allowed')} | IV rank {ot.get('iv_rank', '?')} | {ot.get('liquidity_tier', '?')} | Earnings {ot.get('days_to_earnings', '?')}d")
 
@@ -1052,7 +1084,8 @@ def _untrack_claude(proc):
         _active_claude.pop(proc.pid, None)
 
 
-def _run_claude_once(prompt: str, stage: str, pq, env: dict, needs_mcp: bool = True, job_id: str = "") -> str:
+def _run_claude_once(prompt: str, stage: str, pq, env: dict, needs_mcp: bool = True,
+                     job_id: str = "", model: str = "") -> str:
     """Single Claude execution with stream-json output for live tool visibility.
 
     Prompt is piped via stdin using --input-format stream-json to avoid OS
@@ -1060,6 +1093,7 @@ def _run_claude_once(prompt: str, stage: str, pq, env: dict, needs_mcp: bool = T
 
     needs_mcp=True  → loads investor-agent MCP tools.
     needs_mcp=False → --strict-mcp-config skips all plugins (fast).
+    model=""        → use default (Opus). "sonnet" → use Sonnet (faster, cheaper on rate limits).
     """
     log = lambda msg: print(f"  [{stage}] {msg}", flush=True)
 
@@ -1069,19 +1103,23 @@ def _run_claude_once(prompt: str, stage: str, pq, env: dict, needs_mcp: bool = T
     base_cmd = [CLAUDE_BIN, "-p", "--dangerously-skip-permissions",
                 "--output-format", "stream-json", "--verbose",
                 "--input-format", "stream-json",
-                "--include-partial-messages"]
+                "--include-partial-messages",
+                "--disallowed-tools", "Agent,TodoWrite,TaskOutput,Write,Edit,Bash,Glob,Grep,Read,NotebookEdit,Skill,EnterPlanMode,EnterWorktree,AskUserQuestion,WebFetch"]
+    if model:
+        base_cmd += ["--model", model]
     if not needs_mcp:
         base_cmd += ["--no-session-persistence",
                      "--mcp-config", str(REPO / ".mcp-empty.json"), "--strict-mcp-config"]
     cmd = base_cmd
 
+    model_tag = f", model={model}" if model else ""
     log(f"CMD: claude -p --input-format stream-json <{len(prompt):,} chars> "
-        f"(mcp={'ON' if needs_mcp else 'SKIP, strict-empty'})")
+        f"(mcp={'ON' if needs_mcp else 'SKIP, strict-empty'}{model_tag})")
 
     text_parts = []       # collected final text output
     result_text = ""
     _chars_logged = [0]   # mutable counter for periodic progress logging
-    _last_tool_name = ""  # track which tool is being called for result logging
+    _tool_names = {}  # map tool_use_id → tool_name for result logging
     try:
         proc = subprocess.Popen(
             cmd,
@@ -1171,14 +1209,23 @@ def _run_claude_once(prompt: str, stage: str, pq, env: dict, needs_mcp: bool = T
                             if txt:
                                 text_parts.append(txt)
                                 push(pq, stage, "streaming", "", txt)
+                        elif block.get("type") == "tool_use":
+                            tool_name = block.get("name", "?")
+                            tool_id = block.get("id", "")
+                            if tool_id:
+                                _tool_names[tool_id] = tool_name
+                            log(f"Tool call: {tool_name}")
+                            push(pq, stage, "running", f"Calling {tool_name}…")
 
                 # Tool use — show which MCP tool is being called
                 elif etype == "content_block_start":
                     cb = ev.get("content_block", {})
                     if cb.get("type") == "tool_use":
                         tool_name = cb.get("name", "?")
-                        _last_tool_name = tool_name
-                        log(f"Tool call: {tool_name}")
+                        tool_id = cb.get("id", "")
+                        if tool_id:
+                            _tool_names[tool_id] = tool_name
+                        log(f"Tool call: {tool_name} (id={tool_id[:12]})")
                         push(pq, stage, "running", f"Calling {tool_name}…")
 
                 # Tool result — show tool completed
@@ -1237,18 +1284,19 @@ def _run_claude_once(prompt: str, stage: str, pq, env: dict, needs_mcp: bool = T
                     msg_content = ev.get("message", {}).get("content", [])
                     for block in msg_content:
                         if block.get("type") == "tool_result":
-                            tid = block.get("tool_use_id", "")[:8]
+                            tid = block.get("tool_use_id", "")
                             is_err = block.get("is_error", False)
                             content = block.get("content", "")
                             clen = len(str(content))
-                            tname = _last_tool_name if _last_tool_name else f"tool_{tid}"
+                            tname = _tool_names.pop(tid, "") or f"tool_{tid[:8]}"
+                            if not tname or tname.startswith("tool_"):
+                                log(f"DEBUG tool_result: tid={tid[:20]} known_ids={list(_tool_names.keys())[:5]}")
                             if is_err:
                                 log(f"Tool result: ✗ {tname} error ({clen} chars)")
                                 push(pq, stage, "running", f"✗ {tname} error ({clen} chars)")
                             else:
                                 log(f"Tool result: ✓ {tname} ({clen:,} chars)")
                                 push(pq, stage, "running", f"✓ {tname} ({clen:,} chars)")
-                            _last_tool_name = ""
                             break
                     else:
                         log(f"Event: {etype}")
@@ -1351,6 +1399,56 @@ def _run_claude_once(prompt: str, stage: str, pq, env: dict, needs_mcp: bool = T
     return result_text
 
 
+def _check_oauth_token() -> dict:
+    """Check Claude OAuth token status from macOS Keychain.
+
+    Returns dict with: valid (bool), expires_at (str), hours_left (float), warning (str).
+    """
+    try:
+        raw = subprocess.check_output(
+            ["/usr/bin/security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
+            text=True, timeout=5, stderr=subprocess.DEVNULL
+        ).strip()
+        data = json.loads(raw)
+        oauth = data.get("claudeAiOauth", {})
+        token = oauth.get("accessToken", "")
+        expires_at = oauth.get("expiresAt", 0)
+        if not token:
+            return {"valid": False, "hours_left": 0, "warning": "No OAuth token in Keychain"}
+        # expiresAt is Unix ms
+        expires_s = expires_at / 1000 if expires_at > 1e12 else expires_at
+        now = time.time()
+        hours_left = (expires_s - now) / 3600
+        from datetime import datetime
+        exp_str = datetime.fromtimestamp(expires_s).strftime("%Y-%m-%d %H:%M:%S")
+
+        if hours_left <= 0:
+            return {"valid": False, "expires_at": exp_str, "hours_left": 0,
+                    "warning": "TOKEN EXPIRED — run 'claude' interactively to refresh"}
+        elif hours_left <= 1:
+            return {"valid": True, "expires_at": exp_str, "hours_left": round(hours_left, 1),
+                    "warning": f"TOKEN EXPIRING SOON — {hours_left:.0f}min left! Run 'claude' to refresh"}
+        elif hours_left <= 3:
+            return {"valid": True, "expires_at": exp_str, "hours_left": round(hours_left, 1),
+                    "warning": f"Token expires in {hours_left:.1f}h — consider refreshing soon"}
+        else:
+            return {"valid": True, "expires_at": exp_str, "hours_left": round(hours_left, 1),
+                    "warning": ""}
+    except Exception as e:
+        return {"valid": False, "hours_left": 0, "warning": f"Cannot read Keychain: {e}"}
+
+
+def _token_watchdog():
+    """Background thread: check token every 30 min, warn when expiring."""
+    while True:
+        time.sleep(1800)  # 30 min
+        status = _check_oauth_token()
+        if not status["valid"]:
+            print(f"\n  🚨 TOKEN ALERT: {status['warning']}\n", flush=True)
+        elif status.get("warning"):
+            print(f"\n  ⚠️  TOKEN WARNING: {status['warning']}\n", flush=True)
+
+
 def _build_clean_env() -> dict:
     """Build a minimal clean environment for claude -p subprocess.
 
@@ -1379,42 +1477,30 @@ def _build_clean_env() -> dict:
         # Temp dir
         "TMPDIR": os.environ.get("TMPDIR", "/tmp"),
     }
-    # Auth: read OAuth token from (1) parent env, or (2) macOS Keychain directly
-    oauth = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "")
-    if not oauth:
-        # Read from macOS Keychain — works regardless of how server was started
-        try:
-            raw = subprocess.check_output(
-                ["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
-                text=True, timeout=5, stderr=subprocess.DEVNULL
-            ).strip()
-            import json as _json
-            oauth = _json.loads(raw).get("claudeAiOauth", {}).get("accessToken", "")
-        except Exception:
-            pass
-    if oauth:
-        env["CLAUDE_CODE_OAUTH_TOKEN"] = oauth
-    else:
-        print("  ⚠️  CLAUDE_CODE_OAUTH_TOKEN not set — claude -p will fail auth", flush=True)
-    env["CLAUDE_CODE_DONT_INHERIT_ENV"] = "1"
+    # Auth: Let claude -p read the Keychain directly for OAuth.
+    # Do NOT pass CLAUDE_CODE_OAUTH_TOKEN — it's a short-lived access token
+    # that goes stale, while claude CLI can refresh via the Keychain's refresh token.
+    # We only need to NOT set CLAUDE_CODE_DONT_INHERIT_ENV so claude can access Keychain.
     env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = "128000"
     return {k: v for k, v in env.items() if v}
 
 
 def run_claude(prompt: str, stage: str, pq,
                validate_mcp: bool = False, max_retries: int = 2,
-               needs_mcp: bool = True, job_id: str = "") -> str:
+               needs_mcp: bool = True, job_id: str = "",
+               model: str = "") -> str:
     """
     Run Claude Code CLI → return output text.
     If validate_mcp=True, checks output for real MCP data and retries on failure.
     needs_mcp=False → skip MCP server loading (saves 30-60s startup).
+    model="" → default (Opus). "sonnet" → Sonnet (faster, saves rate limit quota).
     """
     log = lambda msg: print(f"  [{stage}] {msg}", flush=True)
     push(pq, stage, "running", f"{stage} starting…")
 
     env = _build_clean_env()
 
-    result_text = _run_claude_once(prompt, stage, pq, env, needs_mcp=needs_mcp, job_id=job_id)
+    result_text = _run_claude_once(prompt, stage, pq, env, needs_mcp=needs_mcp, job_id=job_id, model=model)
 
     # Retry loop for MCP validation failures
     if validate_mcp and not _mcp_output_valid(result_text):
@@ -1423,7 +1509,7 @@ def run_claude(prompt: str, stage: str, pq,
             push(pq, stage, "running",
                  f"MCP tools didn't load — retrying ({attempt}/{max_retries})…")
             time.sleep(5)
-            result_text = _run_claude_once(prompt, stage, pq, env, needs_mcp=needs_mcp, job_id=job_id)
+            result_text = _run_claude_once(prompt, stage, pq, env, needs_mcp=needs_mcp, job_id=job_id, model=model)
             if _mcp_output_valid(result_text):
                 log(f"MCP VALIDATION PASSED on retry {attempt}")
                 break
@@ -1543,24 +1629,54 @@ def send_email(subject: str, body: str) -> str:
         return f"EMAIL_FAILED: {e}"
 
 
+def _send_webhook(job_id: str, ticker: str, signal: str, quality: dict,
+                  vault_file: str, report_type: str, request_type: str):
+    """POST job completion summary to webhook URL. Non-blocking, fire-and-forget."""
+    if not WEBHOOK_URL:
+        return
+    try:
+        import urllib.request
+        payload = json.dumps({
+            "event": "pipeline_complete",
+            "job_id": job_id,
+            "ticker": ticker or "N/A",
+            "signal": signal,
+            "quality_score": quality.get("score", 0),
+            "quality_grade": quality.get("grade", "?"),
+            "report_type": report_type,
+            "request_type": request_type,
+            "vault_file": vault_file,
+            "warnings": quality.get("warnings", []),
+            "timestamp": datetime.now().isoformat(),
+        }).encode("utf-8")
+
+        req = urllib.request.Request(
+            WEBHOOK_URL,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            print(f"  [webhook] Sent to {WEBHOOK_URL[:40]}... → {resp.status}", flush=True)
+    except Exception as e:
+        print(f"  [webhook] Failed: {e}", flush=True)
+
+
 def _postprocess_final(text: str) -> str:
-    """Clean resolver output: strip meta-text before RESOLUTION_LOG, ensure proper ordering."""
-    # Find the first meaningful section header
-    for marker in ["RESOLUTION_LOG", "FINAL_REPORT"]:
+    """Clean resolver output: strip meta-text, reorder so report comes first, validation at end."""
+    # Strip Claude thinking/meta-text before first meaningful section
+    for marker in ["FINAL_REPORT", "RESOLUTION_LOG"]:
         idx = text.find(marker)
         if idx > 0:
-            # Strip anything before the first section (Claude thinking out loud, etc.)
             pre = text[:idx]
-            # Only strip if pre-section text is short meta-text, not real content
             if len(pre.strip()) < 500 and not re.search(r'^#{1,4}\s', pre, re.MULTILINE):
                 text = text[idx:]
                 break
+
     # Strip trailing Claude meta-commentary after HUMAN_REVIEW_REQUIRED section
     hr_match = re.search(r'(HUMAN_REVIEW_REQUIRED\s*\n=+\n)', text)
     if hr_match:
-        # Find end of the HUMAN_REVIEW section (next double newline after numbered list ends)
         after_hr = text[hr_match.end():]
-        # Keep content until we hit a clear ending (double blank line after content)
         lines = after_hr.split('\n')
         content_end = len(lines)
         found_content = False
@@ -1569,13 +1685,42 @@ def _postprocess_final(text: str) -> str:
             if stripped:
                 found_content = True
             elif found_content and i > 0 and not lines[i-1].strip():
-                # Double blank line after content = end of section
-                # Check if remaining lines are meta-commentary
                 remaining = '\n'.join(lines[i:]).strip()
                 if remaining and not remaining.startswith(('#', '-', '*', '1', '2', '3', '4', '5', '6', '7', '8', '9')):
                     content_end = i
                     break
         text = text[:hr_match.end()] + '\n'.join(lines[:content_end])
+
+    # ── Reorder: FINAL_REPORT first, validation appendix at the end ──
+    # Extract sections by their markers
+    section_markers = ["FINAL_REPORT", "RESOLUTION_LOG", "CONFIDENCE_SUMMARY", "HUMAN_REVIEW_REQUIRED"]
+    sections = {}
+    for marker in section_markers:
+        pattern = rf'({re.escape(marker)}\s*\n=+\n)'
+        match = re.search(pattern, text)
+        if match:
+            start = match.start()
+            # Find the end: next section marker or end of text
+            end = len(text)
+            for other in section_markers:
+                if other == marker:
+                    continue
+                other_match = re.search(rf'{re.escape(other)}\s*\n=+', text[start + len(match.group()):])
+                if other_match:
+                    candidate = start + len(match.group()) + other_match.start()
+                    if candidate < end:
+                        end = candidate
+            sections[marker] = text[start:end].strip()
+
+    # If we found FINAL_REPORT, rebuild in desired order: report first, validation at end
+    if "FINAL_REPORT" in sections and "RESOLUTION_LOG" in sections:
+        report_part = sections["FINAL_REPORT"]
+        validation_parts = []
+        for marker in ["RESOLUTION_LOG", "CONFIDENCE_SUMMARY", "HUMAN_REVIEW_REQUIRED"]:
+            if marker in sections:
+                validation_parts.append(sections[marker])
+        text = report_part + "\n\n---\n\n" + "\n\n".join(validation_parts)
+
     return text.strip()
 
 
@@ -1591,95 +1736,274 @@ def _classify_report_type(text: str) -> str:
         return "CONCISE"
 
 
-def _score_report(text: str) -> dict:
-    """Score report quality (0-100) before email. Returns {score, grade, details, warnings}."""
+def _compute_report_diff(prev_text: str, new_text: str, ticker: str) -> str:
+    """Compare key metrics between previous and new report. Returns diff section or empty string."""
+    diffs = []
+
+    def _ext_price(text, pattern):
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            try:
+                return float(match.group(1))
+            except (ValueError, IndexError):
+                return None
+        return None
+
+    def _ext_signal(text):
+        match = re.search(
+            r'(?:signal|recommendation)[:\s]*(STRONG_BUY|BUY|WATCH|SELL|STRONG_SELL|NO_TRADE|HOLD)',
+            text, re.IGNORECASE)
+        return match.group(1).upper() if match else None
+
+    def _fmt_change(old, new, label):
+        if old is not None and new is not None and old != new:
+            pct = (new - old) / old * 100 if old != 0 else 0
+            arrow = "^" if new > old else "v"
+            diffs.append(f"- **{label}:** ${old:.2f} -> ${new:.2f} ({pct:+.1f}% {arrow})")
+
+    # Price
+    _fmt_change(
+        _ext_price(prev_text, r'(?:current\s+)?price[:\s]*\$?([\d.]+)'),
+        _ext_price(new_text, r'(?:current\s+)?price[:\s]*\$?([\d.]+)'),
+        "Price")
+
+    # Entry/Stop/Target
+    for label, pattern in [("Entry", r'entry[:\s]*\$?([\d.]+)'),
+                           ("Stop", r'stop[:\s]*\$?([\d.]+)'),
+                           ("Target 1", r'(?:target\s*1|t1)[:\s]*\$?([\d.]+)')]:
+        _fmt_change(_ext_price(prev_text, pattern), _ext_price(new_text, pattern), label)
+
+    # Signal change
+    prev_signal = _ext_signal(prev_text)
+    new_signal = _ext_signal(new_text)
+    if prev_signal and new_signal and prev_signal != new_signal:
+        diffs.append(f"- **Signal changed:** {prev_signal} -> {new_signal}")
+
+    # Gates change
+    prev_pass = len(re.findall(r'\bPASS\b', prev_text))
+    new_pass = len(re.findall(r'\bPASS\b', new_text))
+    if prev_pass != new_pass:
+        diffs.append(f"- **Gates passed:** {prev_pass} -> {new_pass}")
+
+    # RSI
+    prev_rsi = _ext_price(prev_text, r'rsi[:\s]*([\d.]+)')
+    new_rsi = _ext_price(new_text, r'rsi[:\s]*([\d.]+)')
+    if prev_rsi and new_rsi and abs(prev_rsi - new_rsi) > 2:
+        diffs.append(f"- **RSI:** {prev_rsi:.1f} -> {new_rsi:.1f}")
+
+    if not diffs:
+        return ""
+
+    return ("\n\n---\n\nCHANGES FROM PREVIOUS SCAN\n" + "=" * 30 + "\n"
+            + f"Compared to earlier {ticker} report from today.\n\n"
+            + "\n".join(diffs) + "\n")
+
+
+def _score_report(text: str, request_type: str = "ticker_analysis") -> dict:
+    """Score report quality (0-100) with adaptive weights per request type.
+    Returns {score, grade, details, warnings}."""
     details = {}
     warnings = []
     lower = text.lower()
 
-    # 1. Table cells filled — no UNKNOWN, N/A, TBD placeholders (20 pts)
+    # ── Weight profiles per request type (each sums to 100) ──
+    WEIGHT_PROFILES = {
+        "ticker_analysis": {
+            "completeness": 20, "price_data": 15, "gates": 15,
+            "support_resistance": 10, "options": 10, "structure": 15,
+            "length": 10, "human_review": 5,
+        },
+        "options_focus": {
+            "completeness": 15, "price_data": 15, "gates": 10,
+            "support_resistance": 5, "options": 20, "structure": 15,
+            "length": 10, "human_review": 10,
+        },
+        "portfolio_review": {
+            "completeness": 20, "price_data": 10, "position_analysis": 15,
+            "balance_data": 10, "options": 5, "structure": 20,
+            "length": 10, "human_review": 10,
+        },
+        "market_scan": {
+            "completeness": 20, "price_data": 10, "candidate_count": 15,
+            "scan_coverage": 10, "options": 5, "structure": 20,
+            "length": 10, "human_review": 10,
+        },
+        "comparison": {
+            "completeness": 20, "price_data": 15, "gates": 10,
+            "comparison_tables": 15, "options": 5, "structure": 15,
+            "length": 10, "human_review": 10,
+        },
+    }
+    # Fallback for market_scan_long, market_scan_short, general
+    profile = WEIGHT_PROFILES.get(request_type,
+                WEIGHT_PROFILES.get("market_scan" if "scan" in request_type else "ticker_analysis"))
+
+    # 1. Completeness (universal) — no UNKNOWN/N/A/TBD placeholders
+    w = profile["completeness"]
     placeholder_count = len(re.findall(r'\b(?:UNKNOWN|N/A|TBD|TODO|PENDING|~)\b', text, re.IGNORECASE))
     if placeholder_count == 0:
-        details["completeness"] = 20
+        details["completeness"] = w
     elif placeholder_count <= 2:
-        details["completeness"] = 15
+        details["completeness"] = int(w * 0.75)
     elif placeholder_count <= 5:
-        details["completeness"] = 10
+        details["completeness"] = int(w * 0.5)
         warnings.append(f"{placeholder_count} placeholder values (UNKNOWN/N/A/TBD)")
     else:
-        details["completeness"] = 5
+        details["completeness"] = int(w * 0.25)
         warnings.append(f"{placeholder_count} placeholder values — report has significant gaps")
 
-    # 2. Price data present with $ amounts (15 pts)
+    # 2. Price data ($amounts) — universal
+    w = profile["price_data"]
     price_count = len(re.findall(r'\$\d+\.?\d*', text))
     if price_count >= 10:
-        details["price_data"] = 15
+        details["price_data"] = w
     elif price_count >= 5:
-        details["price_data"] = 10
+        details["price_data"] = int(w * 0.67)
     elif price_count >= 2:
-        details["price_data"] = 5
+        details["price_data"] = int(w * 0.33)
     else:
         details["price_data"] = 0
         warnings.append("Almost no price data found in report")
 
-    # 3. Gates have definitive PASS/FAIL (15 pts)
-    gate_pass = len(re.findall(r'\bPASS\b', text))
-    gate_fail = len(re.findall(r'\bFAIL\b', text))
-    gate_total = gate_pass + gate_fail
-    if gate_total >= 4:
-        details["gates"] = 15
-    elif gate_total >= 3:
-        details["gates"] = 10
-    elif gate_total >= 1:
-        details["gates"] = 5
-    else:
-        details["gates"] = 0
-        warnings.append("No gate PASS/FAIL results found")
+    # 3. Gates OR type-specific alternative
+    if "gates" in profile:
+        w = profile["gates"]
+        gate_pass = len(re.findall(r'\bPASS\b', text))
+        gate_fail = len(re.findall(r'\bFAIL\b', text))
+        gate_total = gate_pass + gate_fail
+        if gate_total >= 4:
+            details["gates"] = w
+        elif gate_total >= 3:
+            details["gates"] = int(w * 0.67)
+        elif gate_total >= 1:
+            details["gates"] = int(w * 0.33)
+        else:
+            details["gates"] = 0
+            warnings.append("No gate PASS/FAIL results found")
 
-    # 4. Support/resistance levels are numeric (10 pts)
-    sr_count = len(re.findall(r'(?:support|resistance)[:\s]*\$?\d+\.?\d*', lower))
-    if sr_count >= 3:
-        details["support_resistance"] = 10
-    elif sr_count >= 1:
-        details["support_resistance"] = 5
-    else:
-        details["support_resistance"] = 0
-        warnings.append("No support/resistance levels found")
+    if "position_analysis" in profile:
+        w = profile["position_analysis"]
+        pos_markers = len(re.findall(r'(?:position|holding|shares?|quantity|cost\s*basis|entry)', lower))
+        pnl_markers = len(re.findall(r'(?:p[&/]?l|profit|loss|gain|return)', lower))
+        total = pos_markers + pnl_markers
+        if total >= 8:
+            details["position_analysis"] = w
+        elif total >= 4:
+            details["position_analysis"] = int(w * 0.67)
+        elif total >= 1:
+            details["position_analysis"] = int(w * 0.33)
+        else:
+            details["position_analysis"] = 0
+            warnings.append("No position analysis data found")
 
-    # 5. Options section has real data or explicit SKIP (10 pts)
+    if "candidate_count" in profile:
+        w = profile["candidate_count"]
+        candidate_count = len(re.findall(r'(?:candidate|ticker|symbol)\b', lower))
+        ticker_mentions = len(re.findall(r'\b[A-Z]{1,5}\b.*(?:BUY|SELL|WATCH|STRONG)', text))
+        total = candidate_count + ticker_mentions
+        if total >= 10:
+            details["candidate_count"] = w
+        elif total >= 5:
+            details["candidate_count"] = int(w * 0.67)
+        elif total >= 1:
+            details["candidate_count"] = int(w * 0.33)
+        else:
+            details["candidate_count"] = 0
+            warnings.append("No scan candidates found")
+
+    if "comparison_tables" in profile:
+        w = profile["comparison_tables"]
+        table_rows = len(re.findall(r'\|.*\|.*\|', text))
+        vs_mentions = len(re.findall(r'(?:vs\.?|versus|compared to|relative to)', lower))
+        total = table_rows + vs_mentions
+        if total >= 10:
+            details["comparison_tables"] = w
+        elif total >= 4:
+            details["comparison_tables"] = int(w * 0.67)
+        elif total >= 1:
+            details["comparison_tables"] = int(w * 0.33)
+        else:
+            details["comparison_tables"] = 0
+            warnings.append("No comparison tables found")
+
+    # 4. S/R or type-specific alternative
+    if "support_resistance" in profile:
+        w = profile["support_resistance"]
+        sr_count = len(re.findall(r'(?:support|resistance)[:\s]*\$?\d+\.?\d*', lower))
+        if sr_count >= 3:
+            details["support_resistance"] = w
+        elif sr_count >= 1:
+            details["support_resistance"] = int(w * 0.5)
+        else:
+            details["support_resistance"] = 0
+            warnings.append("No support/resistance levels found")
+
+    if "balance_data" in profile:
+        w = profile["balance_data"]
+        balance_markers = len(re.findall(r'(?:balance|equity|margin|cash|buying\s*power|net\s*asset)', lower))
+        if balance_markers >= 4:
+            details["balance_data"] = w
+        elif balance_markers >= 2:
+            details["balance_data"] = int(w * 0.5)
+        else:
+            details["balance_data"] = 0
+            warnings.append("No balance/equity data found")
+
+    if "scan_coverage" in profile:
+        w = profile["scan_coverage"]
+        sectors = len(re.findall(r'(?:sector|industry|tech|health|energy|financial|consumer)', lower))
+        if sectors >= 4:
+            details["scan_coverage"] = w
+        elif sectors >= 2:
+            details["scan_coverage"] = int(w * 0.5)
+        else:
+            details["scan_coverage"] = 0
+            warnings.append("Limited sector coverage in scan")
+
+    # 5. Options section
+    w = profile.get("options", 10)
     has_options = bool(re.search(r'(?:options?\s+(?:plan|strategy|trade)|mcmillan|iv\s+rank|strike)', lower))
     has_options_skip = bool(re.search(r'(?:options?\s+(?:skip|not\s+available|no\s+options)|stock\s+only)', lower))
     if has_options:
-        details["options"] = 10
+        details["options"] = w
     elif has_options_skip:
-        details["options"] = 7  # Explicit skip is acceptable
+        details["options"] = int(w * 0.7)
     else:
         details["options"] = 0
-        warnings.append("Options section missing or empty")
+        if w >= 10:
+            warnings.append("Options section missing or empty")
 
-    # 6. Has required structural sections (15 pts)
-    required_sections = ["RESOLUTION_LOG", "FINAL_REPORT", "CONFIDENCE_SUMMARY"]
+    # 6. Structure
+    w = profile["structure"]
+    if request_type == "portfolio_review":
+        required_sections = ["FINAL_REPORT", "CONFIDENCE_SUMMARY"]
+    elif "scan" in request_type:
+        required_sections = ["FINAL_REPORT"]
+    else:
+        required_sections = ["RESOLUTION_LOG", "FINAL_REPORT", "CONFIDENCE_SUMMARY"]
     found = sum(1 for s in required_sections if s in text)
-    details["structure"] = int(found / len(required_sections) * 15)
+    details["structure"] = int(found / max(len(required_sections), 1) * w)
     if found < len(required_sections):
         missing = [s for s in required_sections if s not in text]
         warnings.append(f"Missing sections: {', '.join(missing)}")
 
-    # 7. Report length (10 pts)
+    # 7. Length
+    w = profile["length"]
     length = len(text)
     if length > 10000:
-        details["length"] = 10
+        details["length"] = w
     elif length > 5000:
-        details["length"] = 7
+        details["length"] = int(w * 0.7)
     elif length > 2000:
-        details["length"] = 4
+        details["length"] = int(w * 0.4)
     else:
         details["length"] = 0
         warnings.append(f"Report too short ({length:,} chars)")
 
-    # 8. HUMAN_REVIEW_REQUIRED section present (5 pts)
+    # 8. Human review
+    w = profile["human_review"]
     if "HUMAN_REVIEW_REQUIRED" in text:
-        details["human_review"] = 5
+        details["human_review"] = w
     else:
         details["human_review"] = 0
 
@@ -1765,6 +2089,7 @@ def pipeline(job_id, prompt, name, pq):
 
         mcp_text = ""       # Full MCP data for generator
         mcp_compact = ""    # Compact reference sheet for auditor/resolver (saves 50-100K tokens)
+        mcp_data = {}       # Raw MCP results — used for prediction tracking
 
         if tool_list:
             # ── Parallel MCP path: gather data first, then Claude writes report ──
@@ -1777,6 +2102,31 @@ def pipeline(job_id, prompt, name, pq):
                 push(pq, "generator", "running", f"Resumed MCP data from checkpoint ({len(mcp_text):,} chars)")
             else:
                 mcp_data = gather_mcp_data(tool_list, pq, "generator")
+
+                # ── Second pass: options_plan needs direction from signal ──
+                if ticker and req_type in ("ticker_analysis", "options_focus"):
+                    signal_key = f"signal_{ticker}"
+                    sig_result = mcp_data.get(signal_key, {})
+                    if "error" not in sig_result:
+                        try:
+                            sig_raw = sig_result.get("data", "{}")
+                            sig_d = json.loads(sig_raw) if isinstance(sig_raw, str) else sig_raw
+                            direction = sig_d.get("data_direction", "LONG")
+                            if direction not in ("LONG", "SHORT"):
+                                direction = "LONG"
+                        except (json.JSONDecodeError, TypeError):
+                            direction = "LONG"
+                        print(f"  [generator] Options plan: direction={direction} (from signal)", flush=True)
+                        push(pq, "generator", "running", f"→ options_plan_{ticker} (direction={direction})")
+                        op_result = _call_mcp_tool("generate_options_trade_plan",
+                                                   {"ticker": ticker, "direction": direction})
+                        label = f"options_plan_{ticker}"
+                        mcp_data[label] = op_result
+                        if "error" in op_result:
+                            print(f"  [generator] ✗ {label}: {op_result['error'][:80]}", flush=True)
+                        else:
+                            print(f"  [generator] ✓ {label} ({len(op_result.get('data', '')):,} chars)", flush=True)
+
                 mcp_text = _format_mcp_results(mcp_data)
                 mcp_compact = _compact_mcp_summary(mcp_data)
                 # Save MCP checkpoint (most expensive step to redo)
@@ -1800,7 +2150,7 @@ AHMED'S REQUEST: {prompt}
 
 INSTRUCTIONS:
 - The MCP data above is LIVE from {len(mcp_data)} parallel tool calls — use it directly. Do NOT call MCP tools (data is already gathered).
-- USE WebSearch to verify and enrich: analyst price targets, recent upgrades/downgrades, earnings dates, breaking news, sector catalysts, institutional activity. This adds real-time context the MCP data may miss.
+- USE WebSearch SPARINGLY (max 3 searches) to verify: analyst price targets, recent earnings, breaking news. The MCP data above already contains most data you need — do NOT search for data that is already in MCP results.
 - Follow the report format above EXACTLY.
 - Apply 5-gate validation: Catalyst + Freshness + Al Brooks + Quality + Institutional.
 - Include ALL data: price, signal, catalysts, technicals, support/resistance, quality score.
@@ -1820,6 +2170,24 @@ AUDIT_TARGETS
 =============
 [Numbered list of every verifiable claim — include source URLs where available]
 """
+            # Append comparison-specific instructions if comparing tickers
+            if req_type == "comparison" and len(tickers) >= 2:
+                gen_prompt += f"""
+
+COMPARISON MODE: You are comparing {' vs '.join(tickers[:2])}.
+Generate a side-by-side analysis with these comparison tables:
+1. Price & Valuation: Current price, P/E, market cap, 52-week range
+2. Technical Signals: RSI, MACD, ADX, Al Brooks pattern, probability
+3. Gate Validation: 5-gate comparison table
+4. Options Environment: IV rank, IV skew, P/C ratio, liquidity grade
+5. Volume & Momentum: Relative volume, OBV trend, relative strength
+6. Quality Score: F-Score, Z-Score, fundamental grade
+7. Catalyst Comparison: Active catalysts, insider activity, unusual options
+
+WINNER RECOMMENDATION: At the end, declare which ticker is the better trade right now and why.
+Use | Metric | {tickers[0]} | {tickers[1]} | format for comparison tables.
+"""
+
             if cp_draft:
                 draft_text = cp_draft.get("draft_text", "")
                 print(f"  [checkpoint] Resumed draft from checkpoint ({len(draft_text):,} chars)", flush=True)
@@ -1859,6 +2227,13 @@ AUDIT_TARGETS
             if job_id in _jobs:
                 _jobs[job_id]["stage"] = "auditor"
 
+        # ── Detect auth / fatal errors in draft output ──
+        _draft_lower = draft_text.strip().lower()
+        if "oauth token has expired" in _draft_lower or "authentication_error" in _draft_lower:
+            push(pq, "error", "error", "OAuth token expired — run 'claude' interactively to refresh")
+            update_job(status="error", error="OAuth token expired — run 'claude' interactively to refresh")
+            return
+
         if len(draft_text.strip()) < 100:
             push(pq, "error", "error", "Generator failed — no draft produced")
             update_job(status="error", error="Generator failed — no draft produced")
@@ -1869,9 +2244,103 @@ AUDIT_TARGETS
         _draft_prices = len(re.findall(r'\$\d+', draft_text))
         if _draft_headings < 2 or _draft_prices < 2 or len(draft_text) < 1500:
             print(f"  [quality] WARNING: Draft looks thin — {_draft_headings} headings, {_draft_prices} prices, {len(draft_text):,} chars", flush=True)
-            push(pq, "generator", "running", f"⚠️ Draft thin: {_draft_headings} headings, {_draft_prices} prices, {len(draft_text):,} chars")
+            push(pq, "generator", "running", f"Draft thin: {_draft_headings} headings, {_draft_prices} prices, {len(draft_text):,} chars")
+
+            # ── Auto-retry thin drafts (rate-limited or truncated) ──
+            if not cp_draft and len(draft_text.strip()) < 3000 and mcp_text:
+                print(f"  [generator] THIN DRAFT detected ({len(draft_text):,} chars) — retrying with slim prompt", flush=True)
+                push(pq, "generator", "running", f"Draft thin ({len(draft_text):,} chars) — retrying with data-only prompt...")
+                time.sleep(10)  # Wait for rate limit to cool
+                retry_prompt = f"""You are Ahmed's senior financial analyst. Write a complete trading report.
+
+REPORT FORMAT (follow EXACTLY):
+{REPORT_FORMAT}
+
+{mcp_text}
+
+TICKER: {ticker or 'See data above'}
+
+CRITICAL: This data is LIVE. Write the report NOW using this data. Do NOT call any tools.
+Include ALL sections: Overview, Catalyst, Options, Al Brooks, Dalio, Trading Signal.
+Apply 5-gate validation. Include entry/stop/targets.
+"""
+                retry_text = run_claude(retry_prompt, "generator", pq,
+                                      validate_mcp=False, needs_mcp=False, job_id=job_id,
+                                      model="sonnet")
+                if len(retry_text.strip()) > len(draft_text.strip()):
+                    print(f"  [generator] Retry produced better draft: "
+                          f"{len(retry_text):,} vs {len(draft_text):,} chars", flush=True)
+                    draft_text = retry_text
+                    # Update checkpoint with better draft
+                    _save_checkpoint(job_id, "draft", {"draft_text": draft_text})
+                else:
+                    print(f"  [generator] Retry not better ({len(retry_text):,} chars) — keeping original", flush=True)
         else:
             push(pq, "generator", "done", f"Draft complete: {len(draft_text):,} chars, {_draft_headings} sections")
+
+        # ── Self-reflection: quick critique before Auditor ──────────────
+        # Skip for large drafts (>5K) — they're already substantial enough
+        draft_len = len(draft_text.strip())
+        if not cp_draft and 1500 <= draft_len <= 5000 and ticker:
+            critique_prompt = f"""Review this draft report for {ticker}. Check ONLY for:
+1. Wrong ticker: Does the report analyze {ticker} or a different stock?
+2. Missing required sections: Overview, Catalyst, Options, Al Brooks, Trading Signal, 5-gate table
+3. Contradictory numbers: Does the entry/stop/target make sense? Is the signal direction consistent?
+4. Data staleness: Are prices and dates from today's data or obviously stale?
+
+If ALL checks pass, respond with exactly: CLEAN
+If issues found, list them as:
+ISSUE 1: [description]
+ISSUE 2: [description]
+...
+
+Report to review ({len(draft_text):,} chars):
+{draft_text[:8000]}
+"""
+            push(pq, "generator", "running", "Self-critique check...")
+            critique_result = run_claude(critique_prompt, "generator", pq,
+                                       needs_mcp=False, job_id=job_id,
+                                       model="sonnet")
+            critique_clean = critique_result.strip()
+
+            if "CLEAN" not in critique_clean.upper()[:20]:
+                issue_count = len(re.findall(r'ISSUE \d+', critique_clean))
+                if issue_count == 0:
+                    print(f"  [self-critique] No structured issues found — treating as CLEAN", flush=True)
+                    push(pq, "generator", "running", "Self-critique: CLEAN (no issues)")
+                else:
+                    print(f"  [self-critique] {issue_count} issues found — retrying generator", flush=True)
+                    push(pq, "generator", "running",
+                         f"Self-critique found {issue_count} issues — fixing...")
+
+                    fix_prompt = f"""You are Ahmed's senior financial analyst. Your previous draft had these issues:
+
+{critique_clean}
+
+Fix ALL issues and rewrite the report. Use this LIVE data:
+
+{mcp_text[:80000] if mcp_text else '(no MCP data — use tools if needed)'}
+
+REPORT FORMAT:
+{REPORT_FORMAT}
+
+TICKER: {ticker}
+INSTRUCTIONS: Fix the issues listed above. Follow the report format EXACTLY. Do NOT call any tools.
+"""
+                    fixed_text = run_claude(fix_prompt, "generator", pq,
+                                          validate_mcp=False, needs_mcp=False, job_id=job_id,
+                                          model="sonnet")
+                    if len(fixed_text.strip()) > len(draft_text.strip()) * 0.7:
+                        print(f"  [self-critique] Fixed draft: {len(fixed_text):,} chars "
+                              f"(was {len(draft_text):,})", flush=True)
+                        draft_text = fixed_text
+                        _save_checkpoint(job_id, "draft", {"draft_text": draft_text})
+                    else:
+                        print(f"  [self-critique] Fixed draft too short ({len(fixed_text):,}) — "
+                              f"keeping original ({len(draft_text):,})", flush=True)
+            else:
+                print(f"  [self-critique] Draft is CLEAN", flush=True)
+                push(pq, "generator", "running", "Self-critique: CLEAN")
 
         # ── Stage transition: Generator → Auditor ────────────────────────
         mcp_shared = f" + {len(mcp_compact):,} chars compact ref" if mcp_compact else ""
@@ -1955,17 +2424,74 @@ AUDIT_TARGETS
 
 {_wrap_data_section("GEMINI_ADVERSARIAL_AUDIT", audit_text or "[No audit]")}
 {mcp_res_section}{requery_text}
-Now produce RESOLUTION_LOG, then FINAL_REPORT, then CONFIDENCE_SUMMARY, then HUMAN_REVIEW_REQUIRED.
-Use WebSearch ONLY for facts not already in the compact reference above. The MCP data is authoritative for prices, technicals, positions, and quality scores.{' FRESH_REQUERY_DATA is the most current — prefer it for resolving disputed numbers.' if requery_text else ''}
+Now produce FINAL_REPORT first (the complete trading report), then at the end append the validation appendix: RESOLUTION_LOG, CONFIDENCE_SUMMARY, HUMAN_REVIEW_REQUIRED.
+
+CRITICAL: Do NOT use WebSearch unless absolutely necessary (max 2 searches). The MCP compact reference above already has authoritative prices, technicals, positions, and quality scores. Only search for specific external claims (e.g. CRA tax rate, analyst target) that cannot be resolved from the data provided.{' FRESH_REQUERY_DATA is the most current — prefer it for resolving disputed numbers.' if requery_text else ''}
 """
         final_text = run_claude(res_prompt, "resolver", pq, needs_mcp=False, job_id=job_id)
+
+        # ── Fallback: if resolver produced garbage, use generator draft ──
+        if len(final_text.strip()) < 500 and len(draft_text.strip()) > 500:
+            print(f"  [resolver] FALLBACK — resolver output too short ({len(final_text.strip())} chars), using generator draft ({len(draft_text.strip())} chars)", flush=True)
+            push(pq, "resolver", "running", f"Resolver failed ({len(final_text.strip())} chars) — falling back to generator draft")
+            final_text = draft_text
 
         # ── Post-process: strip meta-text, clean output ──────────────────
         final_text = _postprocess_final(final_text)
         print(f"  [resolver] Post-processed: {len(final_text):,} chars", flush=True)
 
+        # ── Structured JSON extraction ──────────────────────────────────
+        structured_json = {}
+        if ticker and len(final_text) >= 1000:
+            json_prompt = f"""Extract the following from this trading report. Return ONLY valid JSON, nothing else.
+
+{{
+  "ticker": "string",
+  "signal": "STRONG_BUY|BUY|WATCH|SELL|STRONG_SELL|NO_TRADE|HOLD",
+  "confidence": "HIGH|MEDIUM|LOW",
+  "current_price": null,
+  "entry_price": null,
+  "stop_loss": null,
+  "target_1": null,
+  "target_2": null,
+  "risk_reward_ratio": null,
+  "direction": "LONG|SHORT",
+  "gates": {{
+    "catalyst": "PASS|FAIL",
+    "freshness": "PASS|FAIL",
+    "brooks": "PASS|FAIL",
+    "quality": "PASS|FAIL",
+    "options": "PASS|FAIL"
+  }},
+  "gates_passed": 0,
+  "iv_rank": null,
+  "rsi": null,
+  "data_source": "QUESTRADE|YAHOO_FINANCE|UNKNOWN",
+  "key_catalyst": null,
+  "options_strategy": null,
+  "human_review_items": []
+}}
+
+Report:
+{final_text[:12000]}
+"""
+            push(pq, "resolver", "running", "Extracting structured JSON...")
+            json_raw = run_claude(json_prompt, "resolver", pq, needs_mcp=False, job_id=job_id,
+                                 model="sonnet")
+
+            try:
+                json_clean = json_raw.strip()
+                if json_clean.startswith("```"):
+                    json_clean = re.sub(r'^```(?:json)?\s*', '', json_clean)
+                    json_clean = re.sub(r'\s*```$', '', json_clean)
+                structured_json = json.loads(json_clean)
+                print(f"  [json] Extracted structured data: {list(structured_json.keys())}", flush=True)
+            except (json.JSONDecodeError, TypeError) as je:
+                print(f"  [json] Failed to parse: {je} — raw: {json_raw[:200]}", flush=True)
+                structured_json = {}
+
         # ── Quality gate — score report before email ─────────────────────
-        quality = _score_report(final_text)
+        quality = _score_report(final_text, request_type=req_type)
         q_score = quality["score"]
         q_grade = quality["grade"]
         q_warnings = quality["warnings"]
@@ -1994,6 +2520,42 @@ Use WebSearch ONLY for facts not already in the compact reference above. The MCP
             vault_name = f"{safe}_{date_str}"
         final_file = VAULT / f"{vault_name}.md"
 
+        # ── Report diff: detect material changes from same-day re-scan ──
+        if ticker:
+            existing_reports = sorted(VAULT.glob(f"{ticker}_*_{date_str}.md"))
+            if existing_reports:
+                prev_file = existing_reports[-1]
+                try:
+                    prev_text = prev_file.read_text(encoding="utf-8")
+                    diff_section = _compute_report_diff(prev_text, final_text, ticker)
+                    if diff_section:
+                        print(f"  [diff] Material changes detected from {prev_file.name}", flush=True)
+                        push(pq, "resolver", "running",
+                             f"Changes detected from previous {ticker} scan today")
+                        final_text += diff_section
+                    else:
+                        print(f"  [diff] No material changes from {prev_file.name}", flush=True)
+                except Exception as diff_err:
+                    print(f"  [diff] Error comparing: {diff_err}", flush=True)
+
+            # Enhanced diff with structured JSON (more reliable than regex)
+            if structured_json:
+                prev_json_files = sorted(VAULT.glob(f"{ticker}_*_{date_str}.json"))
+                if prev_json_files:
+                    try:
+                        prev_json = json.loads(prev_json_files[-1].read_text(encoding="utf-8"))
+                        json_diffs = []
+                        for key in ["signal", "entry_price", "stop_loss", "target_1", "gates_passed", "iv_rank", "rsi"]:
+                            old_val = prev_json.get(key)
+                            new_val = structured_json.get(key)
+                            if old_val is not None and new_val is not None and old_val != new_val:
+                                json_diffs.append(f"- **{key}:** {old_val} -> {new_val}")
+                        if json_diffs and not diff_section:
+                            final_text += ("\n\n---\n\nCHANGES FROM PREVIOUS SCAN (JSON)\n"
+                                         + "=" * 30 + "\n" + "\n".join(json_diffs) + "\n")
+                    except Exception:
+                        pass
+
         # ── Save the FINAL report to vault ────────────────────────────────
         report_title = f"{ticker} Analysis" if ticker else name
         quality_badge = f"Quality: {q_score}/100 ({q_grade})"
@@ -2001,46 +2563,70 @@ Use WebSearch ONLY for facts not already in the compact reference above. The MCP
         final_file.write_text(header + final_text, encoding="utf-8")
         print(f"  [vault] Saved: {final_file} ({final_file.stat().st_size:,} bytes, type={report_type})", flush=True)
 
+        # Save structured JSON alongside markdown
+        if structured_json:
+            json_file = VAULT / f"{vault_name}.json"
+            json_file.write_text(json.dumps(structured_json, indent=2), encoding="utf-8")
+            print(f"  [vault] Saved JSON: {json_file} ({json_file.stat().st_size:,} bytes)", flush=True)
+
         with _jobs_lock:
             if job_id in _jobs:
                 _jobs[job_id]["files"]["FINAL"] = str(final_file)
                 _jobs[job_id]["stage"] = "email"
                 _jobs[job_id]["quality"] = quality
+                _jobs[job_id]["structured_data"] = structured_json
 
-        # ── Prediction tracking — store entry/stop/target for accuracy tracking ──
+        # ── Prediction tracking — use signal data from MCP gathering ──
+        # generate_trading_signal has auto_store=True, so predictions are typically
+        # already stored during MCP gathering. We log the ID or fallback to manual store.
         if ticker and q_score >= 50:
             try:
-                entry = _extract_price(final_text, r'entry[:\s]*\$?([\d.]+)')
-                stop = _extract_price(final_text, r'stop[:\s]*\$?([\d.]+)')
-                target1 = _extract_price(final_text, r'(?:target\s*1|t1)[:\s]*\$?([\d.]+)')
-                target2 = _extract_price(final_text, r'(?:target\s*2|t2)[:\s]*\$?([\d.]+)')
-                signal_match = re.search(r'(?:signal|recommendation)[:\s]*(STRONG_BUY|BUY|WATCH|SELL|STRONG_SELL|NO_TRADE|HOLD)', final_text, re.IGNORECASE)
-                signal = signal_match.group(1).upper() if signal_match else "UNKNOWN"
+                signal_label = f"signal_{ticker}"
+                signal_result = mcp_data.get(signal_label, {}) if mcp_data else {}
 
-                if entry and signal not in ("NO_TRADE", "HOLD", "UNKNOWN"):
-                    pred_args = {
-                        "ticker": ticker,
-                        "signal": signal,
-                        "entry_price": entry,
-                        "quality_score": q_score,
-                    }
-                    if stop:
-                        pred_args["stop_loss"] = stop
-                    if target1:
-                        pred_args["target_1"] = target1
-                    if target2:
-                        pred_args["target_2"] = target2
+                if signal_result and "error" not in signal_result:
+                    signal_raw = signal_result.get("data", "")
+                    try:
+                        signal_data = json.loads(signal_raw) if isinstance(signal_raw, str) else (signal_raw if isinstance(signal_raw, dict) else {})
+                    except (json.JSONDecodeError, TypeError):
+                        signal_data = {}
 
-                    push(pq, "prediction", "running", f"Storing prediction: {ticker} {signal} @ ${entry}")
-                    pred_result = _call_mcp_tool("store_trading_prediction", pred_args, timeout=30)
-                    if "error" in pred_result:
-                        print(f"  [prediction] ERROR: {pred_result['error'][:80]}", flush=True)
-                        push(pq, "prediction", "done", f"Prediction store failed: {pred_result['error'][:60]}")
+                    pred_id = signal_data.get("prediction_id", "")
+                    signal_val = signal_data.get("signal", "UNKNOWN")
+                    entry_price = (signal_data.get("trading_plan") or {}).get("entry_price")
+
+                    if pred_id:
+                        # Prediction already stored by auto_store — just log it
+                        print(f"  [prediction] Auto-stored during MCP: {ticker} {signal_val} "
+                              f"@ ${entry_price} (id={pred_id})", flush=True)
+                        push(pq, "prediction", "done",
+                             f"Prediction tracked: {ticker} {signal_val} @ ${entry_price} (id={str(pred_id)[:8]})")
+                    elif signal_val not in ("NO_TRADE", "HOLD", "UNKNOWN", "NO_SIGNAL"):
+                        # auto_store might have been disabled or failed — store manually with full signal dict
+                        direction = signal_data.get("data_direction", "LONG")
+                        report_type_pred = _classify_report_type(final_text).lower()
+                        pred_args = {
+                            "ticker": ticker,
+                            "direction": direction,
+                            "report_type": report_type_pred,
+                            "trading_signal": signal_data,
+                        }
+                        push(pq, "prediction", "running",
+                             f"Storing prediction: {ticker} {signal_val} @ ${entry_price}")
+                        pred_result = _call_mcp_tool("store_trading_prediction", pred_args, timeout=30)
+                        if "error" in pred_result:
+                            print(f"  [prediction] ERROR: {pred_result['error'][:80]}", flush=True)
+                            push(pq, "prediction", "done",
+                                 f"Prediction store failed: {pred_result['error'][:60]}")
+                        else:
+                            print(f"  [prediction] Stored: {ticker} {signal_val} @ ${entry_price}", flush=True)
+                            push(pq, "prediction", "done",
+                                 f"Prediction stored: {ticker} {signal_val} @ ${entry_price}")
                     else:
-                        print(f"  [prediction] Stored: {ticker} {signal} @ ${entry}", flush=True)
-                        push(pq, "prediction", "done", f"Prediction stored: {ticker} {signal} @ ${entry}")
+                        print(f"  [prediction] Skipped — signal is {signal_val}", flush=True)
                 else:
-                    print(f"  [prediction] Skipped — no entry price or signal is {signal}", flush=True)
+                    err_msg = signal_result.get("error", "no signal data") if signal_result else "no MCP data"
+                    print(f"  [prediction] Skipped — {err_msg[:60]}", flush=True)
             except Exception as pred_err:
                 print(f"  [prediction] ERROR: {pred_err}", flush=True)
 
@@ -2056,6 +2642,20 @@ Use WebSearch ONLY for facts not already in the compact reference above. The MCP
             subject = f"{quality_tag}[Analyst] {report_title} — {datetime.now():%Y-%m-%d %H:%M}"
             email_status = send_email(subject, final_text)
             push(pq, "email", "done", email_status)
+
+        # ── Webhook notification (Telegram/Slack via n8n) ────────────────
+        if WEBHOOK_URL:
+            signal_str = structured_json.get("signal", "UNKNOWN") if structured_json else "UNKNOWN"
+            if signal_str == "UNKNOWN":
+                sig_match = re.search(r'(?:signal|recommendation)[:\s]*(STRONG_BUY|BUY|WATCH|SELL|STRONG_SELL|NO_TRADE|HOLD)',
+                                     final_text, re.IGNORECASE)
+                signal_str = sig_match.group(1).upper() if sig_match else "UNKNOWN"
+            threading.Thread(
+                target=_send_webhook,
+                args=(job_id, ticker, signal_str, quality, str(final_file), report_type, req_type),
+                daemon=True,
+            ).start()
+            push(pq, "webhook", "done", f"Webhook sent to {WEBHOOK_URL[:30]}...")
 
         final_files = {"FINAL": str(final_file)}
         update_job(status="done", stage="complete", files=final_files)
@@ -2255,11 +2855,16 @@ class Handler(BaseHTTPRequestHandler):
             with _jobs_lock:
                 active = sum(1 for j in _jobs.values() if j["status"] in ("queued", "running"))
                 total = len(_jobs)
+            token_status = _check_oauth_token()
             self._json(200, {
                 "ok": True, "vault": str(VAULT), "context_chars": len(CONTEXT),
                 "active_jobs": active, "total_jobs": total, "max_concurrent": 3,
                 "email_from": EMAIL_FROM, "email_to": EMAIL_TO,
                 "claude_bin": CLAUDE_BIN, "mode": "SUBSCRIPTION (no API credits)",
+                "token_valid": token_status["valid"],
+                "token_hours_left": token_status.get("hours_left", 0),
+                "token_expires_at": token_status.get("expires_at", ""),
+                "token_warning": token_status.get("warning", ""),
             })
             return
 
@@ -2445,6 +3050,58 @@ class Handler(BaseHTTPRequestHandler):
                 print(f"  [SSE] job={job_id} client disconnected: {e}", flush=True)
             finally:
                 bq.unsubscribe(sq)
+
+        elif path == "/predictions":
+            # ── Predictions dashboard — cached predictions + efficiency report ──
+            qs = parse_qs(urlparse(self.path).query)
+            direction = qs.get("direction", ["BOTH"])[0]
+            days = int(qs.get("days", ["30"])[0])
+            top_n = int(qs.get("top_n", ["20"])[0])
+
+            try:
+                preds = _call_mcp_tool("get_cached_predictions", {"direction": direction, "days": days}, timeout=60)
+                best = _call_mcp_tool("get_best_cached_trades",
+                                     {"direction": direction, "days": days, "top_n": top_n, "min_gates": 3}, timeout=60)
+                efficiency = _call_mcp_tool("generate_efficiency_report",
+                                           {"period_days": days, "min_sample": 3}, timeout=60)
+
+                def _safe_json(result):
+                    if "error" in result:
+                        return {"error": result["error"]}
+                    raw = result.get("data", "{}")
+                    try:
+                        return json.loads(raw) if isinstance(raw, str) else raw
+                    except (json.JSONDecodeError, TypeError):
+                        return {"raw": str(raw)[:500]}
+
+                response = {
+                    "cached_predictions": _safe_json(preds),
+                    "best_trades": _safe_json(best),
+                    "efficiency_report": _safe_json(efficiency),
+                    "query": {"direction": direction, "days": days, "top_n": top_n},
+                    "generated_at": datetime.now().isoformat(),
+                }
+                self._json(200, response)
+            except Exception as e:
+                self._json(500, {"error": str(e)})
+
+        elif path == "/predictions/update":
+            # ── Update all open predictions with current prices ──
+            try:
+                with _mcp_lock:
+                    result = _call_mcp_tool("update_prediction_outcomes", {}, timeout=120)
+                if "error" in result:
+                    self._json(500, {"error": result["error"]})
+                else:
+                    raw = result.get("data", "{}")
+                    try:
+                        data = json.loads(raw) if isinstance(raw, str) else raw
+                    except (json.JSONDecodeError, TypeError):
+                        data = {"raw": str(raw)[:500]}
+                    self._json(200, {"status": "updated", "data": data,
+                                    "updated_at": datetime.now().isoformat()})
+            except Exception as e:
+                self._json(500, {"error": str(e)})
 
         else:
             self.send_response(404)
@@ -3312,5 +3969,18 @@ if __name__ == "__main__":
 ╚════════════════════════════════════════════════════════════╝
 Ctrl+C to stop
 """)
+    # Token health check on startup
+    token_status = _check_oauth_token()
+    if token_status["valid"]:
+        print(f"  ✅ OAuth token valid — expires in {token_status['hours_left']:.1f}h ({token_status.get('expires_at', '?')})")
+        if token_status.get("warning"):
+            print(f"  ⚠️  {token_status['warning']}")
+    else:
+        print(f"  🚨 {token_status['warning']}")
+    print()
+
+    # Start background watchdog — checks token every 30 min
+    threading.Thread(target=_token_watchdog, daemon=True).start()
+
     ThreadingHTTPServer.allow_reuse_address = True
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
