@@ -2,7 +2,7 @@
 
 Scan markets for top LONG and SHORT candidates with detailed analysis per stock.
 
-**Structure:** 6 Sections per Stock (Overview + Catalyst + McMillan Options + Al Brooks + **Dalio Economic Machine** + Trading Signal) | **Time:** 50-70 minutes | **Stocks:** Top 3 LONG + Top 3 SHORT
+**Structure:** 6 Sections per Stock (A: Overview + B: Catalyst + C: Brooks/MTF + D: Dalio + E: McMillan Options + F: Trading Signal) | **Time:** 50-70 minutes | **Stocks:** Top 3 LONG + Top 3 SHORT
 
 **Methodology:** Al Brooks (Price Action) + McMillan (Options Strategy) + Ray Dalio (Economic Machine) + **5-Gate Signal Classification (Phase 3 Complete - Jan 2026)**
 
@@ -147,6 +147,24 @@ Scanner now caches predictions in the database. **Repeated tickers skip re-analy
 3. **No pausing** - Generate full report continuously
 4. **Default market: US only** - Use Canada only if user explicitly requests
 
+### MANDATORY SECTION ORDER (per stock)
+
+**The report sections MUST follow this logical order. Do NOT put Options before Technical Analysis.**
+
+```
+SECTION A: Company Overview (fundamentals, quality, competitors)
+SECTION B: Catalyst Verification (mandatory gate)
+SECTION C: Multi-Timeframe + Al Brooks Price Action (MERGED — not separate!)
+SECTION D: Dalio Economic Machine
+SECTION E: McMillan Options Strategy (informed by technical analysis above)
+SECTION F: Trading Signal + Trading Plan (conclusion)
+```
+
+**Key rules:**
+- **Multi-timeframe IS part of Brooks** — Monthly/Weekly/Daily confluence MUST appear inside the Brooks section, not as a standalone section. Brooks says "Monthly trend is the boss."
+- **Options come AFTER technical** — you need to know the trend direction and probability before choosing an options strategy
+- **Trading plan is always LAST** — it synthesizes everything above
+
 ---
 
 ## REPORT TEMPLATE
@@ -156,6 +174,13 @@ Scanner now caches predictions in the database. **Repeated tickers skip re-analy
 
 **Date:** YYYY-MM-DD HH:MM ET
 **Market:** US Stocks (Price > $2, MCap > $1B)
+
+---
+
+## MACRO CONTEXT `[generate_macro_context_header]` + `[analyze_vix_term_structure]`
+
+- **Regime:** {macro_summary.regime} | **VIX:** {macro_summary.vix} — Term Structure: {vix_vix3m_ratio} [CONTANGO/BACKWARDATION]
+- **Options Bias:** {macro_summary.options_strategy_bias} | **Fed Stance:** {macro_summary.fed_policy_stance}
 
 ---
 
@@ -395,7 +420,7 @@ Largest Bet:        [Description of biggest position]
 
 ---
 
-### SECTION C: McMILLAN OPTIONS STRATEGY ⭐ NEW
+### SECTION E: McMILLAN OPTIONS STRATEGY ⭐ NEW (OUTPUT ORDER: AFTER Brooks & Dalio)
 
 **Options Analysis:** [analyze_options_mcmillan]
 
@@ -570,6 +595,35 @@ Suggested Strikes:
 
 ---
 
+#### 🧠 McMILLAN MASTERY INSIGHTS [analyze_options_mcmillan.mcmillan_mastery]
+
+**Vol Regime:** [composite: STRONG_BUY_VOL/BUY_VOL/NEUTRAL/SELL_VOL/STRONG_SELL_VOL] — [percentile_action from volatility_regime narrative]
+**Skew:** [skew_type: NEGATIVE_SKEW/POSITIVE_SKEW/FLAT_SKEW] — [skew_opportunity.rationale]
+**McMillan Lesson:** _[lesson.lesson (abbreviated to 1-2 sentences)]_ — **Win Rate:** [lesson.win_rate]
+
+**Seller Risk:** [vega_theta_tradeoff.seller_risk: HIGH/MODERATE/LOW] [If HIGH: ⚠️ seller_warning]
+
+---
+
+#### 🔬 GAMMA EXPOSURE (GEX) ANALYSIS `[analyze_gamma_exposure]`
+
+**Purpose:** Dealer hedging flows create invisible support/resistance. GEX reveals where market makers MUST buy or sell to stay delta-neutral.
+
+| Metric | Value | Implication |
+|--------|-------|-------------|
+| **GEX Flip Level** | $XXX.XX | Above = positive gamma (mean-reverting), Below = negative gamma (trending) |
+| **Gamma Wall (Call)** | $XXX.XX | Magnetic resistance — dealers sell here |
+| **Gamma Wall (Put)** | $XXX.XX | Magnetic support — dealers buy here |
+| **Net GEX** | [POSITIVE / NEGATIVE] | Positive = range-bound, Negative = volatile moves |
+| **Dealer Positioning** | [LONG_GAMMA / SHORT_GAMMA] | Long = dealers dampen moves, Short = dealers amplify moves |
+
+**GEX + Brooks Integration:**
+- [If positive gamma + trading range]: "GEX CONFIRMS range — fade extremes per Brooks"
+- [If negative gamma + trend]: "GEX CONFIRMS trend — dealers amplifying directional move"
+- [If GEX conflicts with Brooks]: "⚠️ GEX DIVERGENCE — gamma regime conflicts with price action setup"
+
+---
+
 #### 📚 McMILLAN OPTIONS LESSON (Teach Me!)
 
 **Purpose:** Translate options data into actionable strategy. Match strategy to volatility environment per McMillan's framework.
@@ -672,9 +726,16 @@ IV Rank XX% = **[HIGH / NORMAL / LOW]**
 
 ---
 
-#### 🎯 OPTIMAL OPTIONS STRATEGY (Risk-Managed Setup)
+#### 🎯 OPTIMAL OPTIONS STRATEGY (Risk-Managed Setup) `[generate_options_trade_plan]`
 
 **Purpose:** SPECIFIC actionable trade with DEFINED RISK. All strategies use spreads.
+
+**📊 Use `generate_options_trade_plan(ticker, direction, account_size)` for MCP-generated trade setup:**
+
+| Field | Value |
+|-------|-------|
+| **Strategy** | [generate_options_trade_plan.strategy_name] |
+| **Rationale** | [generate_options_trade_plan.rationale] |
 
 **📊 STRATEGY SELECTION:**
 
@@ -735,7 +796,84 @@ Once you enter this position, use **daily monitoring** with Phase 4 tools:
 
 ---
 
-### SECTION D: AL BROOKS PRICE ACTION ANALYSIS
+### SECTION C: AL BROOKS PRICE ACTION (Multi-Timeframe Integrated)
+
+*"The monthly trend is the boss." — Al Brooks. Every trade starts with where you stand on the monthly chart, then narrows to weekly structure, then daily entry.*
+
+**⚠️ CRITICAL: Multi-timeframe IS the Brooks section. Do NOT write them as separate sections. Write one continuous narrative flowing Monthly → Weekly → Daily → Pattern → Bar Reading → Targets → Verdict.**
+
+#### The Brooks Top-Down Read `[analyze_multitimeframe]` + `[analyze_technical]` + `[generate_trading_signal]`
+
+**MONTHLY (The Boss — Where institutions position):**
+[Describe the monthly trend direction, RSI, MACD, price vs monthly EMA20. In Brooks' framework, explain what this means: is it a fresh trend? Mature channel? Approaching oversold/overbought? What does this mean for the DAILY trade — is it with-trend or counter-trend?]
+
+**WEEKLY (Structure — Where swing traders anchor):**
+```
+Weekly Always-In:  [LONG / SHORT]
+Weekly Pattern:    [Pattern name — EMA Bounce / Breakout / etc.]
+Weekly RSI:        XX.XX
+Weekly MACD:       [Bullish/Bearish] (histogram value)
+Weekly Bar Read:   [5-bar pattern summary]
+```
+[Explain the weekly structure in Brooks context: Is it a spike-and-channel within the monthly trend? A reversal attempt? How does it relate to the monthly — confirming or conflicting?]
+
+**Weekly Support/Resistance:** (stronger than daily levels)
+- Support: $XX.XX → $XX.XX → $XX.XX
+- Resistance: $XX.XX → $XX.XX
+
+**DAILY (Entry timing — Where you pull the trigger):**
+```
+Daily Always-In:   [LONG / SHORT]
+Daily Pattern:     [Pattern name] ([win rate])
+Daily RSI:         XX.XX ([Overbought/Neutral/Oversold])
+Daily MACD:        [Bullish/Bearish] (values)
+Daily Stochastic:  XX.XX / XX.XX
+```
+
+**Moving Averages (Daily):**
+```
+EMA 20:  $XX.XX  (price XX.X% above/below)
+SMA 20:  $XX.XX
+SMA 50:  $XX.XX
+SMA 200: $XX.XX (or N/A)
+```
+
+#### Brooks Pattern + Bar Reading + Probability
+
+[All existing Brooks pattern analysis, bar reading, probability narrative, trap analysis, measured move targets, spike-and-channel detection — exactly as before in SECTION C (PART 2)]
+
+#### Timeframe Confluence Verdict
+
+```
+Monthly: [BEARISH/BULLISH] | Weekly: [BULLISH/BEARISH] | Daily: [LONG/SHORT]
+Confluence Score: XX/100 (Grade [A-F])
+Alignment: [ALIGNED / PARTIAL / CONFLICTING]
+Swing Suitability: [HIGH / MODERATE / LOW / AVOID]
+```
+
+**Brooks Verdict:** [Synthesize all three timeframes into ONE trading recommendation. If monthly conflicts with weekly/daily, explicitly state: "This is a counter-trend trade — treat as scalp, not swing. Take profits at 1R-2R." If all aligned: "Full conviction — hold for measured move targets."]
+
+**Position Sizing Impact:**
+- **Confluence ≥80:** Full position — all timeframes agree
+- **Confluence 40-79:** Half position — partial alignment, tighter stops
+- **Confluence <40:** Day-trade only or AVOID — monthly trend disagrees
+
+#### Pullback Personality `[analyze_pullback_personality]`
+
+[Include stock-specific pullback analysis: ranked levels, MA bounce rates, ICT order blocks/FVGs, anchored VWAPs, mean reversion half-life, z-score, regime-dependent depth]
+
+**Relative Strength:** `[calculate_relative_strength_tool]`
+```
+RS Score:        XX (classification)
+RS Trend:        [Improving/Declining]
+vs SPY:          +/-XX.X%
+```
+
+---
+
+**⚠️ NOTE: The following gate checks and detailed Brooks methodology sections continue below. They are PART OF this Section C.**
+
+---
 
 **🚨 GATE 2: FRESHNESS CHECK** - Fresh Breakout Required
 
@@ -849,23 +987,36 @@ Completion: [XX% complete / Triggered / Needs confirmation]
 **Pattern Observation:**
 [What does this sequence of bars tell us? Momentum building? Exhaustion? Consolidation?]
 
-**Trap Analysis:**
-- **Bull Trap Risk:** [HIGH / MEDIUM / LOW] - [Reason]
-- **Bear Trap Risk:** [HIGH / MEDIUM / LOW] - [Reason]
+**Trap Analysis:** `[generate_trading_signal.brooks_analysis]`
+- **Trap Type:** [bull_trap / bear_trap / late_move_trap / failed_reversal_trap / vacuum_fill_trap / none] `[brooks_analysis.trap_type]`
+- **Trap Severity:** [HIGH / MEDIUM / LOW] `[brooks_analysis.trap_classification.severity]`
+- **Trap Explanation:** [brooks_analysis.trap_classification.explanation]
+- **Trap Action:** [brooks_analysis.trap_classification.action]
+
+**Trend Evolution:** `[brooks_analysis.trend_evolution]`
+- **Phase:** [STRONG_TREND / CHANNEL / BROAD_CHANNEL / TRADING_RANGE] (Score: XX/100)
+- **Transition Signals:** [Any phase change warnings]
+
+**Confirmation & Climax:** `[brooks_analysis]`
+- **Confirmation Bar:** [confirmed / not_confirmed] — [bar_quality]: [reason]
+- **Climax Detection:** [none / simple / consecutive / parabolic / channel_overshoot] (severity: XX/100)
+- **Micro Channel:** [detected / not detected] — [direction], [bars] bars
+- **Spike-and-Channel:** [detected / not detected]
 
 **Brooks Probability Calculation:**
 
 **Base Probability:** XX% (for [Pattern Name])
 
-✓ **Positive Factors (Adding to probability):**
-- [Factor 1]: +X% (e.g., "Strong trend bars with follow-through")
-- [Factor 2]: +X% (e.g., "RS leader outperforming SPY")
-- [Factor 3]: +X% (e.g., "ML prediction aligned with direction")
-- [Factor 4]: +X% (e.g., "Volume confirming the move")
+**Probability Narrative:** `[brooks_analysis.probability_narrative]`
+> "Base 50% + 5% [pattern] + 5% [AI aligned] - 3% [trap] + 8% [trend phase] = XX%"
 
-✗ **Negative Factors (Reducing probability):**
-- [Risk 1]: -X% (e.g., "Approaching resistance")
-- [Risk 2]: -X% (e.g., "RSI overbought")
+**Measured Move Targets:** `[brooks_analysis.measured_move_targets]`
+| Method | Target | Source |
+|--------|--------|--------|
+| Leg1=Leg2 | $XX.XX | Prior leg projected |
+| Spike Projection | $XX.XX | Spike height from channel |
+| Range Projection | $XX.XX | Range height from breakout |
+| **Primary** | **$XX.XX** | Best R/R method |
 
 **FINAL BROOKS PROBABILITY: XX%** [LONG/SHORT]
 
@@ -1080,17 +1231,32 @@ Probability OK:       [YES / NO] (≥55% required)
 
 ---
 
-### SECTION E: DALIO ECONOMIC MACHINE ⭐ NEW [analyze_volume_tool]
+**Brooks Lesson (Pattern-Indexed — MANDATORY):** `[brooks_analysis.pattern_lesson]`
+- **Pattern:** {pattern_lesson.name} — **Win Rate:** {pattern_lesson.win_rate}
+- **Brooks Quote:** "{pattern_lesson.brooks_quote}"
+- **Why It Works Here:** {brooks_analysis.lesson}
+- **Trap Warning:** {trap_type} — {trap_classification.explanation}
+- Timeframe alignment: Monthly→Weekly→Daily
+- What to watch: [invalidation level]
+
+---
+
+### SECTION D: DALIO ECONOMIC MACHINE [analyze_dalio_economic_machine] + [analyze_volume_tool]
 
 **🚨 GATE 2 ENHANCEMENT: Dalio Economic Machine Metrics**
 
-**Source:** `analyze_volume_tool(ticker).dalio_metrics`
+**Source:** `analyze_dalio_economic_machine(ticker)` (standalone) + `analyze_volume_tool(ticker).dalio_metrics` + `get_macro_regime()`
 
 #### Dalio Metrics Summary
+
 ```
-Dalio Ratio:       X.XXXX ([BULLISH >1.0 / NEUTRAL ~1.0 / BEARISH <1.0])
+Dalio Ratio:       X.XXXX ([STRONG_BULLISH / BULLISH / NEUTRAL / BEARISH / STRONG_BEARISH])
 Dollar Flow:       $XX.XXM ([ACCUMULATION if + / DISTRIBUTION if -])
 Sustainability:    XX/100, Grade [A-F]
+Institutional:     [Detected / None] (confidence: XX%)
+Macro Regime:      [EXPANSION / LATE_CYCLE / CONTRACTION / RECOVERY]
+VIX Regime:        XX.X ([COMPLACENT / NORMAL / ELEVATED / PANIC])
+Yield Curve:       [NORMAL / FLAT / INVERTED] (spread: X.XX%)
 GATE 2 STATUS:     [✅ PASS (5/6) / ❌ FAIL (<5/6)]
 ```
 
@@ -1188,6 +1354,23 @@ GATE 2 STATUS:     [✅ PASS (5/6) / ❌ FAIL (<5/6)]
 
 **Dalio Score: XX/100** | [If ≥60]: ALIGNED | [If 40-59]: MIXED | [If <40]: EXIT SIGNAL
 
+**5. MACRO REGIME CONTEXT** `[get_macro_regime]`
+
+**Current Regime:** [EXPANSION / LATE_CYCLE / CONTRACTION / RECOVERY]
+
+| Indicator | Value | Signal |
+|-----------|-------|--------|
+| Yield Curve | [NORMAL/FLAT/INVERTED] (spread: X.XX%) | [Healthy / Caution / Recession risk] |
+| VIX | XX.X | [COMPLACENT <15 / NORMAL 15-25 / ELEVATED 25-35 / PANIC >35] |
+| Credit (HYG/LQD) | X.XX | [Risk-on / Neutral / Risk-off] |
+
+**Regime Impact on Trade:**
+
+- [If EXPANSION]: Full position sizing. Risk-on environment supports LONG entries.
+- [If LATE_CYCLE]: Reduce position size 25%. Selective entries only.
+- [If CONTRACTION]: Defensive. SHORT bias or avoid. Cash preservation.
+- [If RECOVERY]: Early LONG entries. Higher reward potential.
+
 **Dalio Reference:** "How the Economic Machine Works" - Ray Dalio
 
 ---
@@ -1215,6 +1398,11 @@ GATE 2 STATUS:     [✅ PASS (5/6) / ❌ FAIL (<5/6)]
 | **4. QUALITY** | [✅/❌] | [F-Score X, Z-Score X.XX] |
 
 **Gates Passed:** X/4
+
+---
+
+#### Expected Move (30 DTE) `[calculate_expected_move]`
+**Primary EM:** ±$X.XX (±X.X%) | **Range:** $XXX.XX — $XXX.XX | **Method:** [IV-Based / Straddle × 0.85]
 
 ---
 
@@ -1284,6 +1472,10 @@ Win/Loss Record:          XXW / XXL
 ❌ GATE FAILURE: [Which gate failed and why]
 → SKIP this candidate
 ```
+
+#### Statistical Edge `[validate_brooks_pattern_win_rate, quantify_pattern_edge]`
+- **Edge Quality:** [STRONG / MODERATE / WEAK / NO_EDGE] — Expected return +X.XX%/trade
+- **Backtested Win Rate:** XX.X% over XX samples (95% CI: [XX%, XX%])
 
 ---
 
@@ -1420,6 +1612,17 @@ scan_market_opportunities(market="canada", top_n=3)
 scan_market_opportunities(market="both", top_n=3)
 ```
 
+### Step 1.5: Macro Context (Run ONCE before individual stocks)
+
+```python
+# ═══════════════════════════════════════════════════════════
+# Macro Context Header (run ONCE per scan, not per ticker)
+# ═══════════════════════════════════════════════════════════
+generate_macro_context_header()                    # Regime, Fed stance, sector rotation, options bias
+analyze_vix_term_structure()                       # VIX contango/backwardation
+get_macro_regime()                                 # Yield curve, breadth, VIX regime, credit cycle
+```
+
 ### Step 2: Analyze Each Candidate (10 min per stock)
 
 For each of the 6 candidates (3 LONG + 3 SHORT):
@@ -1447,26 +1650,39 @@ detect_unusual_options_activity(ticker)        # ⭐ NEW: Smart money options de
 get_institutional_holders(ticker)              # 13F accumulation/distribution
 
 # ═══════════════════════════════════════════════════════════
-# Section C: McMillan Options Strategy
-# ═══════════════════════════════════════════════════════════
-analyze_options_mcmillan(ticker)  # Full McMillan analysis (direction-independent)
-# Returns: TRUE IV Rank, P/C Ratio, Max Pain, UOA, IV-based strategies, Quality Score
-
-# ═══════════════════════════════════════════════════════════
-# Section D: Al Brooks Analysis + Freshness (Gates 2 & 3)
+# Section C: Al Brooks Price Action (Multi-Timeframe Integrated) (Gates 2 & 3)
 # ═══════════════════════════════════════════════════════════
 asyncio.run(analyze_ml_enhanced(ticker))           # Full analysis with exhaustion score (async)
+analyze_technical(ticker)                          # Multi-timeframe Brooks + MTF indicators
+analyze_multitimeframe(ticker)                     # Monthly/Weekly/Daily confluence
+calculate_relative_strength_tool(ticker, benchmark="SPY")  # RS vs market
+analyze_volume_tool(ticker, include_quality_score=True)    # CVD, VWAP, volume quality
+analyze_pullback_personality(ticker)               # ⭐ NEW: Stock-specific pullback levels (9 techniques)
 # Gate 2: Check trend_days <= 3, exhaustion < 50, CVD aligned
 # Gate 3: Check always_in direction, trap_risk, probability >= 55%
 
-calculate_relative_strength_tool(ticker, benchmark="SPY")  # RS vs market
-analyze_volume_tool(ticker, include_quality_score=True)    # CVD, VWAP, volume quality
+# ═══════════════════════════════════════════════════════════
+# Section D: Dalio Economic Machine (Standalone)
+# ═══════════════════════════════════════════════════════════
+analyze_dalio_economic_machine(ticker)             # Standalone Dalio analysis
+get_macro_regime()                                 # Macro regime (run once per scan, not per ticker)
 
 # ═══════════════════════════════════════════════════════════
-# Section E: Generate Trading Signal (5-Gate Validation)
+# Section E: McMillan Options Strategy
 # ═══════════════════════════════════════════════════════════
-generate_trading_signal(ticker, direction="LONG")  # ⭐ NEW: Final signal with all gates
+analyze_options_mcmillan(ticker)  # Full McMillan analysis (direction-independent)
+# Returns: TRUE IV Rank, P/C Ratio, Max Pain, UOA, IV-based strategies, Quality Score
+analyze_gamma_exposure(ticker)   # ⭐ NEW: GEX flip level, gamma walls, dealer positioning
+generate_options_trade_plan(ticker, direction="LONG", account_size=10000)  # ⭐ NEW: Actionable trade setup
+
+# ═══════════════════════════════════════════════════════════
+# Section F: Generate Trading Signal (5-Gate Validation)
+# ═══════════════════════════════════════════════════════════
+generate_trading_signal(ticker, direction="LONG")  # Final signal with all gates
 # Returns: signal, confidence, trading_plan, proof_of_validity, gate_status
+# brooks_analysis includes: trap_type, trend_evolution, climax_detection,
+#   measured_move_targets, confirmation_status, probability_narrative,
+#   lesson, pattern_lesson
 
 # Historical Validation
 asyncio.run(find_similar_historical_setups(
@@ -1550,6 +1766,7 @@ Create the final ranking table with:
 | `analyze_competitors()` | ⭐ NEW: Sector comparison, leader detection |
 
 ### Section B: Catalyst Verification (Gate 1 - MANDATORY)
+
 | Tool | Data |
 |------|------|
 | `detect_catalyst_strength()` | ⭐ NEW: MANDATORY aggregate catalyst check |
@@ -1559,7 +1776,34 @@ Create the final ranking table with:
 | `detect_unusual_options_activity()` | ⭐ NEW: Smart money options detection |
 | `get_institutional_holders()` | 13F institutional changes, accumulation |
 
-### Section C: McMillan Options Strategy
+### Macro Context (Run ONCE per scan, before individual stocks)
+
+| Tool | Data |
+|------|------|
+| `generate_macro_context_header()` | Regime, Fed stance, sector rotation, options bias |
+| `analyze_vix_term_structure()` | VIX contango/backwardation, term structure |
+| `get_macro_regime()` | Yield curve, breadth, VIX regime, credit cycle |
+
+### Section C: Al Brooks Price Action + Multi-Timeframe (Gates 2 & 3)
+
+| Tool | Data |
+|------|------|
+| `analyze_ml_enhanced()` | Full analysis: RSI, MACD, EMAs, Al Brooks, exhaustion (async) |
+| `analyze_technical()` → `multi_timeframe_brooks` | Monthly trend, Weekly Brooks Always-In/pattern/bar reading, Confluence score |
+| `analyze_multitimeframe()` | Full MTF indicators, Weekly Brooks, S/R levels |
+| `calculate_relative_strength_tool()` | RS vs SPY |
+| `analyze_volume_tool()` | OBV, CVD, VWAP, volume quality |
+| `analyze_pullback_personality()` | ⭐ NEW: Stock-specific pullback levels (9 institutional techniques: MA bounce rates, VPOC, ICT order blocks, FVGs, liquidity pools, anchored VWAP, O-U half-life, Keltner, regime depth) |
+| `get_cnn_fear_greed_index()` | Market sentiment (async) |
+
+### Section D: Dalio Economic Machine
+
+| Tool | Data |
+|------|------|
+| `analyze_dalio_economic_machine()` | Standalone Dalio analysis (ratio, dollar flow, sustainability) |
+| `get_macro_regime()` | Macro regime context (if not already called) |
+
+### Section E: McMillan Options Strategy
 | Tool | Data |
 |------|------|
 | `analyze_options_mcmillan()` | Full McMillan analysis (IV Rank, P/C Ratio, Max Pain, UOA, Strategy) |
@@ -1567,15 +1811,8 @@ Create the final ranking table with:
 | `analyze_iv_skew()` | IV skew analysis (put/call skew steepness) |
 | `analyze_volatility_tool()` | Historical volatility for IV vs HV comparison |
 
-### Section D: Al Brooks Analysis + Freshness (Gates 2 & 3)
-| Tool | Data |
-|------|------|
-| `analyze_ml_enhanced()` | Full analysis: RSI, MACD, EMAs, Al Brooks, exhaustion (async) |
-| `calculate_relative_strength_tool()` | RS vs SPY |
-| `analyze_volume_tool()` | OBV, CVD, VWAP, volume quality |
-| `get_cnn_fear_greed_index()` | Market sentiment (async) |
+### Section F: Trading Signal (5-Gate Validation)
 
-### Section E: Trading Signal (5-Gate Validation) ⭐ NEW
 | Tool | Data |
 |------|------|
 | `generate_trading_signal()` | Final signal with all gates, trading plan |
@@ -1618,6 +1855,16 @@ The scanner uses inflection point detection to find stocks ENTERING trends, not 
 | Relative Strength | 15 | RS vs SPY (55-85 for L, 15-45 for S) |
 | Catalyst Quality | 20 | Earnings proximity, IV Rank, Insider cluster |
 | Al Brooks Pattern | 10 | Pattern type, completion, probability |
+
+### Confluence Score Impact on Signal
+
+| Confluence | Effect | Note |
+|-----------|--------|------|
+| ≥80 | +10 confidence points | Strong multi-timeframe alignment |
+| 40-79 | No adjustment | Partial alignment |
+| <40 | -10 confidence points | TIMEFRAME CONFLICT warning |
+
+**If Confluence <40:** Add explicit warning: "TIMEFRAME CONFLICT — Monthly/Weekly/Daily not aligned. Reduce size or wait for alignment."
 
 ### Fresh Breakout Thresholds (Gate 2)
 
@@ -1672,13 +1919,13 @@ Stocks automatically rejected:
 
 **Time:** 60-90 minutes for full 6-stock scan report with 5-gate validation
 **Output:** ~400-500 lines per stock, ~2500+ lines total
-**Sections:** 6 per stock (A: Overview + B: Catalyst + C: Options + D: Brooks + E: Dalio + F: Signal)
+**Sections:** 6 per stock (A: Overview + B: Catalyst + C: Brooks/MTF + D: Dalio + E: McMillan Options + F: Signal)
 **Methodology:** Al Brooks (Price Action) + McMillan (Options Strategy) + Ray Dalio (Economic Machine) + 5-Gate Validation
 
 ---
 
-**Last Updated:** January 8, 2026
-**Version:** 3.2 - Added OPTIONS WISDOM + Trading Plan Rules
+**Last Updated:** March 15, 2026
+**Version:** 4.0 - Integrated Brooks+MTF (Section C), Pullback Personality, Macro Context Header
 **New Tools:** 6 enhanced tools (detect_catalyst_strength, generate_trading_signal, etc.)
 **Critical:** CATALYST IS MANDATORY - No catalyst = No trade
 

@@ -112,6 +112,178 @@ class AlBrooksAnalyzer:
         'climactic_exhaustion': 'Climactic Exhaustion - Parabolic reversal',
     }
 
+    # Pattern-indexed educational content from Brooks Mastery Guide
+    PATTERN_LESSONS = {
+        'high_1': {
+            'name': 'High 1 — First Pullback in Bull Trend',
+            'win_rate': '55-65%',
+            'brooks_quote': 'The first pullback in a strong trend is the best entry.',
+            'lesson': 'This is a High 1 — the first pullback in a bull trend. Momentum is strongest early. Bulls who missed the initial move buy any dip. Risk: the pullback may not be complete — a High 2 is generally higher probability.',
+            'trap_type': 'late_move_trap',
+        },
+        'high_2': {
+            'name': 'High 2 — Second Entry Long (Highest Probability)',
+            'win_rate': '60-70%',
+            'brooks_quote': 'High 2 is a failed bear breakout that becomes a bull signal.',
+            'lesson': 'This is a High 2 — the highest-probability bull continuation. Two pullback legs trapped short sellers. When price breaks above the signal bar, trapped bears cover, creating a surge of buying pressure. This is the "bread and butter" of trend trading.',
+            'trap_type': 'bear_trap',
+        },
+        'high_3': {
+            'name': 'High 3 — Third Push Up (Exhaustion Warning)',
+            'win_rate': '45-55%',
+            'brooks_quote': 'After three pushes, the trend is more likely to reverse.',
+            'lesson': 'This is a High 3 — three pushes up, each potentially weaker. Brooks warns three-push moves signal exhaustion. This is where wedge patterns form. Reduce position size and tighten stops. If this push fails, a reversal may follow.',
+            'trap_type': 'late_move_trap',
+        },
+        'high_4': {
+            'name': 'High 4 — Fourth Entry (Trend Exhausted)',
+            'win_rate': '35-45%',
+            'brooks_quote': 'By the fourth push, most trends have exhausted their buying pressure.',
+            'lesson': 'This is a High 4 — the trend has had four pushes and is likely exhausted. Late retail buyers enter while institutions sell to them. LOW conviction for continuation. Consider waiting for a reversal setup instead.',
+            'trap_type': 'late_move_trap',
+        },
+        'double_bottom': {
+            'name': 'Double Bottom — W Pattern Reversal',
+            'win_rate': '60-70%',
+            'brooks_quote': 'The second test of the low confirms bears cannot break through.',
+            'lesson': 'This is a Double Bottom — bears tried twice to push below support and failed. The second test proves bears lack power. All shorts from both tests are trapped. The measured move target is the height of the W projected from the neckline.',
+            'trap_type': 'bear_trap',
+        },
+        'higher_low': {
+            'name': 'Higher Low — Bullish Structure Continuation',
+            'win_rate': '55-65%',
+            'brooks_quote': 'A series of higher lows is the definition of an uptrend.',
+            'lesson': 'This Higher Low confirms bullish structure — each pullback is shallower, showing bears are losing power. Buyers step in at increasingly higher prices. The uptrend is intact as long as the higher-low sequence holds.',
+            'trap_type': 'none',
+        },
+        'breakout_pullback': {
+            'name': 'Breakout Pullback — Retest of Breakout Level',
+            'win_rate': '65-75%',
+            'brooks_quote': 'The best breakout pullback entries come when the pullback tests the breakout level and finds support where there used to be resistance.',
+            'lesson': 'This is a Breakout Pullback — one of Brooks\' highest-probability setups. The breakout proved buyers can push through. The successful retest proves the level flipped from resistance to support. Old resistance becoming new support is one of the most reliable principles.',
+            'trap_type': 'none',
+        },
+        'wedge_reversal': {
+            'name': 'Wedge Reversal — Three Pushes Down Reversing',
+            'win_rate': '60-70%',
+            'brooks_quote': 'Wedges are climactic moves. Three pushes with weakening momentum = prepare for reversal.',
+            'lesson': 'This is a Wedge Reversal — three descending pushes with declining momentum. Each push trapped more bears while absorbing selling pressure. By the third push, no sellers remain. The measured move target is the top of the wedge.',
+            'trap_type': 'bear_trap',
+        },
+        'expanding_triangle': {
+            'name': 'Expanding Triangle Bottom',
+            'win_rate': '50-60%',
+            'brooks_quote': 'Expanding triangles form when both sides become increasingly aggressive.',
+            'lesson': 'This is an Expanding Triangle at a bottom — both bulls and bears fight aggressively with wider swings. The final push lower traps the last bears. The reversal is often explosive as trapped energy releases.',
+            'trap_type': 'bear_trap',
+        },
+        'failed_breakdown': {
+            'name': 'Failed Breakdown — Bear Trap',
+            'win_rate': '65-75%',
+            'brooks_quote': '80% of breakout attempts fail. When they fail, trade the opposite direction.',
+            'lesson': 'This is a Failed Breakdown — price broke below support but immediately reversed. Brooks teaches 80% of breakouts fail, and failures create the strongest signals because trapped traders must exit. Every bear who shorted the breakdown is now losing money, fueling the rally.',
+            'trap_type': 'bear_trap',
+        },
+        'ema_bounce': {
+            'name': 'EMA Bounce — Dynamic Support',
+            'win_rate': '55-65%',
+            'brooks_quote': 'In a strong bull trend, the first pullback to the 20 EMA is the best buying opportunity.',
+            'lesson': 'This is an EMA Bounce — price pulled back to the 20-period EMA and is bouncing. In strong trends, the EMA acts as dynamic support because institutional algorithms place buy orders there. The bounce confirms the trend is healthy.',
+            'trap_type': 'none',
+        },
+        'tight_trading_range_breakout': {
+            'name': 'Tight TR Breakout — Compression Release',
+            'win_rate': '55-65%',
+            'brooks_quote': 'Tight trading ranges are coiled springs.',
+            'lesson': 'This is a Tight TR Breakout — price compressed into a narrow range and broke out. Brooks compares tight ranges to coiled springs. Both sides were trapped in the range; now the losing side must cover, adding fuel. Watch for follow-through on next 1-2 bars.',
+            'trap_type': 'bear_trap',
+        },
+        'low_1': {
+            'name': 'Low 1 — First Pullback in Bear Trend',
+            'win_rate': '55-65%',
+            'brooks_quote': 'The first bounce in a bear trend is just short-covering, not real buying.',
+            'lesson': 'This is a Low 1 — the first pullback in a bear trend. The bounce was just short-covering, not real buying. The trend resumes as sellers re-enter. Risk: the pullback may not be complete — a Low 2 provides higher probability.',
+            'trap_type': 'late_move_trap',
+        },
+        'low_2': {
+            'name': 'Low 2 — Second Entry Short (Highest Probability)',
+            'win_rate': '60-70%',
+            'brooks_quote': 'Low 2 is a failed bull breakout that becomes a bear signal.',
+            'lesson': 'This is a Low 2 — the highest-probability bear continuation. Two bounce legs trapped bulls who thought the trend was reversing. Their forced selling creates a cascade of selling pressure. The "bread and butter" of bear trend trading.',
+            'trap_type': 'bull_trap',
+        },
+        'low_3': {
+            'name': 'Low 3 — Third Push Down (Exhaustion Warning)',
+            'win_rate': '45-55%',
+            'brooks_quote': 'Three pushes with weakening momentum often precede reversals.',
+            'lesson': 'This is a Low 3 — three pushes down with potentially weakening momentum. Brooks warns three-push moves signal exhaustion. This is where wedge bottoms form. Reduce position size and tighten stops.',
+            'trap_type': 'late_move_trap',
+        },
+        'low_4': {
+            'name': 'Low 4 — Fourth Entry (Trend Exhausted)',
+            'win_rate': '35-45%',
+            'brooks_quote': 'By the fourth push, most trends have exhausted their selling pressure.',
+            'lesson': 'This is a Low 4 — the bear trend has had four pushes and is likely exhausted. Late short sellers enter while smart money covers. LOW conviction for continuation. A failed Low 4 often marks the bottom.',
+            'trap_type': 'late_move_trap',
+        },
+        'double_top': {
+            'name': 'Double Top — M Pattern Reversal',
+            'win_rate': '60-70%',
+            'brooks_quote': 'A double top is two failed attempts to break above a price level.',
+            'lesson': 'This is a Double Top — bulls tried twice to break above resistance and failed. The second failure proves buyers cannot push through. All longs from both tests are trapped, and their selling fuels the decline. Target: height of the M projected downward.',
+            'trap_type': 'bull_trap',
+        },
+        'lower_high': {
+            'name': 'Lower High — Bearish Structure Continuation',
+            'win_rate': '55-65%',
+            'brooks_quote': 'A series of lower highs confirms the downtrend.',
+            'lesson': 'This Lower High confirms bearish structure — each bounce is weaker, showing bulls are losing power. Sellers enter at increasingly lower prices. The downtrend is intact as long as lower highs hold.',
+            'trap_type': 'none',
+        },
+        'breakdown_pullback': {
+            'name': 'Breakdown Pullback — Retest of Breakdown Level',
+            'win_rate': '65-75%',
+            'brooks_quote': 'Former support becoming resistance is one of the most reliable principles.',
+            'lesson': 'This is a Breakdown Pullback — price broke below support, bounced to retest, and is being rejected. Former support is now resistance. One of the highest-probability setups because it confirms the breakdown while offering an ideal entry with a tight stop.',
+            'trap_type': 'none',
+        },
+        'wedge_top': {
+            'name': 'Wedge Top — Three Pushes Up Reversing',
+            'win_rate': '60-70%',
+            'brooks_quote': 'Wedges are climactic moves. Three pushes with weakening momentum = prepare for reversal.',
+            'lesson': 'This is a Wedge Top — three ascending pushes with declining momentum. Each push trapped more bulls while absorbing buying pressure. By the third push, no buyers remain. The measured move target is the bottom of the wedge.',
+            'trap_type': 'bull_trap',
+        },
+        'expanding_triangle_top': {
+            'name': 'Expanding Triangle Top',
+            'win_rate': '50-60%',
+            'brooks_quote': 'Expanding triangles show increasingly aggressive two-sided trading.',
+            'lesson': 'This is an Expanding Triangle at a top — increasingly aggressive swings. The final higher high traps the last bulls. The reversal often comes with force as trapped energy releases.',
+            'trap_type': 'bull_trap',
+        },
+        'failed_breakout': {
+            'name': 'Failed Breakout — Bull Trap',
+            'win_rate': '65-75%',
+            'brooks_quote': '80% of breakouts fail. Every bull who bought the breakout is now trapped.',
+            'lesson': 'This is a Failed Breakout — price broke above resistance but immediately reversed. Brooks\' "80% of breakouts fail" rule applies. Every bull who bought is trapped. Their forced selling fuels the decline. Failed breakouts produce the strongest signals.',
+            'trap_type': 'bull_trap',
+        },
+        'ema_rejection': {
+            'name': 'EMA Rejection — Dynamic Resistance',
+            'win_rate': '55-65%',
+            'brooks_quote': 'In a bear trend, the EMA acts as dynamic resistance.',
+            'lesson': 'This is an EMA Rejection — price bounced to the 20-period EMA in a downtrend and is being rejected. Institutional sellers defend this level. The rejection confirms the bear trend is intact.',
+            'trap_type': 'none',
+        },
+        'climactic_exhaustion': {
+            'name': 'Climactic Exhaustion — Parabolic Reversal',
+            'win_rate': '55-65%',
+            'brooks_quote': 'A buy climax is a series of increasingly large bull bars... it is unsustainable.',
+            'lesson': 'This is Climactic Exhaustion — price accelerated into a parabolic move. The LAST buyers entered out of FOMO while smart money sells to them. When buying exhausts itself, the reversal is sharp. The bigger the climax, the larger the expected correction.',
+            'trap_type': 'late_move_trap',
+        },
+    }
+
     def __init__(self):
         self.base_probability = 50  # Al Brooks starts at 50-50
 
@@ -159,7 +331,21 @@ class AlBrooksAnalyzer:
             ohlcv_data, direction, always_in, pattern
         )
 
-        # Calculate probability with adjustments
+        # ── Enhanced analysis (Phase 2) ──
+        trap_classification = self._classify_trap_type(ohlcv_data, direction, always_in, pattern)
+        climax_detection = self._detect_climax_enhanced(ohlcv_data)
+        trend_evolution = self._assess_trend_evolution(ohlcv_data)
+        confirmation = self._check_confirmation_bar(ohlcv_data, direction)
+        measured_move_targets = self._calculate_measured_move(ohlcv_data, direction, pattern)
+        micro_channel = self._detect_micro_channel(ohlcv_data)
+        spike_channel = self._detect_spike_and_channel(ohlcv_data)
+        bars_detailed = self._read_recent_bars_detailed(ohlcv_data)
+
+        # Get pattern lesson
+        lesson_data = self.PATTERN_LESSONS.get(pattern, {})
+        lesson = lesson_data.get('lesson', f'{pattern_desc}.')
+
+        # Calculate probability with adjustments (includes trend evolution, micro channel)
         probability_result = self._calculate_probability(
             direction=direction,
             always_in=always_in,
@@ -168,15 +354,22 @@ class AlBrooksAnalyzer:
             ml_data=ml_data,
             rs_data=rs_data,
             volume_data=volume_data,
-            technical_data=technical_data
+            technical_data=technical_data,
+            trend_evolution=trend_evolution,
+            micro_channel=micro_channel,
+            climax_detection=climax_detection,
         )
 
-        # Calculate entry, stop, and target levels
+        # Generate probability narrative
+        probability_narrative = self._generate_probability_narrative(probability_result)
+
+        # Calculate entry, stop, and target levels (integrates measured moves)
         levels = self._calculate_levels(
-            ohlcv_data, direction, pattern, technical_data
+            ohlcv_data, direction, pattern, technical_data,
+            measured_move_targets=measured_move_targets,
         )
 
-        # Generate commentary
+        # Generate commentary (includes lesson and trap type)
         commentary = self._generate_commentary(
             ticker=ticker,
             direction=direction,
@@ -186,7 +379,10 @@ class AlBrooksAnalyzer:
             bar_reading=bar_reading,
             trap_risk=trap_risk,
             probability_result=probability_result,
-            levels=levels
+            levels=levels,
+            lesson=lesson,
+            trap_classification=trap_classification,
+            probability_narrative=probability_narrative,
         )
 
         return {
@@ -203,7 +399,20 @@ class AlBrooksAnalyzer:
             'stop': levels['stop'],
             'target': levels['target'],
             'risk_reward_ratio': levels['risk_reward'],
-            'commentary': commentary
+            'commentary': commentary,
+            # ── New Phase 2 fields ──
+            'trap_type': trap_classification.get('trap_type', 'none'),
+            'trap_classification': trap_classification,
+            'climax_detection': climax_detection,
+            'trend_evolution': trend_evolution,
+            'confirmation_status': confirmation,
+            'measured_move_targets': measured_move_targets,
+            'micro_channel': micro_channel,
+            'spike_and_channel': spike_channel,
+            'bars_detailed': bars_detailed,
+            'probability_narrative': probability_narrative,
+            'lesson': lesson,
+            'pattern_lesson': lesson_data,
         }
 
     def _determine_always_in(
@@ -415,18 +624,9 @@ class AlBrooksAnalyzer:
         return min(pullbacks, 4)
 
     def _detect_climax(self, ohlcv: pd.DataFrame) -> bool:
-        """Detect climactic/parabolic move."""
-        if len(ohlcv) < 10:
-            return False
-
-        closes = ohlcv['Close'].values[-10:]
-        returns = [(closes[i] - closes[i-1]) / closes[i-1] for i in range(1, len(closes))]
-
-        # Parabolic if 5+ consecutive up days with increasing magnitude
-        consecutive_up = sum(1 for r in returns[-5:] if r > 0)
-        avg_return = np.mean([r for r in returns[-5:] if r > 0]) if consecutive_up > 0 else 0
-
-        return consecutive_up >= 4 and avg_return > 0.01
+        """Detect climactic/parabolic move (wrapper for enhanced version)."""
+        result = self._detect_climax_enhanced(ohlcv)
+        return result.get('is_climax', False)
 
     def _read_recent_bars(
         self,
@@ -557,7 +757,10 @@ class AlBrooksAnalyzer:
         ml_data: dict | None,
         rs_data: dict | None,
         volume_data: dict | None,
-        technical_data: dict
+        technical_data: dict,
+        trend_evolution: dict | None = None,
+        micro_channel: dict | None = None,
+        climax_detection: dict | None = None,
     ) -> dict[str, Any]:
         """
         Calculate trade probability with Al Brooks base + adjustments.
@@ -719,6 +922,51 @@ class AlBrooksAnalyzer:
             base += 5
             adjustments.append(f"+5% RSI overbought ({rsi:.0f})")
 
+        # Trend evolution adjustment
+        if trend_evolution:
+            phase = trend_evolution.get('phase', 'TRADING_RANGE')
+            if phase == 'STRONG_TREND':
+                base += 8
+                adjustments.append("+8% Strong trend phase")
+            elif phase == 'CHANNEL':
+                base += 4
+                adjustments.append("+4% Channel trend phase")
+            elif phase == 'BROAD_CHANNEL':
+                base -= 3
+                adjustments.append("-3% Broad channel — trend weakening")
+            elif phase == 'TRADING_RANGE':
+                base -= 5
+                adjustments.append("-5% Trading range — two-sided action")
+
+        # Micro channel adjustment
+        if micro_channel and micro_channel.get('detected'):
+            mc_dir = micro_channel.get('direction', '')
+            mc_broken = micro_channel.get('is_broken', False)
+            if not mc_broken:
+                if (direction == 'long' and mc_dir == 'bull') or (direction == 'short' and mc_dir == 'bear'):
+                    base += 10
+                    adjustments.append(f"+10% Active {mc_dir} micro channel ({micro_channel.get('bars', 0)} bars)")
+                else:
+                    base -= 10
+                    adjustments.append(f"-10% Active {mc_dir} micro channel AGAINST trade direction")
+            else:
+                base -= 3
+                adjustments.append(f"-3% Micro channel just broken — pullback likely")
+
+        # Climax detection adjustment
+        if climax_detection and climax_detection.get('is_climax'):
+            climax_type = climax_detection.get('climax_type', 'simple')
+            severity = climax_detection.get('severity', 'LOW')
+            if severity == 'HIGH':
+                base -= 12
+                adjustments.append(f"-12% {climax_type} climax detected (HIGH severity)")
+            elif severity == 'MODERATE':
+                base -= 7
+                adjustments.append(f"-7% {climax_type} climax detected (MODERATE)")
+            else:
+                base -= 3
+                adjustments.append(f"-3% Simple climax bar detected")
+
         # Clamp probability
         adjusted = max(30, min(80, base))
 
@@ -733,7 +981,8 @@ class AlBrooksAnalyzer:
         ohlcv: pd.DataFrame,
         direction: str,
         pattern: str,
-        technical: dict
+        technical: dict,
+        measured_move_targets: dict | None = None,
     ) -> dict[str, Any]:
         """Calculate entry, stop, and target levels."""
         current_price = ohlcv['Close'].iloc[-1]
@@ -750,9 +999,15 @@ class AlBrooksAnalyzer:
             # Stop below recent swing low or 2x ATR
             stop = round(min(recent_low, current_price - 2 * atr), 2)
 
-            # Target based on risk-reward
+            # Target: prefer measured move if available and reasonable
             risk = entry - stop
-            target = round(entry + risk * 2.5, 2)  # 2.5:1 risk/reward
+            rr_target = round(entry + risk * 2.5, 2)  # Default 2.5:1 R/R
+            mm_target = measured_move_targets.get('primary_target') if measured_move_targets else None
+            # Use measured move if it's above entry and provides at least 1.5:1 R/R
+            if mm_target and mm_target > entry and risk > 0 and (mm_target - entry) / risk >= 1.5:
+                target = round(mm_target, 2)
+            else:
+                target = rr_target
         else:
             # Entry below current bar low
             entry = round(current_price * 0.998, 2)
@@ -760,9 +1015,14 @@ class AlBrooksAnalyzer:
             # Stop above recent swing high or 2x ATR
             stop = round(max(recent_high, current_price + 2 * atr), 2)
 
-            # Target based on risk-reward
+            # Target: prefer measured move if available and reasonable
             risk = stop - entry
-            target = round(entry - risk * 2.5, 2)
+            rr_target = round(entry - risk * 2.5, 2)
+            mm_target = measured_move_targets.get('primary_target') if measured_move_targets else None
+            if mm_target and mm_target < entry and risk > 0 and (entry - mm_target) / risk >= 1.5:
+                target = round(mm_target, 2)
+            else:
+                target = rr_target
 
         # Calculate risk/reward ratio
         if direction == 'long':
@@ -802,6 +1062,633 @@ class AlBrooksAnalyzer:
 
         return np.mean(tr[-period:])
 
+    # ── NEW: Enhanced detection and analysis methods (Phase 2) ──────────
+
+    def _classify_trap_type(
+        self,
+        ohlcv: pd.DataFrame,
+        direction: str,
+        always_in: str,
+        pattern: str,
+    ) -> dict[str, Any]:
+        """
+        Classify the specific trap type based on pattern and context.
+
+        Returns dict with trap_type, severity, explanation, and action.
+        """
+        # Get pattern's associated trap type from PATTERN_LESSONS
+        all_patterns = {**self.LONG_PATTERNS, **self.SHORT_PATTERNS}
+        lesson = self.PATTERN_LESSONS.get(pattern, {})
+        default_trap = lesson.get('trap_type', 'none')
+
+        closes = ohlcv['Close'].values
+        highs = ohlcv['High'].values
+        lows = ohlcv['Low'].values
+
+        # Failed breakout detection (bull_trap / bear_trap)
+        if pattern in ('failed_breakout', 'failed_breakdown'):
+            trap_type = 'bull_trap' if pattern == 'failed_breakout' else 'bear_trap'
+            severity = 'HIGH'
+            explanation = (
+                f"Failed {'breakout above resistance' if trap_type == 'bull_trap' else 'breakdown below support'}. "
+                "Trapped traders must exit, fueling the opposite move."
+            )
+            action = f"Trade {'SHORT' if trap_type == 'bull_trap' else 'LONG'} — trapped traders add fuel."
+            return {'trap_type': trap_type, 'severity': severity, 'explanation': explanation, 'action': action}
+
+        # Late move detection (3+ pushes)
+        if pattern in ('high_3', 'high_4', 'low_3', 'low_4'):
+            push_count = int(pattern[-1])
+            severity = 'HIGH' if push_count >= 4 else 'MODERATE'
+            explanation = (
+                f"Trend has had {push_count} pushes — exhaustion is {'very likely' if push_count >= 4 else 'possible'}. "
+                "Late entrants are buying from smart money exiting."
+            )
+            action = "Reduce position size. Tighten stops. Watch for reversal signal."
+            return {'trap_type': 'late_move_trap', 'severity': severity, 'explanation': explanation, 'action': action}
+
+        # Counter-trend trap (trading against Always-In)
+        if (direction == 'long' and always_in == 'SHORT') or (direction == 'short' and always_in == 'LONG'):
+            explanation = (
+                f"Trading against Always-In {always_in}. Counter-trend trades have "
+                "~30% base probability. Trend could resume violently."
+            )
+            return {
+                'trap_type': 'failed_reversal_trap',
+                'severity': 'HIGH',
+                'explanation': explanation,
+                'action': "Only scalp counter-trend. Use 50% position size. Exit on first sign of trend resumption."
+            }
+
+        # Vacuum fill detection (gap areas)
+        if len(closes) >= 10:
+            # Check for gap in recent bars
+            for i in range(-5, -1):
+                if i + 1 < 0:
+                    gap_up = lows[i + 1] > highs[i]
+                    gap_down = highs[i + 1] < lows[i]
+                    if gap_up and direction == 'short':
+                        return {
+                            'trap_type': 'vacuum_fill_trap',
+                            'severity': 'MODERATE',
+                            'explanation': 'Price filling a gap zone. Once the gap is filled, the original direction often resumes.',
+                            'action': 'Be cautious — gap fills can reverse. Set tight stop.'
+                        }
+                    if gap_down and direction == 'long':
+                        return {
+                            'trap_type': 'vacuum_fill_trap',
+                            'severity': 'MODERATE',
+                            'explanation': 'Price filling a gap zone. Once the gap is filled, the original direction often resumes.',
+                            'action': 'Be cautious — gap fills can reverse. Set tight stop.'
+                        }
+
+        # Default: use pattern's associated trap or none
+        if default_trap and default_trap != 'none':
+            return {
+                'trap_type': default_trap,
+                'severity': 'LOW',
+                'explanation': f"Pattern ({pattern}) has inherent {default_trap} characteristics.",
+                'action': 'Standard risk management — no unusual trap pressure.'
+            }
+
+        return {
+            'trap_type': 'none',
+            'severity': 'NONE',
+            'explanation': 'No significant trap signals detected.',
+            'action': 'Standard risk management.'
+        }
+
+    def _detect_climax_enhanced(self, ohlcv: pd.DataFrame) -> dict[str, Any]:
+        """
+        Enhanced climax detection with type classification.
+
+        Returns dict with is_climax, climax_type, severity, bars, volume_confirmation.
+        """
+        if len(ohlcv) < 10:
+            return {'is_climax': False, 'climax_type': 'none', 'severity': 'NONE', 'bars': 0, 'volume_confirmation': False}
+
+        closes = ohlcv['Close'].values[-10:]
+        opens = ohlcv['Open'].values[-10:]
+        highs = ohlcv['High'].values[-10:]
+        lows = ohlcv['Low'].values[-10:]
+        volumes = ohlcv['Volume'].values[-10:] if 'Volume' in ohlcv.columns else None
+
+        bodies = [abs(closes[i] - opens[i]) for i in range(len(closes))]
+        ranges = [highs[i] - lows[i] for i in range(len(closes))]
+        avg_body = np.mean(bodies[:5])  # Average of first 5 bars as baseline
+        avg_vol = np.mean(volumes[:5]) if volumes is not None else 0
+
+        # Check for volume confirmation on recent bars
+        vol_increasing = False
+        if volumes is not None and avg_vol > 0:
+            recent_vol = np.mean(volumes[-3:])
+            vol_increasing = recent_vol > avg_vol * 1.3
+
+        # Type 4: Channel overshoot (check first — most severe)
+        # Simplified: large bar after a series of trending bars that breaks acceleration
+        recent_bodies = bodies[-5:]
+        if len(recent_bodies) >= 5 and avg_body > 0:
+            last_body_ratio = recent_bodies[-1] / avg_body
+            if last_body_ratio > 2.5 and all(
+                (closes[i] > closes[i - 1]) == (closes[-1] > closes[-2])
+                for i in range(-4, 0)
+            ):
+                return {
+                    'is_climax': True,
+                    'climax_type': 'channel_overshoot',
+                    'severity': 'HIGH',
+                    'bars': 5,
+                    'volume_confirmation': vol_increasing,
+                }
+
+        # Type 3: Parabolic (each bar larger than previous for 3+)
+        if len(bodies) >= 5:
+            parabolic_count = 0
+            for i in range(-4, 0):
+                if bodies[i] > bodies[i - 1] * 1.1:  # Each bar 10%+ larger
+                    parabolic_count += 1
+            if parabolic_count >= 3:
+                return {
+                    'is_climax': True,
+                    'climax_type': 'parabolic',
+                    'severity': 'HIGH',
+                    'bars': parabolic_count + 1,
+                    'volume_confirmation': vol_increasing,
+                }
+
+        # Type 2: Consecutive (3+ strong bars in same direction)
+        consecutive = 0
+        bull_direction = closes[-1] > opens[-1]
+        for i in range(-1, -6, -1):
+            bar_bull = closes[i] > opens[i]
+            body_ratio = bodies[i] / ranges[i] if ranges[i] > 0 else 0
+            if bar_bull == bull_direction and body_ratio > 0.5 and bodies[i] > avg_body * 1.2:
+                consecutive += 1
+            else:
+                break
+        if consecutive >= 3:
+            return {
+                'is_climax': True,
+                'climax_type': 'consecutive',
+                'severity': 'MODERATE',
+                'bars': consecutive,
+                'volume_confirmation': vol_increasing,
+            }
+
+        # Type 1: Simple (single large bar)
+        if avg_body > 0 and bodies[-1] > avg_body * 2:
+            body_ratio = bodies[-1] / ranges[-1] if ranges[-1] > 0 else 0
+            if body_ratio > 0.6:
+                return {
+                    'is_climax': True,
+                    'climax_type': 'simple',
+                    'severity': 'LOW',
+                    'bars': 1,
+                    'volume_confirmation': vol_increasing,
+                }
+
+        return {'is_climax': False, 'climax_type': 'none', 'severity': 'NONE', 'bars': 0, 'volume_confirmation': False}
+
+    def _detect_spike_and_channel(self, ohlcv: pd.DataFrame) -> dict[str, Any]:
+        """
+        Detect spike-and-channel trend structure.
+
+        Spike: 1-3 bars with body > 2x ATR. Channel: subsequent orderly trend.
+        """
+        result = {'detected': False, 'spike_bars': 0, 'channel_bars': 0, 'current_position': 'none'}
+        if len(ohlcv) < 15:
+            return result
+
+        atr = self._calculate_atr(ohlcv)
+        if atr <= 0:
+            return result
+
+        closes = ohlcv['Close'].values
+        opens = ohlcv['Open'].values
+        n = len(closes)
+
+        # Look for a spike in the last 20 bars
+        for start in range(max(0, n - 20), n - 5):
+            spike_bars = 0
+            spike_direction = None
+
+            for j in range(start, min(start + 4, n)):
+                body = abs(closes[j] - opens[j])
+                if body > 1.5 * atr:
+                    spike_bars += 1
+                    spike_direction = 'bull' if closes[j] > opens[j] else 'bear'
+                else:
+                    break
+
+            if spike_bars < 1:
+                continue
+
+            # Check for channel after spike
+            channel_start = start + spike_bars
+            if channel_start >= n - 3:
+                continue
+
+            channel_bars = 0
+            for k in range(channel_start, n):
+                body = abs(closes[k] - opens[k])
+                if body < 1.5 * atr:  # Channel bars are smaller than spike
+                    channel_bars += 1
+                else:
+                    break
+
+            if channel_bars >= 3:
+                # Determine current position
+                if channel_start + channel_bars >= n - 1:
+                    position = 'in_channel'
+                else:
+                    position = 'channel_broken'
+
+                return {
+                    'detected': True,
+                    'spike_bars': spike_bars,
+                    'channel_bars': channel_bars,
+                    'current_position': position,
+                    'direction': spike_direction,
+                }
+
+        return result
+
+    def _detect_micro_channel(self, ohlcv: pd.DataFrame) -> dict[str, Any]:
+        """
+        Detect micro channel — every bar's low > prior low (bull) for 4+ bars.
+        """
+        result = {'detected': False, 'direction': 'none', 'bars': 0, 'is_broken': False}
+        if len(ohlcv) < 5:
+            return result
+
+        lows = ohlcv['Low'].values
+        highs = ohlcv['High'].values
+
+        # Bull micro channel: each low > prior low
+        bull_count = 0
+        for i in range(len(lows) - 1, 0, -1):
+            if lows[i] > lows[i - 1]:
+                bull_count += 1
+            else:
+                break
+
+        # Bear micro channel: each high < prior high
+        bear_count = 0
+        for i in range(len(highs) - 1, 0, -1):
+            if highs[i] < highs[i - 1]:
+                bear_count += 1
+            else:
+                break
+
+        if bull_count >= 4:
+            return {'detected': True, 'direction': 'bull', 'bars': bull_count, 'is_broken': False}
+        elif bear_count >= 4:
+            return {'detected': True, 'direction': 'bear', 'bars': bear_count, 'is_broken': False}
+
+        # Check if a micro channel just broke (was active 1-3 bars ago)
+        if len(lows) >= 8:
+            past_lows = lows[:-2]
+            past_bull = 0
+            for i in range(len(past_lows) - 1, 0, -1):
+                if past_lows[i] > past_lows[i - 1]:
+                    past_bull += 1
+                else:
+                    break
+            if past_bull >= 4 and bull_count < 4:
+                return {'detected': True, 'direction': 'bull', 'bars': past_bull, 'is_broken': True}
+
+            past_highs = highs[:-2]
+            past_bear = 0
+            for i in range(len(past_highs) - 1, 0, -1):
+                if past_highs[i] < past_highs[i - 1]:
+                    past_bear += 1
+                else:
+                    break
+            if past_bear >= 4 and bear_count < 4:
+                return {'detected': True, 'direction': 'bear', 'bars': past_bear, 'is_broken': True}
+
+        return result
+
+    def _calculate_measured_move(
+        self,
+        ohlcv: pd.DataFrame,
+        direction: str,
+        pattern: str,
+    ) -> dict[str, Any]:
+        """
+        Calculate measured move targets using multiple methods.
+
+        Methods: Leg1=Leg2, spike projection, range projection.
+        """
+        closes = ohlcv['Close'].values
+        highs = ohlcv['High'].values
+        lows = ohlcv['Low'].values
+        current = closes[-1]
+        targets = {}
+
+        # Method 1: Leg1 = Leg2
+        # Find the most recent swing points
+        if len(closes) >= 15:
+            if direction == 'long':
+                # Find swing low (start), swing high (end of leg1), pullback low
+                swing_low_idx = np.argmin(lows[-15:])
+                swing_high_idx = swing_low_idx + np.argmax(highs[(-15 + swing_low_idx):]) if swing_low_idx < 14 else len(highs) - 1
+                leg1 = highs[-15 + swing_high_idx] - lows[-15 + swing_low_idx] if swing_high_idx > swing_low_idx else 0
+                if leg1 > 0:
+                    pullback_low = min(lows[(-15 + swing_high_idx):])
+                    targets['leg1_leg2'] = round(pullback_low + leg1, 2)
+            else:
+                swing_high_idx = np.argmax(highs[-15:])
+                swing_low_idx = swing_high_idx + np.argmin(lows[(-15 + swing_high_idx):]) if swing_high_idx < 14 else len(lows) - 1
+                leg1 = highs[-15 + swing_high_idx] - lows[-15 + swing_low_idx] if swing_low_idx > swing_high_idx else 0
+                if leg1 > 0:
+                    pullback_high = max(highs[(-15 + swing_low_idx):])
+                    targets['leg1_leg2'] = round(pullback_high - leg1, 2)
+
+        # Method 2: Spike projection (from spike-and-channel)
+        spike_channel = self._detect_spike_and_channel(ohlcv)
+        if spike_channel['detected']:
+            spike_bars = spike_channel['spike_bars']
+            if spike_bars > 0:
+                spike_range = max(highs[-20:-20 + spike_bars + 1]) - min(lows[-20:-20 + spike_bars + 1]) if len(highs) >= 20 else 0
+                if spike_range > 0:
+                    if direction == 'long':
+                        targets['spike_projection'] = round(current + spike_range, 2)
+                    else:
+                        targets['spike_projection'] = round(current - spike_range, 2)
+
+        # Method 3: Range projection
+        if len(closes) >= 20:
+            recent_high = max(highs[-20:])
+            recent_low = min(lows[-20:])
+            range_height = recent_high - recent_low
+            if range_height > 0:
+                if direction == 'long':
+                    targets['range_projection'] = round(recent_high + range_height, 2)
+                else:
+                    targets['range_projection'] = round(recent_low - range_height, 2)
+
+        # Primary target: prefer leg1=leg2, then range, then spike
+        primary = targets.get('leg1_leg2') or targets.get('range_projection') or targets.get('spike_projection') or current
+        targets['primary_target'] = primary
+
+        return targets
+
+    def _assess_trend_evolution(self, ohlcv: pd.DataFrame) -> dict[str, Any]:
+        """
+        Score trend phase: STRONG_TREND → CHANNEL → BROAD_CHANNEL → TRADING_RANGE.
+
+        Based on bar overlap, body ratios, pullback depth, and EMA slope.
+        """
+        if len(ohlcv) < 15:
+            return {'phase': 'TRADING_RANGE', 'phase_score': 30, 'transition_signals': []}
+
+        closes = ohlcv['Close'].values[-15:]
+        opens = ohlcv['Open'].values[-15:]
+        highs = ohlcv['High'].values[-15:]
+        lows = ohlcv['Low'].values[-15:]
+
+        # 1. Bar overlap percentage (how much bars overlap with prior bar)
+        overlap_count = 0
+        for i in range(1, len(closes)):
+            overlap = min(highs[i], highs[i-1]) - max(lows[i], lows[i-1])
+            bar_range = highs[i] - lows[i]
+            if bar_range > 0 and overlap > 0:
+                if overlap / bar_range > 0.5:
+                    overlap_count += 1
+        overlap_pct = overlap_count / (len(closes) - 1)
+
+        # 2. Average body-to-range ratio
+        body_ratios = []
+        for i in range(len(closes)):
+            r = highs[i] - lows[i]
+            if r > 0:
+                body_ratios.append(abs(closes[i] - opens[i]) / r)
+        avg_body_ratio = np.mean(body_ratios) if body_ratios else 0.5
+
+        # 3. Consecutive same-direction bars
+        max_consecutive = 0
+        current_consecutive = 1
+        for i in range(1, len(closes)):
+            same_dir = (closes[i] > opens[i]) == (closes[i-1] > opens[i-1])
+            if same_dir:
+                current_consecutive += 1
+                max_consecutive = max(max_consecutive, current_consecutive)
+            else:
+                current_consecutive = 1
+
+        # 4. Pullback depth relative to legs
+        price_range = max(highs) - min(lows)
+        if price_range > 0:
+            max_pullback = 0
+            for i in range(2, len(closes)):
+                if closes[i] < closes[i-1] and closes[i-1] > closes[i-2]:
+                    pullback = closes[i-1] - closes[i]
+                    max_pullback = max(max_pullback, pullback)
+            pullback_depth = max_pullback / price_range
+        else:
+            pullback_depth = 0.5
+
+        # Score
+        score = 0
+        signals = []
+
+        # Overlap scoring (less overlap = stronger trend)
+        if overlap_pct < 0.2:
+            score += 30
+        elif overlap_pct < 0.4:
+            score += 20
+        elif overlap_pct < 0.6:
+            score += 10
+        else:
+            signals.append("High bar overlap — range-like behavior")
+
+        # Body ratio scoring
+        if avg_body_ratio > 0.65:
+            score += 25
+        elif avg_body_ratio > 0.50:
+            score += 15
+        elif avg_body_ratio > 0.40:
+            score += 8
+        else:
+            signals.append("Small bodies — indecision")
+
+        # Consecutive bars
+        if max_consecutive >= 4:
+            score += 25
+        elif max_consecutive >= 3:
+            score += 15
+        elif max_consecutive >= 2:
+            score += 8
+        else:
+            signals.append("No consecutive same-direction bars")
+
+        # Pullback depth
+        if pullback_depth < 0.3:
+            score += 20
+        elif pullback_depth < 0.5:
+            score += 12
+        elif pullback_depth < 0.7:
+            score += 5
+        else:
+            signals.append("Deep pullbacks — trend weakening")
+
+        # Classify phase
+        if score >= 80:
+            phase = 'STRONG_TREND'
+        elif score >= 60:
+            phase = 'CHANNEL'
+        elif score >= 40:
+            phase = 'BROAD_CHANNEL'
+        else:
+            phase = 'TRADING_RANGE'
+
+        return {'phase': phase, 'phase_score': min(score, 100), 'transition_signals': signals}
+
+    def _check_confirmation_bar(
+        self,
+        ohlcv: pd.DataFrame,
+        direction: str,
+    ) -> dict[str, Any]:
+        """
+        Check if the most recent bar confirms the pattern direction.
+        """
+        if len(ohlcv) < 2:
+            return {'confirmed': False, 'bar_quality': 'insufficient_data', 'reason': 'Not enough bars'}
+
+        last = ohlcv.iloc[-1]
+        close = last['Close']
+        open_p = last['Open']
+        high = last['High']
+        low = last['Low']
+
+        bar_range = high - low
+        if bar_range <= 0:
+            return {'confirmed': False, 'bar_quality': 'doji', 'reason': 'Zero-range bar'}
+
+        body = abs(close - open_p)
+        body_pct = body / bar_range
+        close_position = (close - low) / bar_range
+
+        if direction == 'long':
+            is_bull = close > open_p
+            strong = is_bull and body_pct > 0.5 and close_position > 0.6
+            if strong:
+                quality = 'strong' if body_pct > 0.7 else 'moderate'
+                return {'confirmed': True, 'bar_quality': quality, 'reason': f'Bull bar closing near high ({close_position:.0%}), body {body_pct:.0%} of range'}
+            elif is_bull:
+                return {'confirmed': True, 'bar_quality': 'weak', 'reason': f'Bull bar but small body ({body_pct:.0%}) or low close ({close_position:.0%})'}
+            else:
+                return {'confirmed': False, 'bar_quality': 'bear', 'reason': 'Last bar is bearish — no confirmation'}
+        else:
+            is_bear = close < open_p
+            strong = is_bear and body_pct > 0.5 and close_position < 0.4
+            if strong:
+                quality = 'strong' if body_pct > 0.7 else 'moderate'
+                return {'confirmed': True, 'bar_quality': quality, 'reason': f'Bear bar closing near low ({close_position:.0%}), body {body_pct:.0%} of range'}
+            elif is_bear:
+                return {'confirmed': True, 'bar_quality': 'weak', 'reason': f'Bear bar but small body ({body_pct:.0%}) or high close ({close_position:.0%})'}
+            else:
+                return {'confirmed': False, 'bar_quality': 'bull', 'reason': 'Last bar is bullish — no confirmation'}
+
+    def _generate_probability_narrative(self, probability_result: dict) -> str:
+        """
+        Generate human-readable probability breakdown.
+
+        Example: "Base: 50% + Always-In LONG: +5% + High 2 pattern: +5% = 60% MODERATE"
+        """
+        parts = [f"Base: {probability_result['base']}%"]
+        for adj in probability_result.get('adjustments', []):
+            parts.append(adj)
+        adjusted = probability_result['adjusted']
+
+        if adjusted >= 70:
+            tier = "HIGH CONVICTION"
+        elif adjusted >= 50:
+            tier = "MODERATE"
+        else:
+            tier = "LOW"
+
+        parts.append(f"= Adjusted: {adjusted}% → {tier}")
+        return "\n".join(parts)
+
+    def _read_recent_bars_detailed(self, ohlcv: pd.DataFrame) -> dict[str, Any]:
+        """
+        Per-bar structured data with interpretations for last 5 bars.
+        """
+        if len(ohlcv) < 5:
+            return {'bars': [], 'summary': 'Insufficient data', 'momentum': 'unknown'}
+
+        bars_data = []
+        last_5 = ohlcv.tail(5)
+
+        for _, bar in last_5.iterrows():
+            o, h, l, c = bar['Open'], bar['High'], bar['Low'], bar['Close']
+            r = h - l
+            body = abs(c - o)
+            body_pct = body / r if r > 0 else 0
+            close_pos = (c - l) / r if r > 0 else 0.5
+
+            if c > o:
+                bar_type = 'bull'
+            elif c < o:
+                bar_type = 'bear'
+            else:
+                bar_type = 'doji'
+
+            # Classification
+            if body_pct > 0.7:
+                strength = 'strong'
+            elif body_pct > 0.4:
+                strength = 'moderate'
+            else:
+                strength = 'weak'
+
+            # Interpretation
+            if bar_type == 'bull' and close_pos > 0.7:
+                interp = 'Buyers dominated — strong conviction'
+            elif bar_type == 'bear' and close_pos < 0.3:
+                interp = 'Sellers dominated — strong conviction'
+            elif body_pct < 0.3:
+                interp = 'Indecision — neither side in control'
+            elif close_pos > 0.5:
+                interp = 'Slight buyer edge'
+            else:
+                interp = 'Slight seller edge'
+
+            bars_data.append({
+                'type': bar_type,
+                'body_pct': round(body_pct * 100),
+                'close_position': round(close_pos * 100),
+                'strength': strength,
+                'interpretation': interp,
+            })
+
+        # Summary
+        bull_count = sum(1 for b in bars_data if b['type'] == 'bull')
+        bear_count = sum(1 for b in bars_data if b['type'] == 'bear')
+        strong_count = sum(1 for b in bars_data if b['strength'] == 'strong')
+
+        if bull_count >= 4:
+            summary = 'Strong bullish momentum — consecutive bull bars'
+            momentum = 'strong_bull'
+        elif bear_count >= 4:
+            summary = 'Strong bearish momentum — consecutive bear bars'
+            momentum = 'strong_bear'
+        elif bull_count >= 3:
+            summary = 'Bullish bias with some pullback'
+            momentum = 'moderate_bull'
+        elif bear_count >= 3:
+            summary = 'Bearish bias with some bounce'
+            momentum = 'moderate_bear'
+        else:
+            summary = 'Mixed/consolidation — no clear momentum'
+            momentum = 'neutral'
+
+        return {'bars': bars_data, 'summary': summary, 'momentum': momentum}
+
+    # ── END new methods ──────────────────────────────────────────────
+
     def _generate_commentary(
         self,
         ticker: str,
@@ -812,9 +1699,12 @@ class AlBrooksAnalyzer:
         bar_reading: str,
         trap_risk: str,
         probability_result: dict,
-        levels: dict
+        levels: dict,
+        lesson: str = '',
+        trap_classification: dict | None = None,
+        probability_narrative: str = '',
     ) -> str:
-        """Generate Al Brooks style commentary."""
+        """Generate Al Brooks style commentary with enhanced analysis."""
         dir_text = "LONG" if direction == 'long' else "SHORT"
 
         # Opening statement
@@ -841,8 +1731,12 @@ class AlBrooksAnalyzer:
         # Bar reading
         commentary += f"{bar_reading}. "
 
-        # Trap risk
-        if trap_risk == 'HIGH':
+        # Trap type (enhanced)
+        if trap_classification and trap_classification.get('trap_type', 'none') != 'none':
+            trap_type = trap_classification['trap_type']
+            trap_expl = trap_classification.get('explanation', '')
+            commentary += f"TRAP: {trap_type.replace('_', ' ').title()} — {trap_expl} "
+        elif trap_risk == 'HIGH':
             commentary += "HIGH TRAP RISK - consider waiting for confirmation bar. "
         elif trap_risk == 'MEDIUM':
             commentary += "Moderate trap risk - use tight stop. "
@@ -872,8 +1766,224 @@ class AlBrooksAnalyzer:
             'stop': 0,
             'target': 0,
             'risk_reward_ratio': 0,
-            'commentary': reason
+            'commentary': reason,
+            # Phase 2 fields
+            'trap_type': 'none',
+            'trap_classification': {'trap_type': 'none', 'severity': 'NONE', 'explanation': reason, 'action': ''},
+            'climax_detection': {'is_climax': False, 'climax_type': 'none', 'severity': 'NONE', 'bars': 0, 'volume_confirmation': False},
+            'trend_evolution': {'phase': 'TRADING_RANGE', 'phase_score': 0, 'transition_signals': []},
+            'confirmation_status': {'confirmed': False, 'bar_quality': 'insufficient_data', 'reason': reason},
+            'measured_move_targets': {'primary_target': 0},
+            'micro_channel': {'detected': False, 'direction': 'none', 'bars': 0, 'is_broken': False},
+            'spike_and_channel': {'detected': False, 'spike_bars': 0, 'channel_bars': 0, 'current_position': 'none'},
+            'bars_detailed': {'bars': [], 'summary': reason, 'momentum': 'unknown'},
+            'probability_narrative': reason,
+            'lesson': reason,
+            'pattern_lesson': {},
         }
+
+    def analyze_weekly(
+        self,
+        ticker: str,
+        weekly_ohlcv: pd.DataFrame,
+        weekly_technical: dict | None = None,
+    ) -> dict[str, Any]:
+        """
+        Run Al Brooks analysis on weekly bars.
+
+        Uses existing timeframe-agnostic methods (_determine_always_in,
+        _detect_pattern, _read_recent_bars) on weekly OHLCV data.
+        """
+        if weekly_ohlcv is None or len(weekly_ohlcv) < 10:
+            return {
+                "weekly_always_in": "UNKNOWN",
+                "weekly_pattern": "INSUFFICIENT_DATA",
+                "weekly_pattern_description": "Not enough weekly bars for analysis",
+                "weekly_bar_reading": [],
+                "weekly_trend_strength": "UNKNOWN",
+            }
+
+        # Build minimal technical dict if not provided
+        if weekly_technical is None:
+            weekly_technical = {}
+
+        always_in = self._determine_always_in(weekly_ohlcv, weekly_technical)
+
+        # Detect pattern (use 'long' direction for neutral detection)
+        pattern, pattern_desc = self._detect_pattern(
+            weekly_ohlcv, weekly_technical, "long"
+        )
+
+        # Bar reading on last 5 weekly bars
+        bar_reading = self._read_recent_bars(weekly_ohlcv, "long")
+
+        # Trend strength from bar reading
+        if always_in == "LONG":
+            trend_strength = "BULLISH"
+        elif always_in == "SHORT":
+            trend_strength = "BEARISH"
+        else:
+            trend_strength = "MIXED"
+
+        return {
+            "weekly_always_in": always_in,
+            "weekly_pattern": pattern,
+            "weekly_pattern_description": pattern_desc,
+            "weekly_bar_reading": bar_reading,
+            "weekly_trend_strength": trend_strength,
+        }
+
+
+def calculate_timeframe_confluence(
+    monthly_trend: str | None = None,
+    weekly_analysis: dict | None = None,
+    daily_analysis: dict | None = None,
+    weekly_indicators: dict | None = None,
+    daily_indicators: dict | None = None,
+) -> dict[str, Any]:
+    """
+    Score alignment across monthly, weekly, and daily timeframes (0-100).
+
+    Scoring:
+      - Monthly trend matches weekly: +30
+      - Weekly Always-In matches daily Always-In: +30
+      - Weekly MACD trend matches daily: +15
+      - Weekly RSI same zone as daily: +15
+      - Daily pattern is continuation of weekly trend: +10
+
+    Returns confluence score, grade, alignment, conflicts, swing suitability.
+    """
+    score = 0
+    conflicts: list[str] = []
+
+    # Normalize directions
+    def _dir(value: str | None) -> str:
+        if not value:
+            return "UNKNOWN"
+        v = str(value).upper()
+        if v in ("LONG", "BULLISH", "STRONG_BULLISH", "BUY"):
+            return "BULLISH"
+        if v in ("SHORT", "BEARISH", "STRONG_BEARISH", "SELL"):
+            return "BEARISH"
+        return "MIXED"
+
+    monthly_dir = _dir(monthly_trend)
+
+    # Weekly direction from Brooks or indicators
+    weekly_dir = "UNKNOWN"
+    if weekly_analysis:
+        weekly_dir = _dir(weekly_analysis.get("weekly_trend_strength") or
+                          weekly_analysis.get("weekly_always_in"))
+    elif weekly_indicators and weekly_indicators.get("trend_summary"):
+        weekly_dir = _dir(weekly_indicators["trend_summary"].get("direction"))
+
+    # Daily direction from Brooks
+    daily_dir = "UNKNOWN"
+    if daily_analysis:
+        daily_dir = _dir(daily_analysis.get("always_in"))
+    elif daily_indicators and daily_indicators.get("trend_summary"):
+        daily_dir = _dir(daily_indicators["trend_summary"].get("direction"))
+
+    # --- Scoring ---
+
+    # 1. Monthly matches weekly (+30)
+    if monthly_dir != "UNKNOWN" and weekly_dir != "UNKNOWN":
+        if monthly_dir == weekly_dir:
+            score += 30
+        elif monthly_dir != "MIXED" and weekly_dir != "MIXED":
+            conflicts.append(f"Monthly {monthly_dir} vs Weekly {weekly_dir}")
+    elif monthly_dir == "UNKNOWN" and weekly_dir != "UNKNOWN":
+        score += 15  # Give partial credit when monthly unavailable
+
+    # 2. Weekly Always-In matches daily Always-In (+30)
+    if weekly_dir != "UNKNOWN" and daily_dir != "UNKNOWN":
+        if weekly_dir == daily_dir:
+            score += 30
+        elif weekly_dir != "MIXED" and daily_dir != "MIXED":
+            conflicts.append(f"Weekly {weekly_dir} vs Daily {daily_dir}")
+
+    # 3. Weekly MACD matches daily MACD (+15)
+    w_macd = None
+    d_macd = None
+    if weekly_indicators and isinstance(weekly_indicators.get("macd"), dict):
+        w_macd = weekly_indicators["macd"].get("trend", "").upper()
+    if daily_indicators and isinstance(daily_indicators.get("macd"), dict):
+        d_macd = daily_indicators["macd"].get("trend", "").upper()
+    if w_macd and d_macd:
+        if w_macd == d_macd:
+            score += 15
+        else:
+            conflicts.append(f"MACD: Weekly {w_macd} vs Daily {d_macd}")
+
+    # 4. Weekly RSI same zone as daily (+15)
+    def _rsi_zone(indicators: dict | None) -> str:
+        if not indicators or not isinstance(indicators.get("rsi"), dict):
+            return "UNKNOWN"
+        try:
+            val = float(indicators["rsi"]["value"])
+        except (ValueError, TypeError):
+            return "UNKNOWN"
+        if val > 70:
+            return "OVERBOUGHT"
+        if val < 30:
+            return "OVERSOLD"
+        return "NEUTRAL"
+
+    w_rsi_zone = _rsi_zone(weekly_indicators)
+    d_rsi_zone = _rsi_zone(daily_indicators)
+    if w_rsi_zone != "UNKNOWN" and d_rsi_zone != "UNKNOWN":
+        if w_rsi_zone == d_rsi_zone:
+            score += 15
+        elif (w_rsi_zone == "OVERBOUGHT" and d_rsi_zone == "OVERSOLD") or \
+             (w_rsi_zone == "OVERSOLD" and d_rsi_zone == "OVERBOUGHT"):
+            conflicts.append(f"RSI divergence: Weekly {w_rsi_zone} vs Daily {d_rsi_zone}")
+
+    # 5. Daily pattern continues weekly trend (+10)
+    if daily_analysis and weekly_dir != "UNKNOWN":
+        daily_pattern = str(daily_analysis.get("pattern", "")).lower()
+        continuation_long = any(k in daily_pattern for k in ["high_1", "high_2", "higher_low", "breakout", "ema_bounce"])
+        continuation_short = any(k in daily_pattern for k in ["low_1", "low_2", "lower_high", "breakdown", "ema_rejection"])
+        if (weekly_dir == "BULLISH" and continuation_long) or \
+           (weekly_dir == "BEARISH" and continuation_short):
+            score += 10
+
+    # --- Grade & alignment ---
+    if score >= 80:
+        grade, alignment = "A", "ALIGNED"
+    elif score >= 60:
+        grade, alignment = "B", "PARTIAL"
+    elif score >= 40:
+        grade, alignment = "C", "PARTIAL"
+    elif score >= 20:
+        grade, alignment = "D", "CONFLICTING"
+    else:
+        grade, alignment = "F", "CONFLICTING"
+
+    # Swing suitability
+    if score >= 80:
+        swing = "HIGH"
+        recommendation = "Full position — all timeframes aligned"
+    elif score >= 60:
+        swing = "MODERATE"
+        recommendation = "Reduced position — partial alignment"
+    elif score >= 40:
+        swing = "LOW"
+        recommendation = "Day-trade only — timeframe conflict"
+    else:
+        swing = "AVOID"
+        recommendation = "Counter-trend — significant conflict across timeframes"
+
+    return {
+        "confluence_score": score,
+        "confluence_grade": grade,
+        "alignment": alignment,
+        "monthly_trend": monthly_dir,
+        "weekly_trend": weekly_dir,
+        "daily_trend": daily_dir,
+        "conflicts": conflicts,
+        "swing_suitability": swing,
+        "recommendation": recommendation,
+    }
 
 
 class ScannerAnalyzer:

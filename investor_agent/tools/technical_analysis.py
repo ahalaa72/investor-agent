@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Module-level imports for _impl functions
 # ---------------------------------------------------------------------------
-from .scanning import _get_ohlcv_cached
+from .scanning import _get_ohlcv_cached, _get_ohlcv_cached_multitimeframe
 
 try:
     from ..technical_analysis import TechnicalAnalysis
@@ -47,7 +47,7 @@ from ..ml_core import get_trend_scanning_labels
 from ..backtesting import SimilarityEngine
 
 try:
-    from investor_agent.scanner_analyzer import AlBrooksAnalyzer
+    from investor_agent.scanner_analyzer import AlBrooksAnalyzer, calculate_timeframe_confluence
     _analyzer_available = True
 except ImportError:
     _analyzer_available = False
@@ -176,6 +176,19 @@ def analyze_technical_impl(
                 'target': brooks_result.get('target'),
                 'risk_reward_ratio': brooks_result.get('risk_reward_ratio'),
                 'commentary': brooks_result.get('commentary', ''),
+                # Phase 2 enhanced fields
+                'trap_type': brooks_result.get('trap_type', 'none'),
+                'trap_classification': brooks_result.get('trap_classification', {}),
+                'trend_evolution': brooks_result.get('trend_evolution', {}),
+                'climax_detection': brooks_result.get('climax_detection', {}),
+                'confirmation_status': brooks_result.get('confirmation_status', {}),
+                'measured_move_targets': brooks_result.get('measured_move_targets', {}),
+                'micro_channel': brooks_result.get('micro_channel', {}),
+                'spike_and_channel': brooks_result.get('spike_and_channel', {}),
+                'bars_detailed': brooks_result.get('bars_detailed', {}),
+                'probability_narrative': brooks_result.get('probability_narrative', ''),
+                'lesson': brooks_result.get('lesson', ''),
+                'pattern_lesson': brooks_result.get('pattern_lesson', {}),
             }
         else:
             result['al_brooks'] = {
@@ -187,6 +200,71 @@ def analyze_technical_impl(
             'error': f'Al Brooks analysis failed: {str(e)}',
             'interpretation': 'Al Brooks analysis unavailable',
         }
+
+    # Multi-timeframe Brooks (weekly + monthly + confluence)
+    try:
+        if _analyzer_available:
+            monthly_df = _get_ohlcv_cached_multitimeframe(ticker, "OneMonth", "5y")
+            weekly_df = _get_ohlcv_cached_multitimeframe(ticker, "OneWeek", "2y")
+
+            # Monthly trend from indicators
+            monthly_trend = None
+            if monthly_df is not None and not monthly_df.empty and len(monthly_df) >= 5:
+                try:
+                    monthly_ind = TechnicalAnalysis.calculate_comprehensive_indicators(monthly_df)
+                    ma_trend = monthly_ind.get("moving_averages", {}).get("trend", "").lower()
+                    macd_trend = monthly_ind.get("macd", {}).get("trend", "").lower()
+                    if "bullish" in ma_trend or "bullish" in macd_trend:
+                        monthly_trend = "BULLISH"
+                    elif "bearish" in ma_trend or "bearish" in macd_trend:
+                        monthly_trend = "BEARISH"
+                    else:
+                        monthly_trend = "MIXED"
+                except Exception:
+                    pass
+
+            # Weekly Brooks analysis
+            weekly_brooks = None
+            weekly_indicators = None
+            if weekly_df is not None and not weekly_df.empty and len(weekly_df) >= 10:
+                try:
+                    brooks_mtf = AlBrooksAnalyzer()
+                    weekly_brooks = brooks_mtf.analyze_weekly(
+                        ticker=ticker, weekly_ohlcv=weekly_df,
+                    )
+                    weekly_indicators = TechnicalAnalysis.calculate_comprehensive_indicators(weekly_df)
+                except Exception as e:
+                    logger.warning(f"Weekly Brooks failed for {ticker}: {e}")
+
+            # Daily Brooks for confluence (reuse what we already computed)
+            daily_brooks_for_confluence = result.get('al_brooks', {})
+
+            # Confluence scoring
+            confluence = calculate_timeframe_confluence(
+                monthly_trend=monthly_trend,
+                weekly_analysis=weekly_brooks,
+                daily_analysis=daily_brooks_for_confluence,
+                weekly_indicators=weekly_indicators,
+                daily_indicators=indicators,
+            )
+
+            result['multi_timeframe_brooks'] = {
+                'monthly_trend': monthly_trend or "UNKNOWN",
+                'weekly_always_in': weekly_brooks.get("weekly_always_in", "UNKNOWN") if weekly_brooks else "UNKNOWN",
+                'weekly_pattern': weekly_brooks.get("weekly_pattern", "UNKNOWN") if weekly_brooks else "UNKNOWN",
+                'weekly_pattern_description': weekly_brooks.get("weekly_pattern_description", "") if weekly_brooks else "",
+                'weekly_trend_strength': weekly_brooks.get("weekly_trend_strength", "UNKNOWN") if weekly_brooks else "UNKNOWN",
+                'weekly_bar_reading': weekly_brooks.get("weekly_bar_reading", []) if weekly_brooks else [],
+                'daily_always_in': result.get('al_brooks', {}).get('always_in_direction', 'UNKNOWN'),
+                'confluence_score': confluence.get("confluence_score", 0),
+                'confluence_grade': confluence.get("confluence_grade", "N/A"),
+                'alignment': confluence.get("alignment", "UNKNOWN"),
+                'conflicts': confluence.get("conflicts", []),
+                'swing_suitability': confluence.get("swing_suitability", "UNKNOWN"),
+                'recommendation': confluence.get("recommendation", ""),
+            }
+    except Exception as e:
+        logger.warning(f"Multi-timeframe Brooks failed for {ticker}: {e}")
 
     # Trend Strength Score (0-100) with statistical validation
     if include_trend_score:
@@ -244,6 +322,107 @@ def analyze_technical_impl(
             result['trend_strength'] = {
                 'error': f'Trend strength analysis failed: {str(e)}',
             }
+
+    return convert_numpy_types(result)
+
+
+def analyze_multitimeframe_impl(
+    ticker: str,
+    include_brooks: bool = True,
+) -> dict:
+    """
+    Full multi-timeframe analysis: Monthly → Weekly → Daily.
+
+    Returns indicators, Brooks weekly analysis, S/R, and confluence score.
+    """
+    ticker = validate_ticker(ticker)
+
+    # Fetch data top-down: monthly first, then weekly, then daily
+    monthly_df = _get_ohlcv_cached_multitimeframe(ticker, "OneMonth", "5y")
+    weekly_df = _get_ohlcv_cached_multitimeframe(ticker, "OneWeek", "2y")
+    daily_df = _get_ohlcv_cached(ticker, period="6mo")
+
+    if daily_df is None or daily_df.empty:
+        raise ValueError(f"No daily data found for {ticker}")
+
+    # Multi-timeframe indicators
+    mtf_indicators = TechnicalAnalysis.calculate_multitimeframe_indicators(
+        daily_df=daily_df,
+        weekly_df=weekly_df if weekly_df is not None and not weekly_df.empty else None,
+        monthly_df=monthly_df if monthly_df is not None and not monthly_df.empty else None,
+    )
+
+    # Multi-timeframe S/R
+    mtf_sr = TechnicalAnalysis.find_support_resistance_multitimeframe(
+        daily_df=daily_df,
+        weekly_df=weekly_df if weekly_df is not None and not weekly_df.empty else None,
+    )
+
+    result = {
+        "symbol": ticker,
+        "timeframes_available": {
+            "daily": daily_df is not None and not daily_df.empty,
+            "weekly": weekly_df is not None and not weekly_df.empty,
+            "monthly": monthly_df is not None and not monthly_df.empty,
+        },
+        "data_points": {
+            "daily": len(daily_df) if daily_df is not None else 0,
+            "weekly": len(weekly_df) if weekly_df is not None and not weekly_df.empty else 0,
+            "monthly": len(monthly_df) if monthly_df is not None and not monthly_df.empty else 0,
+        },
+        "indicators": mtf_indicators,
+        "support_resistance": mtf_sr,
+    }
+
+    # Weekly Brooks analysis
+    weekly_brooks = None
+    daily_brooks = None
+    if include_brooks and _analyzer_available:
+        brooks = AlBrooksAnalyzer()
+
+        if weekly_df is not None and not weekly_df.empty and len(weekly_df) >= 10:
+            weekly_brooks = brooks.analyze_weekly(
+                ticker=ticker,
+                weekly_ohlcv=weekly_df,
+                weekly_technical=mtf_indicators.get("weekly"),
+            )
+            result["weekly_brooks"] = weekly_brooks
+
+        # Daily Brooks for confluence
+        try:
+            ma_trend = mtf_indicators.get("daily", {}).get("moving_averages", {}).get("trend", "neutral")
+            macd_trend = mtf_indicators.get("daily", {}).get("macd", {}).get("trend", "neutral")
+            direction = "long" if "bullish" in str(ma_trend).lower() or "bullish" in str(macd_trend).lower() else "short"
+            daily_brooks_result = brooks.analyze(
+                ticker=ticker, direction=direction,
+                ohlcv_data=daily_df, technical_data=mtf_indicators.get("daily", {}),
+            )
+            daily_brooks = daily_brooks_result
+            result["daily_brooks"] = {
+                "always_in_direction": daily_brooks_result.get("always_in", "UNKNOWN"),
+                "pattern": daily_brooks_result.get("pattern", "none"),
+                "pattern_description": daily_brooks_result.get("pattern_description", ""),
+                "bar_reading": daily_brooks_result.get("bar_reading", []),
+                "trap_risk": daily_brooks_result.get("trap_risk", "UNKNOWN"),
+            }
+        except Exception as e:
+            logger.warning(f"Daily Brooks failed for {ticker}: {e}")
+
+    # Monthly trend from indicators
+    monthly_trend = None
+    if mtf_indicators.get("monthly") and mtf_indicators["monthly"].get("trend_summary"):
+        monthly_trend = mtf_indicators["monthly"]["trend_summary"].get("direction")
+
+    # Confluence scoring
+    if _analyzer_available:
+        confluence = calculate_timeframe_confluence(
+            monthly_trend=monthly_trend,
+            weekly_analysis=weekly_brooks,
+            daily_analysis=daily_brooks,
+            weekly_indicators=mtf_indicators.get("weekly"),
+            daily_indicators=mtf_indicators.get("daily"),
+        )
+        result["timeframe_confluence"] = confluence
 
     return convert_numpy_types(result)
 
@@ -404,6 +583,25 @@ def register_tools(mcp):
             analyze_trend_strength tool. Output appears in result['trend_strength'].
             """
             return analyze_technical_impl(ticker, period, include_ml_analysis, include_trend_score)
+
+        @mcp.tool()
+        def analyze_multitimeframe(
+            ticker: str,
+            include_brooks: bool = True,
+        ) -> dict[str, Any]:
+            """Multi-timeframe analysis: Monthly trend → Weekly structure → Daily setup.
+
+            Top-down analysis order for swing trading accuracy:
+            - Monthly trend context (SMA 10/20, RSI, MACD)
+            - Weekly Al Brooks bar reading (Always-In, pattern, trend strength)
+            - Weekly support/resistance (stronger than daily levels)
+            - Daily indicators for entry timing
+            - Timeframe confluence score (0-100) with grade A-F
+            - Swing suitability rating (HIGH/MODERATE/LOW/AVOID)
+
+            Use this for swing/position trades where weekly alignment matters.
+            """
+            return analyze_multitimeframe_impl(ticker, include_brooks)
 
         @mcp.tool()
         def find_support_resistance(

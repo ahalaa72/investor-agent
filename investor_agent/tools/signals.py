@@ -487,7 +487,8 @@ def register_tools(mcp):
             "rs_score": "NEUTRAL",  # CRITICAL: Long-term market position (40% weight)
             "pc_contrarian": "NEUTRAL",  # Contrarian: Put/Call ratio sentiment
             "institutional": "NEUTRAL",  # Institutional accumulation/distribution
-            "f_score": "NEUTRAL"  # Quality/earnings quality score
+            "f_score": "NEUTRAL",  # Quality/earnings quality score
+            "weekly_trend": "NEUTRAL",  # Multi-timeframe: weekly Always-In direction
         }
 
         try:
@@ -732,6 +733,86 @@ def register_tools(mcp):
                 except Exception as e:
                     result["warnings"].append(f"Brooks analysis failed: {e}")
 
+            # ========== STEP 0 (MULTI-TIMEFRAME CONTEXT) ==========
+            # Top-down: Monthly → Weekly → Daily
+            # Weekly trend is the #1 predictor of swing trade success
+            try:
+                from .scanning import _get_ohlcv_cached_multitimeframe
+                from ..scanner_analyzer import AlBrooksAnalyzer as _BrooksAnalyzer, calculate_timeframe_confluence
+
+                monthly_df = _get_ohlcv_cached_multitimeframe(ticker, "OneMonth", "5y")
+                weekly_df = _get_ohlcv_cached_multitimeframe(ticker, "OneWeek", "2y")
+
+                # Monthly trend from indicators
+                monthly_trend = None
+                if monthly_df is not None and not monthly_df.empty and len(monthly_df) >= 5:
+                    try:
+                        from ..technical_analysis import TechnicalAnalysis as _TA
+                        monthly_ind = _TA.calculate_comprehensive_indicators(monthly_df)
+                        ma_trend = monthly_ind.get("moving_averages", {}).get("trend", "").lower()
+                        macd_trend = monthly_ind.get("macd", {}).get("trend", "").lower()
+                        if "bullish" in ma_trend or "bullish" in macd_trend:
+                            monthly_trend = "BULLISH"
+                        elif "bearish" in ma_trend or "bearish" in macd_trend:
+                            monthly_trend = "BEARISH"
+                        else:
+                            monthly_trend = "MIXED"
+                    except Exception:
+                        pass
+
+                # Weekly Brooks analysis
+                weekly_brooks = None
+                weekly_indicators = None
+                if weekly_df is not None and not weekly_df.empty and len(weekly_df) >= 10:
+                    try:
+                        brooks_mtf = _BrooksAnalyzer()
+                        weekly_brooks = brooks_mtf.analyze_weekly(
+                            ticker=ticker, weekly_ohlcv=weekly_df,
+                        )
+                        weekly_trend_dir = weekly_brooks.get("weekly_trend_strength", "UNKNOWN")
+                        if weekly_trend_dir in ("BULLISH",):
+                            direction_votes["weekly_trend"] = "LONG"
+                        elif weekly_trend_dir in ("BEARISH",):
+                            direction_votes["weekly_trend"] = "SHORT"
+
+                        # Weekly indicators for confluence
+                        from ..technical_analysis import TechnicalAnalysis as _TA2
+                        weekly_indicators = _TA2.calculate_comprehensive_indicators(weekly_df)
+                    except Exception as e:
+                        result["warnings"].append(f"Weekly Brooks failed: {e}")
+
+                # Daily indicators for confluence (reuse technical_data)
+                daily_indicators = None
+                if technical_data and isinstance(technical_data, dict):
+                    daily_indicators = technical_data.get("analysis")
+
+                # Confluence scoring
+                confluence = calculate_timeframe_confluence(
+                    monthly_trend=monthly_trend,
+                    weekly_analysis=weekly_brooks,
+                    daily_analysis=temp_brooks if 'temp_brooks' in dir() else None,
+                    weekly_indicators=weekly_indicators,
+                    daily_indicators=daily_indicators,
+                )
+
+                result["timeframe_analysis"] = {
+                    "monthly_trend": monthly_trend or "UNKNOWN",
+                    "weekly_trend": weekly_brooks.get("weekly_trend_strength", "UNKNOWN") if weekly_brooks else "UNKNOWN",
+                    "weekly_always_in": weekly_brooks.get("weekly_always_in", "UNKNOWN") if weekly_brooks else "UNKNOWN",
+                    "weekly_pattern": weekly_brooks.get("weekly_pattern", "UNKNOWN") if weekly_brooks else "UNKNOWN",
+                    "daily_trend": brooks_always_in,
+                    "confluence_score": confluence["confluence_score"],
+                    "confluence_grade": confluence["confluence_grade"],
+                    "alignment": confluence["alignment"],
+                    "conflicts": confluence["conflicts"],
+                    "swing_suitability": confluence["swing_suitability"],
+                    "position_recommendation": confluence["recommendation"],
+                }
+
+            except Exception as e:
+                logger.warning(f"Multi-timeframe analysis failed for {ticker}: {e}")
+                result["warnings"].append(f"Multi-timeframe analysis unavailable: {e}")
+
             # ========== STEP 2: WEIGHTED VOTING SYSTEM (v2) ==========
             # Long-term indicators (40%): RS Score (most important)
             # Short-term indicators (30%): Brooks, CVD, Dollar Flow
@@ -740,12 +821,13 @@ def register_tools(mcp):
 
             vote_weights = {
                 # Long-term (40% total)
-                "rs_score": 40,           # Most important - long-term market position
+                "rs_score": 30,           # Long-term market position
+                "weekly_trend": 15,       # Weekly Al Brooks Always-In (swing trade critical)
 
-                # Short-term (30% total)
-                "brooks": 10,             # Al Brooks price action probability
-                "cvd": 10,                # Cumulative volume delta
-                "dollar_flow": 10,        # Smart money flow
+                # Short-term (25% total)
+                "brooks": 10,             # Daily Al Brooks price action probability
+                "cvd": 8,                 # Cumulative volume delta
+                "dollar_flow": 7,         # Smart money flow
 
                 # Catalyst (20% total)
                 "catalyst": 15,           # Combined catalyst score
@@ -867,21 +949,45 @@ def register_tools(mcp):
             if timeframe_conflicts:
                 result["warnings"].extend(timeframe_conflicts)
 
-            # ========== HARD OVERRIDE RULES ==========
-            # These override ALL other votes to prevent dangerous trades
+            # ========== RS SCORE CONFLICT CHECK ==========
+            # RS Score is a WARNING, not a hard override. It should not flip direction
+            # when Brooks (Always-In), Catalyst, and Dalio all agree on the opposite.
+            # Hard overrides caused false NO_TRADE signals (e.g., CRCL: RS=20 flipped
+            # LONG→SHORT, but catalyst BULLISH + Always-In LONG + Dalio ACCUMULATION
+            # all said LONG — resulting in a cascading block).
             override_reason = None
 
-            # Rule 1: NEVER SHORT MARKET LEADERS (RS ≥ 80)
-            if relative_strength and relative_strength.get("rs_score", 0) >= 80:
-                if actual_direction in ["SHORT", "BEARISH"]:
-                    override_reason = f"⚠️ OVERRIDE: RS Score {relative_strength['rs_score']} (market leader) - changed SHORT to LONG"
+            if relative_strength and relative_strength.get("rs_score") is not None:
+                rs_score = relative_strength["rs_score"]
+
+                # Count how many major signals agree with current direction
+                agreeing_signals = 0
+                if direction_votes.get("brooks") == actual_direction:
+                    agreeing_signals += 1
+                if direction_votes.get("catalyst") in (actual_direction, "BULLISH" if actual_direction == "LONG" else "BEARISH"):
+                    agreeing_signals += 1
+                if direction_votes.get("dollar_flow") == actual_direction:
+                    agreeing_signals += 1
+                if direction_votes.get("cvd") == actual_direction:
+                    agreeing_signals += 1
+
+                # Rule 1: NEVER SHORT MARKET LEADERS (RS ≥ 80)
+                if rs_score >= 80 and actual_direction in ["SHORT", "BEARISH"]:
+                    override_reason = f"⚠️ OVERRIDE: RS Score {rs_score} (market leader) - changed SHORT to LONG"
                     actual_direction = "LONG"
 
-            # Rule 2: NEVER LONG MARKET LAGGARDS (RS ≤ 20)
-            elif relative_strength and relative_strength.get("rs_score", 100) <= 20:
-                if actual_direction in ["LONG", "BULLISH"]:
-                    override_reason = f"⚠️ OVERRIDE: RS Score {relative_strength['rs_score']} (market laggard) - changed LONG to SHORT"
-                    actual_direction = "SHORT"
+                # Rule 2: RS ≤ 20 is a WARNING, only override if no strong counter-evidence
+                elif rs_score <= 20 and actual_direction in ["LONG", "BULLISH"]:
+                    if agreeing_signals >= 2:
+                        # Multiple signals agree on LONG — RS is the outlier, just warn
+                        result["warnings"].append(
+                            f"⚠️ RS Score {rs_score} (market laggard) warns against LONG, "
+                            f"but {agreeing_signals} signals support LONG. Keeping LONG direction."
+                        )
+                    else:
+                        # No strong counter-evidence — RS override applies
+                        override_reason = f"⚠️ OVERRIDE: RS Score {rs_score} (market laggard) - changed LONG to SHORT"
+                        actual_direction = "SHORT"
 
             # Add override to warnings and summary
             if override_reason:
@@ -939,6 +1045,42 @@ def register_tools(mcp):
                     result["confidence"] = 0
                     result["gates_passed"] = 0
                     result["recommendation"] = f"NO_TRADE: Catalyst direction ({cat_dir}) conflicts with {actual_direction}. Wait for alignment."
+                    # Still run Brooks analysis for informational data (lessons, targets, trap type)
+                    # even though the signal is NO_TRADE — reports need this data
+                    try:
+                        if ohlcv is None:
+                            ohlcv = _get_ohlcv_cached(ticker, period="3mo")
+                        if technical_data is None:
+                            technical_data = analyze_technical(ticker, period="3mo", include_ml_analysis=False, include_trend_score=False)
+                        from ..scanner_analyzer import AlBrooksAnalyzer
+                        brooks_analyzer = AlBrooksAnalyzer()
+                        brooks = brooks_analyzer.analyze(
+                            ticker=ticker,
+                            direction=actual_direction.lower(),
+                            ohlcv_data=ohlcv,
+                            technical_data=technical_data or {}
+                        )
+                        if isinstance(brooks, dict):
+                            result["brooks_analysis"] = {
+                                "always_in": brooks.get("always_in", "NEUTRAL"),
+                                "trap_risk": brooks.get("trap_risk", "MEDIUM"),
+                                "probability": brooks.get("adjusted_probability", brooks.get("base_probability", 50)),
+                                "pattern": brooks.get("pattern", "Unknown"),
+                                "trap_type": brooks.get("trap_type", "none"),
+                                "trap_classification": brooks.get("trap_classification", {}),
+                                "trend_evolution": brooks.get("trend_evolution", {}),
+                                "climax_detection": brooks.get("climax_detection", {}),
+                                "confirmation_status": brooks.get("confirmation_status", {}),
+                                "measured_move_targets": brooks.get("measured_move_targets", {}),
+                                "micro_channel": brooks.get("micro_channel", {}),
+                                "spike_and_channel": brooks.get("spike_and_channel", {}),
+                                "bars_detailed": brooks.get("bars_detailed", {}),
+                                "probability_narrative": brooks.get("probability_narrative", ""),
+                                "lesson": brooks.get("lesson", ""),
+                                "pattern_lesson": brooks.get("pattern_lesson", {}),
+                            }
+                    except Exception:
+                        pass  # Brooks analysis is best-effort on blocked signals
                     return result
                 elif catalyst_data.get("trade_allowed") and not direction_aligned:
                     result["gate_status"]["catalyst"] = "FAIL"
@@ -1143,6 +1285,7 @@ def register_tools(mcp):
             try:
                 if 'cdf_20d' in locals():
                     df_threshold = 500_000_000  # $500M threshold for blocking
+                    _df_blocked = False
                     if actual_direction == "LONG" and cdf_20d < -df_threshold:
                         result["signal"] = "NO_TRADE"
                         result["warnings"].append(
@@ -1152,7 +1295,7 @@ def register_tools(mcp):
                         result["confidence"] = 0
                         result["gates_passed"] = sum(1 for g in result["gate_status"].values() if g == "PASS")
                         result["recommendation"] = f"NO_TRADE: ${abs(cdf_20d):,.0f} flowing OUT while trying to go LONG."
-                        return result
+                        _df_blocked = True
                     elif actual_direction == "SHORT" and cdf_20d > df_threshold:
                         result["signal"] = "NO_TRADE"
                         result["warnings"].append(
@@ -1162,7 +1305,7 @@ def register_tools(mcp):
                         result["confidence"] = 0
                         result["gates_passed"] = sum(1 for g in result["gate_status"].values() if g == "PASS")
                         result["recommendation"] = f"NO_TRADE: ${cdf_20d:,.0f} flowing IN while trying to go SHORT."
-                        return result
+                        _df_blocked = True
             except Exception:
                 pass  # Continue if cdf_20d not available
 
@@ -1192,7 +1335,20 @@ def register_tools(mcp):
                         "always_in": always_in,
                         "trap_risk": trap_risk,
                         "probability": probability,
-                        "pattern": pattern
+                        "pattern": pattern,
+                        # Phase 2 enhanced fields
+                        "trap_type": brooks.get("trap_type", "none"),
+                        "trap_classification": brooks.get("trap_classification", {}),
+                        "trend_evolution": brooks.get("trend_evolution", {}),
+                        "climax_detection": brooks.get("climax_detection", {}),
+                        "confirmation_status": brooks.get("confirmation_status", {}),
+                        "measured_move_targets": brooks.get("measured_move_targets", {}),
+                        "micro_channel": brooks.get("micro_channel", {}),
+                        "spike_and_channel": brooks.get("spike_and_channel", {}),
+                        "bars_detailed": brooks.get("bars_detailed", {}),
+                        "probability_narrative": brooks.get("probability_narrative", ""),
+                        "lesson": brooks.get("lesson", ""),
+                        "pattern_lesson": brooks.get("pattern_lesson", {}),
                     }
 
                     # Check Al Brooks gates
@@ -1216,6 +1372,10 @@ def register_tools(mcp):
             except Exception as e:
                 result["gate_status"]["brooks"] = "ERROR"
                 result["warnings"].append(f"Brooks analysis failed: {e}")
+
+            # If dollar flow blocked earlier, return now (after Brooks data is populated)
+            if '_df_blocked' in locals() and _df_blocked:
+                return result
 
             # ========== GATE 4: QUALITY CHECK (direction-aware) ==========
             # LONG: Want HIGH quality (score >= 50, no major red flags)
@@ -1638,6 +1798,22 @@ def register_tools(mcp):
                     f"NO_CONSENSUS but Brooks+Dollar_Flow agree on {actual_direction}. "
                     f"Votes: {direction_votes}"
                 )
+
+            # Multi-timeframe confluence adjustment
+            tf_analysis = result.get("timeframe_analysis")
+            if tf_analysis:
+                confluence_score = tf_analysis.get("confluence_score", 50)
+                if confluence_score >= 80:
+                    score = min(100, score + 10)
+                    result["confidence"] = score
+                elif confluence_score < 40:
+                    score = max(0, score - 10)
+                    result["confidence"] = score
+                    result["warnings"].append(
+                        f"TIMEFRAME CONFLICT: Confluence score {confluence_score}/100 "
+                        f"({tf_analysis.get('alignment', 'UNKNOWN')}). "
+                        f"Conflicts: {tf_analysis.get('conflicts', [])}"
+                    )
 
             # Count passed gates
             # Note: Gate 5 (OPTIONS) is optional - stock is always available as fallback

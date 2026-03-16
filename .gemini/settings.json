@@ -1,0 +1,5 @@
+{
+  "tools": {
+    "core": ["google_web_search", "cli_help"]
+  }
+}

@@ -35,6 +35,7 @@ stop_process() {
   echo "✅  $name force stopped"
 }
 
+stop_process "$LOG_DIR/scheduler.pid" "Scheduler"
 stop_process "$LOG_DIR/tunnel.pid" "Tunnel"
 stop_process "$LOG_DIR/analyst-server.pid" "Server"
 rm -f "$LOG_DIR/tunnel-url.txt"

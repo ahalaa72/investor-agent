@@ -46,6 +46,7 @@ Filename: PORTFOLIO_YYYY-MM-DD.md
 | `analyze_options_mcmillan` | Are options liquid and tradable? | Gate 5 |
 | `detect_insider_cluster` | Smart money still buying? | Override |
 | `analyze_competitors` | Still sector leader? | Override |
+| `analyze_multitimeframe` | Weekly/Monthly trend context | Multi-TF |
 
 ### Phase 4: Options Position Management (January 2026) ⭐
 
@@ -75,7 +76,7 @@ Filename: PORTFOLIO_YYYY-MM-DD.md
 |------|----------------|-------------------|---------|---------|----------|
 | **1. CATALYST** | Is there one? | Still valid? | Active or next <30d | Exhausted >30d | Failed/Reversed |
 | **2. FRESHNESS + DALIO** | Is it fresh? Money flowing? | Exhausted? Money reversing? | 5/6 checks pass | 4/6 checks pass | ≤3/6 checks pass |
-| **3. BROOKS** | Good entry? | Still supports? | Always-In aligned | Flipping | Reversed |
+| **3. BROOKS** | Good entry? | Still supports? | Always-In aligned + Weekly trend aligned | Flipping or Weekly conflict | Reversed |
 | **4. QUALITY** | Is it quality? | Deteriorated? | Grade A-B | Grade C | Grade D-F |
 | **5. OPTIONS TRADABILITY** | Are options liquid? | Can use options to enhance? | Tier 1-2, IV favorable | Tier 3, moderate | Tier 4-5 (stock only) |
 
@@ -111,6 +112,23 @@ Filename: PORTFOLIO_YYYY-MM-DD.md
 
 ---
 
+## MACRO CONTEXT HEADER `[generate_macro_context_header]` + `[analyze_vix_term_structure]`
+
+| Metric | Value | Signal |
+|--------|-------|--------|
+| **Regime** | {macro_summary.regime} | [EXPANSION / LATE_CYCLE / CONTRACTION / RECOVERY] |
+| **Yield Curve** | {macro_summary.yield_curve} | [NORMAL / FLAT / INVERTED] (spread: X.XX%) |
+| **VIX** | {macro_summary.vix} | [COMPLACENT / NORMAL / ELEVATED / PANIC] |
+| **VIX Term Structure** | {vix_vix3m_ratio} | [CONTANGO / BACKWARDATION] |
+| **Credit** | {macro_summary.credit} | HYG/LQD ratio |
+| **Fed Stance** | {macro_summary.fed_policy_stance} | [DOVISH / NEUTRAL / HAWKISH] |
+| **Options Bias** | {macro_summary.options_strategy_bias} | [BUY_PREMIUM / SELL_PREMIUM / NEUTRAL] |
+
+**Macro Narrative:** {narrative}
+**Macro Position Sizing:** [Full size / Normal / Reduce 25-50% / Cash preservation] based on regime
+
+---
+
 ## MARKET CONTEXT
 
 | Metric | Value | Signal |
@@ -120,8 +138,15 @@ Filename: PORTFOLIO_YYYY-MM-DD.md
 | Market Trend | [Bullish/Bearish/Neutral] | Based on SPY |
 | Sector Rotation | [Risk-On/Risk-Off/Mixed] | XLK vs XLU ratio |
 | **Macro Risk** | [LOW/MODERATE/ELEVATED/HIGH] | Based on F&G + VIX + rates |
+| **Macro Regime** | [EXPANSION/LATE_CYCLE/CONTRACTION/RECOVERY] | `[get_macro_regime]` |
+| **Yield Curve** | [NORMAL/FLAT/INVERTED] (spread: X.XX%) | `[get_macro_regime.yield_curve]` |
+| **Credit Cycle** | HYG/LQD: X.XX | [Risk-on / Neutral / Risk-off] |
 
 **Macro Position Sizing:** [Full size / Normal / Reduce 25-50% / Cash preservation]
+- [EXPANSION]: Full position sizing. Risk-on.
+- [LATE_CYCLE]: Reduce 25%. Be selective. Tighten stops.
+- [CONTRACTION]: Reduce 50%. Defensive/SHORT bias. Cash preservation.
+- [RECOVERY]: Full sizing. Early LONG opportunities.
 
 **Today's Earnings:** [List stocks reporting today that affect positions]
 **Macro Events:** [Fed, CPI, Jobs if applicable]
@@ -202,9 +227,9 @@ Filename: PORTFOLIO_YYYY-MM-DD.md
 
 ---
 
-#### Gate 2: Freshness + Dalio Economic Machine (6 Checks) [analyze_volume_tool]
+#### Gate 2: Freshness + Dalio Economic Machine (6 Checks) [analyze_volume_tool] + [analyze_dalio_economic_machine]
 
-**Source:** `analyze_volume_tool(ticker).dalio_metrics`
+**Source:** `analyze_volume_tool(ticker).dalio_metrics` + `analyze_dalio_economic_machine(ticker)` + `get_macro_regime()`
 
 | # | Check | Value | HOLD | TRIM | CLOSE |
 |---|-------|-------|------|------|-------|
@@ -226,7 +251,19 @@ Filename: PORTFOLIO_YYYY-MM-DD.md
 
 ---
 
-#### Gate 3: Al Brooks Price Action [analyze_ml_enhanced]
+#### Intermarket Analysis `[analyze_intermarket_correlation]`
+
+| Benchmark | Correlation | Signal |
+|-----------|-------------|--------|
+| SPY | X.XX | [Market beta — HIGH/LOW] |
+| UUP (Dollar) | X.XX | [Dollar sensitivity — helps/hurts position] |
+| ^TNX (10Y Yield) | X.XX | [Rate sensitivity — helps/hurts position] |
+
+**Portfolio Implication:** [Position is [correlated/uncorrelated/inversely correlated] with broad market. {hedging_suggestions if relevant}]
+
+---
+
+#### Gate 3: Al Brooks Price Action [analyze_ml_enhanced] + [generate_trading_signal.brooks_analysis]
 
 | Metric | Value | Signal |
 |--------|-------|--------|
@@ -235,6 +272,31 @@ Filename: PORTFOLIO_YYYY-MM-DD.md
 | Pattern | [Bull Flag/Wedge/etc.] | [Continuation/Reversal] |
 | Probability | XX% | [Strong >60% / Weak <55%] |
 | Trap Risk | [LOW/MEDIUM/HIGH] | [Safe/Caution/Danger] |
+| **Trap Type** | [bull_trap/bear_trap/late_move/failed_reversal/vacuum_fill/none] | `[brooks_analysis.trap_type]` |
+| **Trend Phase** | [STRONG_TREND/CHANNEL/BROAD_CHANNEL/TRADING_RANGE] (XX/100) | `[brooks_analysis.trend_evolution]` |
+| **Climax** | [none/simple/consecutive/parabolic/channel_overshoot] | `[brooks_analysis.climax_detection]` |
+| **Confirmation** | [confirmed/not_confirmed] — [quality] | `[brooks_analysis.confirmation_status]` |
+
+**Measured Move Targets:** `[brooks_analysis.measured_move_targets]`
+
+| Method | Target | Source |
+|--------|--------|--------|
+| Leg1=Leg2 | $XX.XX | Prior leg projected |
+| Primary | $XX.XX | Best R/R method |
+
+**Probability Narrative:** `[brooks_analysis.probability_narrative]`
+> "Base 50% + 5% [pattern] + 5% [AI aligned] - 3% [trap] + 8% [trend phase] = XX%"
+
+**Multi-Timeframe:** Monthly [dir] → Weekly [dir] (AI: [LONG/SHORT]) → Daily [pattern]
+Confluence: XX/100 Grade [X] | Swing: [suitability]
+
+**Pullback Personality:** `[analyze_pullback_personality]`
+Top entry: $XX.XX (score XX/100) | MA bounce: EMA20 XX%, SMA50 XX% | Half-life: XX bars
+
+**Brooks Lesson (Pattern-Indexed):** `[brooks_analysis.pattern_lesson]`
+**Pattern:** {pattern_lesson.name} — **Win Rate:** {pattern_lesson.win_rate}
+**Brooks Quote:** "{pattern_lesson.brooks_quote}"
+**Why It Works Here:** {brooks_analysis.lesson}
 
 **Brooks Verdict:** [SUPPORTS ✅ / NEUTRAL ⚠️ / OPPOSES ❌]
 
@@ -663,6 +725,15 @@ Max Pain is the strike price where **most options expire worthless**, causing ma
 | 4. Quality | [PASS/WARN/FAIL] | Important |
 | 5. Options | [PASS/WARN/FAIL] | Important |
 | **Gates Passing** | **X/5** | - |
+
+#### McMillan Mastery (from `analyze_options_mcmillan.mcmillan_mastery`)
+
+| Metric | Value |
+|--------|-------|
+| **McMillan Vol Regime** | {volatility_regime.composite} — {volatility_regime.narrative} |
+| **Vega-Theta Risk** | {vega_theta_tradeoff.seller_risk} — {vega_theta_tradeoff.seller_warning} |
+| **Skew** | {skew_opportunity.skew_type} ({skew_opportunity.skew_points} pts) |
+| **McMillan Lesson** | _{lesson.lesson}_ — **"{lesson.mcmillan_quote}"** (Ch.{lesson.chapter}) |
 
 **Smart Money:** [Supports/Neutral/Opposes]
 **Sector Position:** [Leader/Middle/Laggard]
@@ -1130,19 +1201,116 @@ else:
 
 ---
 
+## PORTFOLIO RISK ANALYTICS (Phase 6 — Statistical Validation)
+
+**Run once per portfolio report, after all per-position analysis.**
+
+### Correlation Matrix `[calculate_portfolio_correlation]`
+
+```
+          AAPL   NVDA   MSFT   TSLA
+AAPL      1.00   X.XX   X.XX   X.XX
+NVDA      X.XX   1.00   X.XX   X.XX
+MSFT      X.XX   X.XX   1.00   X.XX
+TSLA      X.XX   X.XX   X.XX   1.00
+```
+
+**Diversification Ratio:** X.XX (>1.5 = well diversified, <1.2 = concentrated)
+
+**High Correlation Warnings:** [List pairs with correlation > 0.80]
+- ⚠️ [TICKER1] / [TICKER2]: X.XX — consider reducing overlap
+
+### Risk Attribution `[calculate_portfolio_correlation]`
+
+| Position | Weight | MCR | CCR | % of Portfolio Risk |
+|----------|--------|-----|-----|---------------------|
+| [TICKER] | XX.X% | X.XX | X.XX | XX.X% |
+
+### Monte Carlo Stress Test `[run_monte_carlo_stress_test]`
+
+| Metric | Value | Risk Level |
+|--------|-------|------------|
+| VaR 95% (1-day) | -$X,XXX (-X.X%) | [LOW / MODERATE / HIGH] |
+| VaR 99% (1-day) | -$X,XXX (-X.X%) | [LOW / MODERATE / HIGH] |
+| CVaR 95% (tail risk) | -$X,XXX (-X.X%) | [LOW / MODERATE / HIGH] |
+| Probability of >10% loss | X.X% | [ACCEPTABLE / ELEVATED / HIGH] |
+
+**Stress Scenarios:** [Summary of worst-case pnl_percentiles]
+
+### Drawdown Analysis `[calculate_drawdown_analysis]`
+
+| Metric | Value |
+|--------|-------|
+| Max Drawdown | -XX.X% |
+| Max DD Duration | XX days |
+| Recovery Time | XX days |
+| Calmar Ratio | X.XX ([GOOD >1.0 / FAIR 0.5-1.0 / POOR <0.5]) |
+| Ulcer Index | X.XX |
+| Current State | [IN_DRAWDOWN -X.X% / RECOVERED / AT_HIGH] |
+
+### Beta-Weighted Delta `[calculate_portfolio_beta_weighted_delta]`
+
+**Purpose:** Converts all positions to SPY-equivalent directional risk. Tells you "how long are you REALLY?"
+
+| Metric | Value | Interpretation |
+|--------|-------|----------------|
+| **Portfolio Beta-Weighted Delta** | XX.XX SPY shares equivalent | [NET_LONG / NET_SHORT / NEUTRAL] |
+| **Notional Exposure** | $XX,XXX SPY equivalent | XX.X% of portfolio |
+| **Per-Position Breakdown** | | |
+
+| Position | Raw Delta | Beta | Beta-Wtd Delta | % of Total |
+|----------|-----------|------|----------------|------------|
+| [TICKER] | XX.XX | X.XX | XX.XX | XX.X% |
+
+**Risk Assessment:**
+
+- [If beta-wtd delta > 50% of portfolio]: "⚠️ HEAVILY DIRECTIONAL — consider hedging"
+- [If beta-wtd delta < 10% of portfolio]: "Portfolio is approximately market-neutral"
+- [If concentrated in 1-2 names]: "⚠️ Directional risk concentrated — diversify"
+
+### Concentration Limits `[check_portfolio_concentration_limits]`
+
+**Purpose:** Institutional-grade compliance checks. Automatic warnings when limits breached.
+
+| Rule | Limit | Current | Status |
+|------|-------|---------|--------|
+| **Single Ticker** | ≤10% of portfolio | XX.X% ([TICKER]) | [✅ OK / ⚠️ BREACH] |
+| **Single Sector** | ≤20% of portfolio | XX.X% ([SECTOR]) | [✅ OK / ⚠️ BREACH] |
+| **Single Expiration** | ≤35% of options | XX.X% ([DATE]) | [✅ OK / ⚠️ BREACH] |
+| **Correlated Cluster** | ≤30% combined | XX.X% | [✅ OK / ⚠️ BREACH] |
+
+**Breaches:** [List any limit violations with recommended actions]
+
+- [If ticker breach]: "TRIM [TICKER] by XX shares to bring below 10%"
+- [If sector breach]: "Sector [X] at XX% — add non-correlated positions"
+- [If all clear]: "✅ All concentration limits within institutional bounds"
+
+**Tools:** `calculate_portfolio_correlation()`, `run_monte_carlo_stress_test()`, `calculate_drawdown_analysis()`, `calculate_portfolio_beta_weighted_delta()`, `check_portfolio_concentration_limits()`
+
+---
+
 ## TOOL REFERENCE
 
 | Tool | When to Call | Output Used |
 |------|--------------|-------------|
 | `detect_catalyst_strength` | Every stock | Gate 1 status |
-| `analyze_volume_tool` | Every position | Gate 2 exhaustion |
+| `analyze_volume_tool` | Every position | Gate 2 exhaustion + Dalio metrics |
+| `analyze_dalio_economic_machine` | Every position | Standalone Dalio analysis |
+| `get_macro_regime` | Once per report | Macro regime context header |
 | `analyze_ml_enhanced` | Every position | Gate 3 Brooks |
+| `generate_trading_signal` | Every position | brooks_analysis (trap_type, trend_evolution, climax, measured_moves, probability_narrative, lesson, pattern_lesson) |
 | `calculate_quality_score` | Every stock | Gate 4 quality |
 | `detect_insider_cluster` | Every stock | Smart Money section |
 | `detect_unusual_options_activity` | Every stock | Smart Money section |
 | `analyze_competitors` | Every stock | Leadership section |
-| `analyze_options_mcmillan` | Liquid options | Options analysis |
+| `analyze_options_mcmillan` | Liquid options | Options analysis + `mcmillan_mastery` block (volatility_regime, pc_ratio_narrative, vega_theta_tradeoff, skew_opportunity, lesson) |
 | `find_support_resistance` | Every position | Technical levels |
+| `calculate_portfolio_correlation` | Once per report | Correlation matrix, risk attribution, diversification ratio |
+| `run_monte_carlo_stress_test` | Once per report | VaR/CVaR, stress scenarios, probability analysis |
+| `calculate_drawdown_analysis` | Once per report | Max drawdown, Calmar ratio, ulcer index, current state |
+| `calculate_portfolio_beta_weighted_delta` | Once per report | SPY-equivalent directional risk, per-position breakdown |
+| `check_portfolio_concentration_limits` | Once per report | Ticker/sector/expiration limit compliance, breach warnings |
+| `get_portfolio_summary` | Once per report | High-level portfolio summary with asset type detection (STOCK/ETF/MUTUAL_FUND routing) |
 
 ---
 

@@ -137,6 +137,27 @@ else
   echo "⚠️  Email: $RESULT"
 fi
 
+# ── 4. Start Self-Improvement Scheduler ──────────────────────────────────────
+SCHEDULER="$REPO_DIR/scripts/self-improvement-scheduler.py"
+SCHEDULER_PID_FILE="$LOG_DIR/scheduler.pid"
+SCHEDULER_LOG="$LOG_DIR/scheduler.log"
+
+# Stop any previous scheduler
+if [ -f "$SCHEDULER_PID_FILE" ]; then
+  old_pid=$(cat "$SCHEDULER_PID_FILE")
+  kill "$old_pid" 2>/dev/null || true
+  rm -f "$SCHEDULER_PID_FILE"
+fi
+
+python3 "$SCHEDULER" --daemon
+if [ -f "$SCHEDULER_PID_FILE" ]; then
+  SCHED_PID=$(cat "$SCHEDULER_PID_FILE")
+  echo "✅ Self-improvement scheduler started (PID $SCHED_PID)"
+  echo "   Catch-up + daily/weekly/monthly jobs active"
+else
+  echo "⚠️  Scheduler failed to start — check $SCHEDULER_LOG"
+fi
+
 # ── Summary ──────────────────────────────────────────────────────────────────
 echo ""
 echo "══════════════════════════════════════════════════"
@@ -145,9 +166,13 @@ echo "════════════════════════�
 echo "  Local  : http://localhost:$PORT"
 echo "  Public : $TUNNEL_URL"
 echo "  Login  : ${AUTH_USER:-admin} / ****"
+EMAIL_TO=$(grep -m1 '^EMAIL_TO=' "$REPO_DIR/.env" 2>/dev/null | cut -d= -f2 || echo "not configured")
+echo "  Email  : ${EMAIL_TO}"
 echo "  Server : PID $SERVER_PID  (log: $SERVER_LOG)"
 echo "  Tunnel : PID $TUNNEL_PID  (log: $TUNNEL_LOG)"
+echo "  Sched  : PID ${SCHED_PID:-N/A}  (log: $SCHEDULER_LOG)"
 echo "══════════════════════════════════════════════════"
 echo "  Logs   : tail -f $SERVER_LOG"
+echo "  Sched  : python3 $SCHEDULER --status"
 echo "  Stop   : bash $REPO_DIR/scripts/stop-analyst.sh"
 echo "══════════════════════════════════════════════════"

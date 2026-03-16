@@ -53,6 +53,7 @@ def _get_ohlcv_for_ticker(ticker: str, period: str = "3mo") -> pd.DataFrame | No
 
 # OHLCV Cache - Module level
 _ohlcv_cache: dict[str, tuple[pd.DataFrame, datetime]] = {}
+_ohlcv_mtf_cache: dict[str, tuple[pd.DataFrame, datetime]] = {}  # Multi-timeframe cache (weekly/monthly)
 _cache_ttl_seconds = 300  # 5 minutes
 
 # === PROPOSAL 5: Scan Result Caching ===
@@ -529,6 +530,172 @@ def _get_ohlcv_cached(ticker: str, period: str = "3mo") -> pd.DataFrame | None:
         logger.debug(f"💾 Cached OHLCV for {ticker} ({len(df)} bars)")
 
     return df
+
+
+def _resample_to_timeframe(daily_df: pd.DataFrame, timeframe: str = "W") -> pd.DataFrame | None:
+    """
+    Resample daily OHLCV data to weekly or monthly.
+    Last resort fallback when both Questrade and yfinance fail for weekly/monthly candles.
+
+    Args:
+        daily_df: Daily OHLCV DataFrame (DatetimeIndex, OHLCV columns)
+        timeframe: 'W' for weekly, 'ME' for monthly
+
+    Returns:
+        Resampled DataFrame or None if input is invalid
+    """
+    if daily_df is None or daily_df.empty:
+        return None
+    try:
+        resampled = daily_df.resample(timeframe).agg({
+            'Open': 'first',
+            'High': 'max',
+            'Low': 'min',
+            'Close': 'last',
+            'Volume': 'sum'
+        }).dropna()
+        if resampled.empty:
+            return None
+        return resampled
+    except Exception as e:
+        logger.warning(f"Failed to resample to {timeframe}: {e}")
+        return None
+
+
+def _get_ohlcv_multitimeframe(
+    ticker: str,
+    interval: str = "OneWeek",
+    window: int = 104
+) -> pd.DataFrame | None:
+    """
+    Fetch weekly or monthly OHLCV data.
+    Source priority: Questrade (OneWeek/OneMonth) → yfinance → resample daily.
+
+    Args:
+        ticker: Stock symbol
+        interval: "OneWeek" or "OneMonth"
+        window: Number of candles to fetch (104 weekly ≈ 2 years, 60 monthly ≈ 5 years)
+
+    Returns:
+        pd.DataFrame with OHLCV data or None
+    """
+    from datetime import datetime as dt, timedelta
+    import pytz
+
+    interval_yf_map = {"OneWeek": "1wk", "OneMonth": "1mo"}
+    yf_interval = interval_yf_map.get(interval)
+    if not yf_interval:
+        logger.error(f"Unsupported multi-timeframe interval: {interval}")
+        return None
+
+    # Source 1: Questrade (via get_questrade_candles_impl which has yfinance fallback built in)
+    try:
+        from .questrade_api import get_questrade_candles_impl as get_questrade_candles
+        candles_dict = get_questrade_candles(
+            symbol=ticker,
+            interval=interval,
+            window=window
+        )
+
+        candles = candles_dict.get('candles', [])
+        if not candles:
+            raise ValueError(f"No {interval} candle data for {ticker}")
+
+        df = pd.DataFrame(candles)
+        df = df.rename(columns={
+            'start': 'Date', 'open': 'Open', 'high': 'High',
+            'low': 'Low', 'close': 'Close', 'volume': 'Volume'
+        })
+        df['Date'] = pd.to_datetime(df['Date'], utc=True)
+        df = df.set_index('Date')
+        if not isinstance(df.index, pd.DatetimeIndex):
+            df.index = pd.DatetimeIndex(df.index)
+        df = df[['Open', 'High', 'Low', 'Close', 'Volume']]
+        df = df.astype({
+            'Open': 'float64', 'High': 'float64',
+            'Low': 'float64', 'Close': 'float64', 'Volume': 'int64'
+        })
+
+        source = candles_dict.get('data_source', 'questrade')
+        logger.info(f"✅ Retrieved {len(df)} {interval} bars for {ticker} from {source}")
+        return df
+
+    except Exception as e:
+        logger.warning(f"⚠️ {interval} fetch failed for {ticker}: {e}")
+
+    # Source 2: Direct yfinance (if Questrade wrapper failed entirely)
+    try:
+        period = "2y" if interval == "OneWeek" else "5y"
+        hist = yf.Ticker(ticker).history(period=period, interval=yf_interval)
+        if hist is not None and not hist.empty:
+            hist = hist[['Open', 'High', 'Low', 'Close', 'Volume']]
+            logger.info(f"✅ Retrieved {len(hist)} {yf_interval} bars for {ticker} from yfinance")
+            return hist
+    except Exception as yf_err:
+        logger.warning(f"⚠️ yfinance {yf_interval} failed for {ticker}: {yf_err}")
+
+    # Source 3: Resample daily data
+    daily = _get_ohlcv_cached(ticker, period="2y" if interval == "OneWeek" else "5y")
+    if daily is not None:
+        tf = "W" if interval == "OneWeek" else "ME"
+        resampled = _resample_to_timeframe(daily, tf)
+        if resampled is not None:
+            logger.info(f"✅ Resampled {len(resampled)} {interval} bars for {ticker} from daily data")
+            return resampled
+
+    logger.error(f"❌ All sources failed for {ticker} {interval}")
+    return None
+
+
+def _get_ohlcv_cached_multitimeframe(
+    ticker: str,
+    interval: str = "OneWeek",
+    window: int = 104
+) -> pd.DataFrame | None:
+    """
+    Cached version of _get_ohlcv_multitimeframe().
+    Uses separate cache from daily data to prevent key collisions.
+
+    Args:
+        ticker: Stock symbol
+        interval: "OneWeek" or "OneMonth"
+        window: Number of candles
+
+    Returns:
+        pd.DataFrame with OHLCV data or None
+    """
+    from datetime import datetime as dt
+
+    cache_key = f"{ticker}_{interval}_{window}"
+    if cache_key in _ohlcv_mtf_cache:
+        df, timestamp = _ohlcv_mtf_cache[cache_key]
+        age = (dt.now() - timestamp).total_seconds()
+        if age < _cache_ttl_seconds:
+            logger.debug(f"💾 MTF Cache HIT for {ticker} {interval} (age: {age:.1f}s)")
+            return df.copy()
+
+    df = _get_ohlcv_multitimeframe(ticker, interval, window)
+    if df is not None and not df.empty:
+        _ohlcv_mtf_cache[cache_key] = (df.copy(), dt.now())
+
+    return df
+
+
+def get_all_timeframe_data(ticker: str) -> dict[str, pd.DataFrame | None]:
+    """
+    Fetch data for all three timeframes in top-down order (monthly → weekly → daily).
+    The higher timeframe establishes the trend; the lower provides the entry.
+
+    Args:
+        ticker: Stock symbol
+
+    Returns:
+        dict with 'monthly', 'weekly', 'daily' DataFrames (any can be None)
+    """
+    monthly = _get_ohlcv_cached_multitimeframe(ticker, "OneMonth", 60)
+    weekly = _get_ohlcv_cached_multitimeframe(ticker, "OneWeek", 104)
+    daily = _get_ohlcv_cached(ticker, period="6mo")
+    return {"monthly": monthly, "weekly": weekly, "daily": daily}
 
 
 def _create_options_summary(gate_5_result: dict | None, options_decision: dict | None, vehicle: str) -> str:

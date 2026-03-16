@@ -2818,6 +2818,479 @@ def _calculate_options_composite_score(
     }
 
 
+# =============================================================================
+# McMILLAN MASTERY ENHANCEMENTS
+# Educational lessons, volatility regime, P/C narrative, skew classification
+# Reference: McMILLAN_MASTERY_GUIDE.md
+# =============================================================================
+
+MCMILLAN_STRATEGY_LESSONS = {
+    "Iron Condor": {
+        "name": "Iron Condor — Sell OTM Put Spread + Call Spread",
+        "mcmillan_quote": "There are far more attractive strategies in general, especially when the stock market is volatile.",
+        "chapter": "Ch.23",
+        "win_rate": "70-80% (defined-risk, but can lose 100% of investment)",
+        "when_to_use": "Neutral outlook, expecting stock to stay in range, IV elevated (50th+ percentile)",
+        "key_risk": "Rising IV harms you doubly: higher breach probability AND mark-to-market losses",
+        "lesson": "Iron condors collect premium from both sides. McMillan warns to only allocate 1/3 to 1/2 of capital designated for this strategy. Close the breached side when stock crosses a short strike."
+    },
+    "Bull Put Spread (Credit)": {
+        "name": "Bull Put Spread — Sell Higher Put, Buy Lower Put",
+        "mcmillan_quote": "Less aggressive bear spreads are often better: small credit, but high probability of max profit.",
+        "chapter": "Ch.8",
+        "win_rate": "65-75% (high IV improves probability)",
+        "when_to_use": "Mildly bullish, IV elevated, want defined risk with credit",
+        "key_risk": "Max loss = spread width - credit. Close if short put trades at parity",
+        "lesson": "Credit spreads in high-IV environments capture elevated premium with defined risk. Avoid large-credit spreads where the short option is deep ITM — that reverses sound option philosophy."
+    },
+    "Bear Call Spread (Credit)": {
+        "name": "Bear Call Spread — Sell Lower Call, Buy Higher Call",
+        "mcmillan_quote": "Large-credit bear spreads are actually aggressive — you're selling intrinsic value and buying time value.",
+        "chapter": "Ch.8",
+        "win_rate": "65-75% (high IV improves probability)",
+        "when_to_use": "Mildly bearish, IV elevated, want defined risk with credit",
+        "key_risk": "Max loss = spread width - credit. Watch for early assignment on deep ITM short calls",
+        "lesson": "Bear call credit spreads work best when the short strike is OTM with high probability of expiring worthless. Close the spread if the short call trades at parity to avoid assignment."
+    },
+    "Long Straddle": {
+        "name": "Long Straddle — Buy ATM Call + ATM Put",
+        "mcmillan_quote": "Taking small profits on straddles is a POOR strategy. The edge comes from infrequent large winners.",
+        "chapter": "Ch.18",
+        "win_rate": "35-45% (but winners are large, losers are small)",
+        "when_to_use": "Volatile stock, IV in low percentile (0-30%), expecting large move in either direction",
+        "key_risk": "Total cost if stock stays at strike. Time decay works against you",
+        "lesson": "NEVER take small profits on straddles — one large winner must offset many small losses. Roll the losing side toward the stock to reduce risk without limiting profit potential."
+    },
+    "Long Strangle": {
+        "name": "Long Strangle — Buy OTM Put + OTM Call",
+        "mcmillan_quote": "Out-of-the-money strangles may appear deceptively cheap but have a high probability of total loss.",
+        "chapter": "Ch.18",
+        "win_rate": "30-40% (cheaper but wider max-loss zone)",
+        "when_to_use": "Expecting large move, IV cheap, want lower cost than straddle",
+        "key_risk": "Max loss over entire zone between the two strikes — wider than straddle",
+        "lesson": "OTM strangles are cheaper but McMillan warns they appear 'deceptively cheap.' Consider ITM strangles for more conservative positioning — always worth at least the strike difference."
+    },
+    "Long Call": {
+        "name": "Long Call — Directional Bullish",
+        "mcmillan_quote": "Under fat-tail distributions, option buying strategies perform much, much better than under lognormal.",
+        "chapter": "Ch.3",
+        "win_rate": "40-55% (depends on IV entry and direction accuracy)",
+        "when_to_use": "Strong bullish conviction, IV in low percentile, clear catalyst",
+        "key_risk": "Total premium at risk. Time decay accelerates near expiration",
+        "lesson": "Directional option purchase in low-IV benefits from fat-tail reality — real markets produce larger moves than Black-Scholes predicts, making long options systematically undervalued."
+    },
+    "Long Put": {
+        "name": "Long Put — Directional Bearish",
+        "mcmillan_quote": "Never place more than 15% of risk capital in speculative put buying.",
+        "chapter": "Ch.16",
+        "win_rate": "35-50% (puts decay faster than calls near the money)",
+        "when_to_use": "Strong bearish conviction, IV in low percentile, concentrate on ITM puts",
+        "key_risk": "Total premium at risk. ITM puts preferred unless expecting very large decline",
+        "lesson": "For speculative puts, McMillan says concentrate on ITM unless expecting a very substantial decline. When an ITM put is cheap across all months, buy the longest-term for more time at minimal extra cost."
+    },
+    "Short Put": {
+        "name": "Short Put / Cash-Secured Put",
+        "mcmillan_quote": "NEVER leverage your account heavily in naked puts regardless of stock quality.",
+        "chapter": "Ch.19",
+        "win_rate": "75-85% (but tail risk is severe)",
+        "when_to_use": "Mildly bullish, IV elevated, want to acquire stock at discount or collect premium",
+        "key_risk": "ANY stock is subject to crushing decline. Reject puts with < 5% protection or < 12% annualized return",
+        "lesson": "Cash-secured puts have the same risk profile as covered calls. McMillan warns: any stock can crash regardless of quality (IBM 1991, P&G 1999). Never over-leverage."
+    },
+    "Covered Call": {
+        "name": "Covered Call — Own Stock + Sell OTM Call",
+        "mcmillan_quote": "The most fundamental and most important option strategy.",
+        "chapter": "Ch.2",
+        "win_rate": "70-80% (most income-oriented strategy)",
+        "when_to_use": "Mildly bullish, want income from existing position, IV elevated",
+        "key_risk": "Caps upside. Don't roll up unless you can handle a 10% correction",
+        "lesson": "Covered calls are McMillan's foundational strategy. Roll down at support levels (partial rolls preserve flexibility). Use the Incremental Return Concept: roll for credits systematically at each new strike."
+    },
+    "Calendar Spread": {
+        "name": "Calendar Spread — Sell Near-Term, Buy Longer-Term",
+        "mcmillan_quote": "Calendar spreads on volatile stocks look cheap but are traps.",
+        "chapter": "Ch.9",
+        "win_rate": "50-60% (profits from time decay differential)",
+        "when_to_use": "Neutral outlook, IV normal (not expected to decline), 8-12 weeks before near-term expiry",
+        "key_risk": "Calendar spreads are anti-volatility — if IV declines, spread shrinks",
+        "lesson": "Calendars profit from time decay differential, not directional moves. NEVER leg out of a calendar spread. Warning: on volatile stocks, if the stock calms down, declining IV causes losses exceeding time decay gains."
+    },
+    "Short Strangle": {
+        "name": "Short Strangle — Sell OTM Put + OTM Call",
+        "mcmillan_quote": "Selling short-term, fractionally-priced OTM options is a poor strategy — pennies in front of a steamroller.",
+        "chapter": "Ch.20",
+        "win_rate": "75-85% (but unlimited risk both directions)",
+        "when_to_use": "Strongly neutral, IV at 90th+ percentile, sufficient capital for margin",
+        "key_risk": "Each short strike should have < 25% probability of being reached. Index options are safest",
+        "lesson": "Short strangles collect maximum premium but have unlimited risk. McMillan's best follow-up: buy a protective option at the next strike rather than using stop losses. Prefer index options over stocks (less gap risk)."
+    },
+    "Short Straddle": {
+        "name": "Short Straddle — Sell ATM Call + ATM Put",
+        "mcmillan_quote": "The serious strategist should be aware of risk with respect to at least delta, gamma, theta, and vega.",
+        "chapter": "Ch.20",
+        "win_rate": "60-70% (highest premium but tightest profit range)",
+        "when_to_use": "Very strongly neutral, very high IV, sophisticated risk management required",
+        "key_risk": "Unlimited both directions. Use ESP monitoring. Consider starting with protection (butterfly)",
+        "lesson": "Short straddles maximize premium but require active management. McMillan's best follow-up: buy a protective option at the next strike when breached. Consider starting with protection to create a butterfly (defined risk)."
+    },
+    "Butterfly": {
+        "name": "Butterfly Spread — Buy 1 + Sell 2 + Buy 1",
+        "mcmillan_quote": "Potential profit should be at least 3x (preferably 4x) maximum risk.",
+        "chapter": "Ch.10",
+        "win_rate": "40-50% (narrow profit zone but defined risk)",
+        "when_to_use": "Neutral, expecting stock to stay near middle strike, higher-priced stocks with wide strike spacing",
+        "key_risk": "Max loss = net debit. Best construction: calls for bull spread, puts for bear spread",
+        "lesson": "Butterflies are defined-risk neutral strategies. McMillan's minimum: potential profit must be at least 3x maximum risk. Use calls for the bull spread leg and puts for the bear spread leg to avoid early exercise risk."
+    },
+    "Ratio Spread": {
+        "name": "Ratio Call Spread — Buy Fewer, Sell More",
+        "mcmillan_quote": "You are buying back intrinsic value and selling thin air (time value).",
+        "chapter": "Ch.11",
+        "win_rate": "55-65% (if established at a credit, no downside risk)",
+        "when_to_use": "Neutral, IV in HIGH percentile, want negative vega",
+        "key_risk": "Unlimited upside risk from naked calls. Reject ratios > 4:1 or < 1.2:1",
+        "lesson": "Ratio spreads are McMillan's preferred high-IV neutral strategy. The delta-neutral approach: calculate neutral ratio from deltas. If established at a credit, there is zero downside risk. Buy more longs on upside moves to reduce ratio."
+    },
+    "Backspread": {
+        "name": "Backspread — Sell Fewer, Buy More",
+        "mcmillan_quote": "Do NOT use this strategy if the longer-term option has a much lower IV than the short-term one.",
+        "chapter": "Ch.13",
+        "win_rate": "35-45% (but unlimited profit potential with limited risk)",
+        "when_to_use": "Expecting large move, IV in LOW percentile, must be established for a credit",
+        "key_risk": "Max loss at the purchased strike at expiration. Don't use with LEAPS",
+        "lesson": "Backspreads are McMillan's preferred volatility buying strategy when you can get a credit. You profit from any large move (down = keep credit, up = unlimited). Must be established for a credit to be attractive."
+    },
+    "LEAPS": {
+        "name": "LEAPS — Long-Term Equity Anticipation Securities",
+        "mcmillan_quote": "LEAPS options have a much narrower volatility range than short-term options.",
+        "chapter": "Ch.25",
+        "win_rate": "45-55% (more time = more room to be right)",
+        "when_to_use": "Strong directional conviction, IV in low percentile, long time horizon",
+        "key_risk": "LEAPS IV ranges 17-32% vs short-term 14-40%. LEAPS rarely appear cheap",
+        "lesson": "LEAPS give you time but McMillan warns: their IV range is much narrower than short-term options (17-32% vs 14-40%). They rarely appear 'cheap' by percentile. Best used for strong conviction where time is your ally."
+    },
+    "Jade Lizard": {
+        "name": "Jade Lizard — Short Put + Short Call Spread",
+        "mcmillan_quote": "Sell time value, buy intrinsic value — this is the fundamental philosophy underlying all sound spread strategies.",
+        "chapter": "Derived from Ch.8/Ch.19",
+        "win_rate": "70-80% (no upside risk if credit > call spread width)",
+        "when_to_use": "Mildly bullish, high IV, want to eliminate upside risk",
+        "key_risk": "Downside risk from naked put. Total credit must exceed call spread width",
+        "lesson": "The Jade Lizard eliminates upside risk entirely when the total credit exceeds the call spread width. Combines McMillan's premium-selling philosophy with directional bias."
+    },
+    "Dual Calendar": {
+        "name": "Dual Calendar — Two Calendar Spreads at Different Strikes",
+        "mcmillan_quote": "The two-pronged attack.",
+        "chapter": "Ch.23",
+        "win_rate": "45-55% (event-driven strategy)",
+        "when_to_use": "Expecting stock to remain stable short-term, then move dramatically (earnings, FDA)",
+        "key_risk": "If near-term options expire ITM, one side loses. Hold long combination 6-8 weeks",
+        "lesson": "McMillan's 'two-pronged attack' — ideal before earnings or events. Use the near-term straddle price to guide strike placement at expected gap levels. Hold the long combination for 6-8 weeks for maximum opportunity."
+    },
+}
+
+
+def _assess_volatility_regime(iv_rank: float, iv_percentile: float, current_iv: float, hv_20: float = None) -> dict:
+    """
+    McMillan's 3-step volatility assessment.
+
+    Step 1: Percentile method (primary)
+    Step 2: IV vs HV comparison (secondary)
+    Step 3: IV trend assessment (qualitative)
+
+    Reference: McMillan Ch.39 — "Three Methods to Determine If Volatility Is Out of Line"
+    """
+    # Step 1: Percentile classification (McMillan's preferred)
+    if iv_percentile <= 10:
+        percentile_signal = "CHEAP"
+        percentile_action = "Aggressive buying: straddles, strangles, backspreads, LEAPS"
+    elif iv_percentile <= 30:
+        percentile_signal = "LOW"
+        percentile_action = "Moderate buying: debit spreads, calendars, long options"
+    elif iv_percentile <= 70:
+        percentile_signal = "NORMAL"
+        percentile_action = "Flexible: match strategy to directional outlook"
+    elif iv_percentile <= 90:
+        percentile_signal = "HIGH"
+        percentile_action = "Moderate selling: credit spreads, iron condors, covered calls"
+    else:
+        percentile_signal = "EXPENSIVE"
+        percentile_action = "Check for insider activity first. If clear: aggressive selling"
+
+    # Step 2: IV vs HV comparison (secondary screen)
+    iv_hv_signal = "UNKNOWN"
+    iv_hv_detail = None
+    if hv_20 and hv_20 > 0:
+        iv_hv_ratio = current_iv / hv_20
+        if iv_hv_ratio < 0.80:
+            iv_hv_signal = "IV_BELOW_HV"
+            iv_hv_detail = f"IV ({current_iv:.1f}%) < 80% of HV-20 ({hv_20:.1f}%) — options may be underpriced"
+        elif iv_hv_ratio > 1.20:
+            iv_hv_signal = "IV_ABOVE_HV"
+            iv_hv_detail = f"IV ({current_iv:.1f}%) > 120% of HV-20 ({hv_20:.1f}%) — options may be overpriced"
+        else:
+            iv_hv_signal = "IV_NEAR_HV"
+            iv_hv_detail = f"IV ({current_iv:.1f}%) near HV-20 ({hv_20:.1f}%) — fairly priced"
+
+    # Composite assessment
+    if percentile_signal in ("CHEAP", "LOW") and iv_hv_signal == "IV_BELOW_HV":
+        composite = "STRONG_BUY_VOL"
+        narrative = "Both percentile and IV/HV methods agree: options are cheap. Strong case for buying premium."
+    elif percentile_signal in ("EXPENSIVE", "HIGH") and iv_hv_signal == "IV_ABOVE_HV":
+        composite = "STRONG_SELL_VOL"
+        narrative = "Both percentile and IV/HV methods agree: options are expensive. Strong case for selling premium (after verifying no insider activity)."
+    elif percentile_signal in ("CHEAP", "LOW"):
+        composite = "BUY_VOL"
+        narrative = f"Percentile says cheap ({iv_percentile:.0f}th), IV/HV is {iv_hv_signal.lower().replace('_', ' ')}. Lean toward buying premium."
+    elif percentile_signal in ("EXPENSIVE", "HIGH"):
+        composite = "SELL_VOL"
+        narrative = f"Percentile says expensive ({iv_percentile:.0f}th), IV/HV is {iv_hv_signal.lower().replace('_', ' ')}. Lean toward selling premium."
+    else:
+        composite = "NEUTRAL"
+        narrative = f"IV percentile at {iv_percentile:.0f}th — no strong signal. Flexible strategy selection."
+
+    return {
+        "percentile_signal": percentile_signal,
+        "percentile_action": percentile_action,
+        "iv_hv_signal": iv_hv_signal,
+        "iv_hv_detail": iv_hv_detail,
+        "composite": composite,
+        "narrative": narrative,
+        "mcmillan_reference": "Ch.39: Three Methods to Determine If Volatility Is Out of Line"
+    }
+
+
+def _generate_pc_ratio_narrative(pc_ratio_data: dict) -> str:
+    """
+    Generate McMillan-style P/C ratio narrative.
+
+    McMillan Ch.30: Use dynamic interpretation (MA reversals), not fixed thresholds.
+    """
+    ratio = pc_ratio_data.get('volume_pc_ratio')
+    sentiment = pc_ratio_data.get('raw_sentiment', 'NEUTRAL')
+    trading_signal = pc_ratio_data.get('trading_signal', 'NEUTRAL')
+    call_vol = pc_ratio_data.get('call_volume', 0)
+    put_vol = pc_ratio_data.get('put_volume', 0)
+
+    if ratio is None:
+        return "No options volume data available for P/C ratio analysis."
+
+    parts = []
+
+    # Context
+    parts.append(f"Put/Call ratio is {ratio:.2f} ({put_vol:,} puts vs {call_vol:,} calls).")
+
+    # McMillan interpretation
+    if ratio >= 1.2:
+        parts.append(
+            f"McMillan Ch.30: Extreme put buying (P/C {ratio:.2f}) indicates crowd panic. "
+            f"This is a contrarian BULLISH signal — when 'everyone' is buying puts for protection, "
+            f"the market often finds a bottom. Wait for the ratio's moving average to roll over "
+            f"and begin declining before acting."
+        )
+    elif ratio >= 0.9:
+        parts.append(
+            f"Elevated put buying (P/C {ratio:.2f}) shows moderate fear. McMillan's contrarian "
+            f"framework suggests a mild bullish lean, but confirm with the ratio's trend direction."
+        )
+    elif ratio <= 0.3:
+        parts.append(
+            f"McMillan Ch.30: Extreme call buying (P/C {ratio:.2f}) indicates crowd euphoria. "
+            f"This is a contrarian BEARISH signal — rampant call buying often precedes pullbacks. "
+            f"Wait for the ratio's moving average to bottom out before acting."
+        )
+    elif ratio <= 0.5:
+        parts.append(
+            f"Low put/call ratio (P/C {ratio:.2f}) shows elevated optimism. McMillan's contrarian "
+            f"framework suggests a mild bearish lean."
+        )
+    else:
+        parts.append(
+            f"P/C ratio ({ratio:.2f}) is in the neutral zone. No strong contrarian signal from "
+            f"McMillan's framework."
+        )
+
+    return " ".join(parts)
+
+
+def _assess_vega_theta_tradeoff(iv_rank: float, current_iv: float, dte: int) -> dict:
+    """
+    McMillan Ch.37: A 6-point IV increase can offset one full month of time decay on an ATM option.
+
+    This function quantifies the vega-theta risk for premium sellers and opportunity for buyers.
+    """
+    # Estimate daily theta as % of option value based on DTE
+    if dte > 45:
+        daily_theta_pct = 0.5
+    elif dte > 30:
+        daily_theta_pct = 1.0
+    elif dte > 21:
+        daily_theta_pct = 1.5
+    elif dte > 7:
+        daily_theta_pct = 3.5
+    else:
+        daily_theta_pct = 7.5
+
+    # IV points needed to offset 30 days of theta
+    # McMillan: 6 IV points = 1 month of ATM theta
+    iv_points_to_offset_month = 6.0
+
+    # Risk assessment for sellers
+    if iv_rank <= 30:
+        seller_risk = "HIGH"
+        seller_warning = (
+            f"IV is at the {iv_rank:.0f}th percentile — LOW. Selling premium here is risky because "
+            f"a {iv_points_to_offset_month:.0f}-point IV increase can wipe out an entire month of "
+            f"time decay (McMillan Ch.37). IV has significant room to expand."
+        )
+    elif iv_rank >= 70:
+        seller_risk = "LOW"
+        seller_warning = (
+            f"IV is at the {iv_rank:.0f}th percentile — HIGH. Favorable for sellers because IV "
+            f"is more likely to contract (mean reversion). A {iv_points_to_offset_month:.0f}-point "
+            f"decline would ACCELERATE your profits beyond theta alone."
+        )
+    else:
+        seller_risk = "MODERATE"
+        seller_warning = (
+            f"IV is at the {iv_rank:.0f}th percentile — NORMAL. Theta capture is straightforward, "
+            f"but a {iv_points_to_offset_month:.0f}-point IV spike could offset a full month of decay."
+        )
+
+    return {
+        "daily_theta_pct": daily_theta_pct,
+        "iv_points_to_offset_month": iv_points_to_offset_month,
+        "seller_risk": seller_risk,
+        "seller_warning": seller_warning,
+        "buyer_opportunity": f"At {iv_rank:.0f}th percentile, {'strong' if iv_rank <= 30 else 'moderate' if iv_rank <= 50 else 'weak'} case for buying premium. IV expansion {'likely' if iv_rank <= 30 else 'possible' if iv_rank <= 50 else 'unlikely'} to augment directional gains.",
+        "mcmillan_reference": "Ch.37: 6 IV points = 1 month of ATM theta"
+    }
+
+
+def _classify_skew_opportunity(iv_analysis: dict, calls_df: pd.DataFrame, puts_df: pd.DataFrame, current_price: float) -> dict:
+    """
+    McMillan Ch.39: Classify the volatility skew and recommend skew-trading strategies.
+
+    Negative skew (puts expensive): equity indices
+    Positive skew (calls expensive): commodities
+    """
+    if calls_df.empty or puts_df.empty:
+        return {"skew_type": "UNKNOWN", "opportunity": None}
+
+    # Find OTM puts and OTM calls IV
+    otm_puts = puts_df[puts_df['strike'] < current_price * 0.95]
+    otm_calls = calls_df[calls_df['strike'] > current_price * 1.05]
+
+    if otm_puts.empty or otm_calls.empty or 'impliedVolatility' not in otm_puts.columns:
+        return {"skew_type": "UNKNOWN", "opportunity": None}
+
+    avg_put_iv = otm_puts['impliedVolatility'].mean()
+    avg_call_iv = otm_calls['impliedVolatility'].mean()
+    atm_iv = iv_analysis.get('current_iv', 30) / 100  # Convert to decimal
+
+    # Normalize
+    if avg_put_iv > 1.5:
+        avg_put_iv = avg_put_iv / 100
+    if avg_call_iv > 1.5:
+        avg_call_iv = avg_call_iv / 100
+    if atm_iv > 1.5:
+        atm_iv = atm_iv / 100
+
+    skew = (avg_put_iv - avg_call_iv) * 100  # In percentage points
+
+    iv_rank = iv_analysis.get('iv_rank', 50)
+
+    if skew > 3:
+        skew_type = "NEGATIVE_SKEW"
+        skew_desc = f"Puts are {skew:.1f} IV points more expensive than calls (demand for downside protection)"
+        if iv_rank >= 70:
+            strategies = ["Put Ratio Write (sell more OTM puts, buy fewer ATM puts)", "Bear Put Spread (buy higher-strike put with lower IV)"]
+            rationale = "High IV + negative skew: sell the expensive OTM puts via ratio writes"
+        else:
+            strategies = ["Call Backspread (sell ITM call, buy more OTM calls)", "Bear Put Spread"]
+            rationale = "Low IV + negative skew: use backspreads to buy the cheap calls"
+    elif skew < -3:
+        skew_type = "POSITIVE_SKEW"
+        skew_desc = f"Calls are {abs(skew):.1f} IV points more expensive than puts (upside demand)"
+        if iv_rank >= 70:
+            strategies = ["Call Ratio Spread (buy fewer ATM calls, sell more OTM calls)", "Bull Call Spread"]
+            rationale = "High IV + positive skew: sell the expensive OTM calls via ratio spreads"
+        else:
+            strategies = ["Put Backspread (sell ITM put, buy more OTM puts)", "Bull Call Spread"]
+            rationale = "Low IV + positive skew: use backspreads to buy the cheap puts"
+    else:
+        skew_type = "FLAT_SKEW"
+        skew_desc = f"Skew is flat ({skew:.1f} IV points) — no significant put/call IV imbalance"
+        strategies = ["Standard strategies based on IV percentile and direction"]
+        rationale = "No skew edge — use IV percentile-based strategy selection"
+
+    return {
+        "skew_type": skew_type,
+        "skew_points": round(skew, 1),
+        "avg_otm_put_iv": round(avg_put_iv * 100, 1),
+        "avg_otm_call_iv": round(avg_call_iv * 100, 1),
+        "description": skew_desc,
+        "recommended_strategies": strategies,
+        "rationale": rationale,
+        "mcmillan_reference": "Ch.39: Volatility Skew Trading — always buy lower IV, sell higher IV"
+    }
+
+
+def _generate_mcmillan_lesson(strategy_name: str, iv_analysis: dict, vol_regime: dict, pc_narrative: str) -> dict:
+    """
+    Generate educational content for the selected strategy.
+
+    Returns pattern-indexed lesson from MCMILLAN_STRATEGY_LESSONS plus contextual narrative.
+    """
+    # Find best matching strategy lesson
+    lesson_data = MCMILLAN_STRATEGY_LESSONS.get(strategy_name)
+
+    # Try partial match if exact match fails
+    if not lesson_data:
+        strategy_lower = strategy_name.lower()
+        for key, val in MCMILLAN_STRATEGY_LESSONS.items():
+            if key.lower() in strategy_lower or strategy_lower in key.lower():
+                lesson_data = val
+                break
+
+    if not lesson_data:
+        # Generic lesson
+        iv_rank = iv_analysis.get('iv_rank', 50)
+        if iv_rank >= 70:
+            generic = f"IV is elevated at the {iv_rank:.0f}th percentile — McMillan favors selling premium. Credit spreads, iron condors, and covered calls capture elevated time value."
+        elif iv_rank <= 30:
+            generic = f"IV is low at the {iv_rank:.0f}th percentile — McMillan favors buying premium. Straddles, backspreads, and debit spreads benefit from potential IV expansion."
+        else:
+            generic = f"IV is normal at the {iv_rank:.0f}th percentile — flexible strategy selection based on directional conviction."
+
+        return {
+            "strategy": strategy_name,
+            "lesson": generic,
+            "mcmillan_quote": "Volatility almost invariably trades in a range. This is the basic premise of volatility trading.",
+            "chapter": "Ch.36",
+            "win_rate": "N/A",
+            "key_risk": "Match strategy to IV environment"
+        }
+
+    # Build contextual lesson
+    contextual = lesson_data["lesson"]
+    regime = vol_regime.get("composite", "NEUTRAL")
+    if regime in ("STRONG_BUY_VOL", "BUY_VOL"):
+        contextual += f" Current volatility regime: {vol_regime['narrative']}"
+    elif regime in ("STRONG_SELL_VOL", "SELL_VOL"):
+        contextual += f" Current volatility regime: {vol_regime['narrative']}"
+
+    return {
+        "strategy": lesson_data["name"],
+        "lesson": contextual,
+        "mcmillan_quote": lesson_data["mcmillan_quote"],
+        "chapter": lesson_data["chapter"],
+        "win_rate": lesson_data["win_rate"],
+        "when_to_use": lesson_data["when_to_use"],
+        "key_risk": lesson_data["key_risk"]
+    }
+
+
 def register_tools(mcp):
     """Register options analysis tools with MCP server."""
     from .market_data import get_options_impl as get_options  # Late import to avoid circular deps
@@ -3345,6 +3818,51 @@ def register_tools(mcp):
             # Get recommended selling strategies if near earnings
             earnings_strategies = earnings_check.get('recommended_strategies', [])
 
+            # ============================================================
+            # 9. McMILLAN MASTERY ENHANCEMENTS
+            # ============================================================
+
+            # 9a. Volatility Regime Assessment (McMillan Ch.39 three-step process)
+            vol_regime = _assess_volatility_regime(
+                iv_rank=iv_analysis['iv_rank'],
+                iv_percentile=iv_analysis['iv_percentile'],
+                current_iv=iv_analysis['current_iv'],
+                hv_20=iv_analysis.get('hv_20_current')
+            )
+
+            # 9b. P/C Ratio Narrative (McMillan Ch.30 dynamic interpretation)
+            pc_narrative = _generate_pc_ratio_narrative(pc_ratio_analysis)
+
+            # 9c. Vega-Theta Trade-Off (McMillan Ch.37)
+            vega_theta = _assess_vega_theta_tradeoff(
+                iv_rank=iv_analysis['iv_rank'],
+                current_iv=iv_analysis['current_iv'],
+                dte=optimal_expiry.get('dte', 45) or 45
+            )
+
+            # 9d. Volatility Skew Opportunity (McMillan Ch.39)
+            skew_opportunity = _classify_skew_opportunity(
+                iv_analysis=iv_analysis,
+                calls_df=calls_df,
+                puts_df=puts_df,
+                current_price=current_price
+            )
+
+            # 9e. Strategy-Specific Lesson
+            primary_strat = strategy_suggestions.get('recommendation', '')
+            if 'SELL' in primary_strat.upper():
+                lesson_key = "Iron Condor" if iv_analysis['iv_rank'] >= 70 else "Covered Call"
+            elif 'BUY' in primary_strat.upper():
+                lesson_key = "Long Straddle" if iv_analysis['iv_rank'] <= 20 else "Long Call"
+            else:
+                lesson_key = "Calendar Spread"
+            mcmillan_lesson = _generate_mcmillan_lesson(
+                strategy_name=lesson_key,
+                iv_analysis=iv_analysis,
+                vol_regime=vol_regime,
+                pc_narrative=pc_narrative
+            )
+
             result = {
                 "ticker": ticker,
                 "current_price": current_price,
@@ -3423,6 +3941,22 @@ def register_tools(mcp):
                     "warnings_count": len(all_warnings),
                     "seller_opportunities_count": len(seller_opportunities),  # NEW
                     "earnings_strategy_hint": earnings_strategies[0] if earnings_strategies else None,  # NEW
+                    # McMillan Mastery summary fields
+                    "vol_regime": vol_regime.get('composite'),
+                    "vol_regime_action": vol_regime.get('percentile_action'),
+                    "skew_type": skew_opportunity.get('skew_type'),
+                    "vega_theta_risk": vega_theta.get('seller_risk'),
+                },
+
+                # ============================================================
+                # McMILLAN MASTERY DATA (NEW)
+                # ============================================================
+                "mcmillan_mastery": {
+                    "volatility_regime": vol_regime,
+                    "pc_ratio_narrative": pc_narrative,
+                    "vega_theta_tradeoff": vega_theta,
+                    "skew_opportunity": skew_opportunity,
+                    "lesson": mcmillan_lesson,
                 },
 
                 "methodology": "McMillan - Options as a Strategic Investment (5th Ed.) + Institutional Parameters"
@@ -4128,6 +4662,19 @@ def register_tools(mcp):
                 # Seller Opportunities (highlighted when near earnings)
                 "seller_opportunities": seller_opportunities,
                 "earnings_strategies": earnings_strategies,
+
+                # McMillan Mastery Lesson
+                "mcmillan_lesson": _generate_mcmillan_lesson(
+                    strategy_name=options_plan.get('strategy', 'Iron Condor') if isinstance(options_plan, dict) and options_plan.get('status') == 'TRADE' else 'Long Call' if direction == 'LONG' else 'Long Put',
+                    iv_analysis=iv_analysis,
+                    vol_regime=_assess_volatility_regime(
+                        iv_rank=iv_rank,
+                        iv_percentile=iv_percentile,
+                        current_iv=iv_analysis.get('current_iv', 30),
+                        hv_20=iv_analysis.get('hv_20_current')
+                    ),
+                    pc_narrative=""
+                ),
 
                 # All Warnings
                 "warnings": all_warnings,

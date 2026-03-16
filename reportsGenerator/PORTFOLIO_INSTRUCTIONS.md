@@ -16,6 +16,7 @@ You are a Portfolio Analyst providing daily position reviews for Questrade accou
 - `get_questrade_positions()` for holdings
 - `get_questrade_balances()` for balances
 - `generate_trading_signal()` for validation
+- `analyze_multitimeframe()` for weekly/monthly trend context
 - `evaluate_options_position_management()` for options
 
 If HTTP 400 errors occur, token is consumed. See [CLAUDE.md](CLAUDE.md) or skills/investor_agent/SKILL.md for recovery.
@@ -46,10 +47,18 @@ Filename: PORTFOLIO_YYYY-MM-DD.md
 **ENTRY is only half the battle. VALIDATION is ongoing.**
 
 Most traders only analyze at entry. Winners continuously validate:
+
 - Is the original catalyst still valid or exhausted?
 - Has smart money flow changed?
 - Is this still a sector leader?
 - Has quality deteriorated?
+- Is the weekly trend still aligned with the position direction?
+
+**Weekly Trend Alignment (Multi-Timeframe Validation):**
+
+- If weekly Always-In flips against position direction → escalate to TRIM/CLOSE
+- If confluence score drops below 40 → warning flag, consider reducing exposure
+- Weekly S/R levels are stronger reference points than daily — use them for stop placement and targets
 
 ---
 
@@ -327,6 +336,11 @@ competitors = analyze_competitors(symbol, top_n=5)             # Sector rank
 levels = find_support_resistance(symbol, lookback_period="1mo")
 
 # ═══════════════════════════════════════════════════════════
+# MULTI-TIMEFRAME CONTEXT (Weekly/Monthly Trend)
+# ═══════════════════════════════════════════════════════════
+mtf = analyze_multitimeframe(symbol)  # Weekly/monthly trend, confluence score, swing suitability
+
+# ═══════════════════════════════════════════════════════════
 # GENERATE PORTFOLIO ACTION SIGNAL
 # ═══════════════════════════════════════════════════════════
 signal = generate_trading_signal(symbol, direction="LONG", account_size=10000)
@@ -341,6 +355,8 @@ signal = generate_trading_signal(symbol, direction="LONG", account_size=10000)
 
 **Current:** XX shares @ $XX.XX avg | **Value:** $XX,XXX | **P&L:** +/-$XXX (+/-X.X%)
 **Hold Time:** XX days
+
+| Weekly Trend | [BULLISH/BEARISH/MIXED] | Confluence: XX/100 Grade X |
 
 ---
 
@@ -1023,6 +1039,40 @@ strike_16delta_put = round(current_price - expected_moves[45]["1sd_move"], 0)
 | **Combined** | **[ALIGNED/MIXED/OPPOSED]** |
 | **Timeframe** | **[ALIGNED / CONFLICT DETECTED]** ⭐ |
 
+#### MULTI-TIMEFRAME CONTEXT [analyze_multitimeframe]
+
+| Timeframe | Trend | Always-In | Key Level |
+|-----------|-------|-----------|-----------|
+| Daily | [BULLISH/BEARISH/MIXED] | [LONG/SHORT/NEUTRAL] | $XX.XX |
+| Weekly | [BULLISH/BEARISH/MIXED] | [LONG/SHORT/NEUTRAL] | $XX.XX |
+| Monthly | [BULLISH/BEARISH/MIXED] | [LONG/SHORT/NEUTRAL] | $XX.XX |
+
+**Confluence Score:** XX/100 | **Grade:** [A-F] | **Swing Suitability:** [HIGH/MEDIUM/LOW]
+
+[If weekly trend CONFLICTS with position direction]:
+**WEEKLY TREND CONFLICT** - Weekly Always-In is [SHORT/NEUTRAL] but position is LONG
+- **Impact:** Higher timeframe trend opposes position — increases reversal risk
+- **Action:** Escalate recommendation toward TRIM/CLOSE
+- **Weekly S/R levels are stronger reference points than daily**
+
+[If weekly trend ALIGNS with position direction]:
+**WEEKLY TREND ALIGNED** - Weekly confirms daily direction
+- **Impact:** Higher timeframe supports position — increases conviction
+- **Action:** Hold with confidence, weekly S/R levels define key zones
+
+**Swing Suitability Impact on Recommendation:**
+- HIGH suitability → supports HOLD/ADD (good swing trade structure)
+- MEDIUM suitability → supports HOLD (acceptable but not ideal)
+- LOW suitability → supports TRIM (poor swing structure, better as day trade)
+
+---
+
+#### BROOKS LESSON [Per-Position — MANDATORY]
+
+**Brooks Lesson:** [Pattern name] — [1-2 sentence explanation of what the current price action is telling us and what to watch for next, in Al Brooks terminology]
+
+---
+
 **Rationale:** [2-3 sentence explanation of the action recommendation]
 
 **If TRIM:**
@@ -1179,6 +1229,7 @@ def detect_asset_type(symbol: str) -> str:
 | `calculate_quality_score` | Gate 4 | Quality trajectory | 10s |
 | `analyze_options_mcmillan` | Gate 5 | Options liquidity, IV environment | 15s |
 | `generate_trading_signal` | All | Portfolio action signal (includes all 5 gates) | 5s |
+| `analyze_multitimeframe` | All | Weekly/monthly trend context, confluence score, swing suitability | 10s |
 
 ### Smart Money Tools
 

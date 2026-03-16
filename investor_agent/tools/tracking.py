@@ -902,3 +902,182 @@ def register_tools(mcp):
                 "status": "error",
                 "error": str(e)
             }
+
+    @mcp.tool()
+    def update_prediction_report(
+        prediction_id: str,
+        report_markdown: str,
+        quality_score: int = 0,
+        quality_grade: str = "",
+        vault_file: str = ""
+    ) -> dict:
+        """
+        Attach the full analyst report to an existing prediction record.
+
+        Called by the analyst pipeline after generating and saving the report.
+        Updates the prediction that was auto-stored during generate_trading_signal().
+
+        Args:
+            prediction_id: UUID of the prediction to update
+            report_markdown: Full markdown report from the analyst pipeline
+            quality_score: Report quality gate score (0-100)
+            quality_grade: Report quality grade (A/B/C/D/F)
+            vault_file: Path to the saved vault file
+
+        Returns:
+            dict with status and prediction_id
+        """
+        try:
+            from ..database import get_db_session
+            from sqlalchemy import text
+
+            with get_db_session() as session:
+                result = session.execute(
+                    text("""
+                        UPDATE predictions
+                        SET report_markdown = :report_markdown,
+                            report_quality_score = :quality_score,
+                            report_quality_grade = :quality_grade,
+                            vault_file = :vault_file
+                        WHERE id = :prediction_id
+                    """),
+                    {
+                        "prediction_id": prediction_id,
+                        "report_markdown": report_markdown,
+                        "quality_score": quality_score,
+                        "quality_grade": quality_grade or None,
+                        "vault_file": vault_file or None,
+                    }
+                )
+                session.commit()
+                rows = result.rowcount
+
+            if rows == 0:
+                return {
+                    "status": "not_found",
+                    "prediction_id": prediction_id,
+                    "error": "No prediction found with this ID",
+                }
+
+            return {
+                "status": "updated",
+                "prediction_id": prediction_id,
+                "report_length": len(report_markdown),
+                "quality_score": quality_score,
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to update prediction report: {e}")
+            return {
+                "status": "error",
+                "error": str(e),
+                "prediction_id": prediction_id,
+            }
+
+    # =========================================================================
+    # SELF-IMPROVEMENT TOOLS
+    # =========================================================================
+
+    @mcp.tool()
+    def calibrate_confidence(
+        days: int = 90,
+        min_bucket_n: int = 5
+    ) -> dict:
+        """
+        Run Brier score calibration and generate confidence adjustment multipliers.
+
+        Compares predicted confidence scores vs actual win rates per bucket
+        (50-60%, 60-70%, 70-80%, 80%+), then computes multipliers to correct
+        overconfidence or underconfidence in future predictions.
+
+        Run weekly (or after 20+ new validated predictions) to keep calibration current.
+
+        Args:
+            days: Number of days of prediction history to analyze (default: 90)
+            min_bucket_n: Minimum predictions per bucket for significant multiplier (default: 5)
+
+        Returns:
+            dict with:
+            - status: "calibrated" or "insufficient_data"
+            - brier_score: Overall calibration metric (0=perfect, 0.25=coin flip)
+            - brier_calibration: Calibration component (lower = better calibrated)
+            - brier_resolution: Resolution component (higher = better discrimination)
+            - overall_win_rate: Actual overall win rate
+            - buckets: Per-bucket analysis (avg_predicted, actual_rate, multiplier, n)
+            - multipliers: Confidence adjustment multipliers per bucket
+            - interpretation: Human-readable quality assessment
+        """
+        try:
+            from ..prediction_tracker import CalibrationEngine
+            engine = CalibrationEngine()
+            return engine.calibrate(days=days, min_bucket_n=min_bucket_n)
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
+    @mcp.tool()
+    def analyze_gate_effectiveness(
+        days: int = 90
+    ) -> dict:
+        """
+        Compute lift scores for each of the 5 gates to measure predictive power.
+
+        Lift = PASS win rate minus FAIL win rate. A gate with high lift is a strong
+        predictor of outcomes. Low-lift gates may need recalibration or downweighting.
+
+        Results are stored in gate_weights table and used to inform weight adjustments.
+
+        Run weekly to track gate effectiveness over time.
+
+        Args:
+            days: Number of days of prediction history to analyze (default: 90)
+
+        Returns:
+            dict with:
+            - status: "analyzed"
+            - gates: Per-gate analysis with pass_win_rate, fail_win_rate, lift_score, recommended_weight
+            - ranking: Gates sorted by lift score (best to worst)
+            - best_gate: Strongest predictor gate name
+            - worst_gate: Weakest predictor gate name
+            - interpretation: Human-readable summary of gate effectiveness
+        """
+        try:
+            from ..prediction_tracker import GateEffectivenessAnalyzer
+            analyzer = GateEffectivenessAnalyzer()
+            return analyzer.analyze(days=days)
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
+    @mcp.tool()
+    def optimize_stops_targets(
+        days: int = 180
+    ) -> dict:
+        """
+        Analyze MFE/MAE data to recommend optimal stop-loss and profit target levels.
+
+        Uses actual intraday price extremes from resolved predictions to determine:
+        - Are current stops too tight? (prematurely stopping out winners)
+        - Are current targets too conservative? (leaving profit on the table)
+        - How do optimal levels vary by direction (LONG vs SHORT)?
+        - How do optimal levels vary by macro regime?
+
+        Run monthly after sufficient MFE/MAE data has accumulated.
+
+        Args:
+            days: Number of days of prediction history to analyze (default: 180)
+
+        Returns:
+            dict with:
+            - status: "optimized" or "insufficient_data"
+            - overall: Aggregate MFE/MAE analysis with optimal_stop_pct and optimal_target_pct
+            - by_direction_long: LONG-specific analysis (if sufficient data)
+            - by_direction_short: SHORT-specific analysis (if sufficient data)
+            - by_regime_*: Per-regime analysis (EXPANSION, LATE_CYCLE, etc.)
+            - Each group includes: mfe/mae medians, winners_stopped_prematurely_pct,
+              avg_profit_left_on_table_pct, and actionable recommendations
+        """
+        try:
+            from ..prediction_tracker import StopTargetOptimizer
+            optimizer = StopTargetOptimizer()
+            return optimizer.optimize(days=days)
+        except Exception as e:
+            return {"status": "error", "error": str(e)}

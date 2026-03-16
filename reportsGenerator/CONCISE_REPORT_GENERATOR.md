@@ -68,6 +68,12 @@ Filename: TICKER_CONCISE_YYYY-MM-DD.md
 
 ---
 
+## MACRO CONTEXT `[generate_macro_context_header]` + `[analyze_vix_term_structure]`
+- **Regime:** {macro_summary.regime} | **VIX Term Structure:** {vix_vix3m_ratio} — [CONTANGO/BACKWARDATION] | **Options Bias:** {macro_summary.options_strategy_bias}
+- **Fed Stance:** {macro_summary.fed_policy_stance} | **Credit:** {macro_summary.credit} | **Narrative:** {narrative (1 sentence)}
+
+---
+
 ## QUICK DATA SUMMARY (Phases 1-6)
 
 ### Phase 1: Fundamentals (19.6%) - [BULLISH/BEARISH/NEUTRAL] [✓/✗]
@@ -127,11 +133,25 @@ Filename: TICKER_CONCISE_YYYY-MM-DD.md
 - **1 SD (16Δ):** 84% win rate + good premium (**POSITIVE expected value**) ✅
 - **ATM (50Δ):** 50% win rate (coin flip, avoid)
 
+**Expected Move (30 DTE):** `[calculate_expected_move]`
+- **Primary EM:** ±$X.XX (±X.X%) | **Range:** $XXX.XX — $XXX.XX
+- **Method:** [IV-Based / Straddle × 0.85] | Short strikes should be OUTSIDE this range
+
 - **Score: XX/100** → XX.X pts
 
 **McMillan Options Score: XX/100** (See [TRADING_REFERENCE_GUIDE.md](TRADING_REFERENCE_GUIDE.md) for IV strategy matrix, P/C interpretation, Max Pain, Greeks, and strategy selection methodology)
 
+**McMillan Mastery:** `[analyze_options_mcmillan.mcmillan_mastery]`
+- **Vol Regime:** {volatility_regime.composite} — {volatility_regime.narrative}
+- **Skew:** {skew_opportunity.skew_type} ({skew_opportunity.skew_points} pts) — {skew_opportunity.rationale}
+- **McMillan Lesson:** _{lesson.lesson (first 1-2 sentences)}_ (Win rate: {lesson.win_rate})
+
 - **Score: XX/100** → XX.X pts
+
+### Statistical Validation `[validate_brooks_pattern_win_rate, quantify_pattern_edge]`
+- **Edge Quality:** [STRONG / MODERATE / WEAK / NO_EDGE] — Expected return +X.XX%/trade
+- **Backtested Win Rate:** XX.X% over XX samples (95% CI: [XX%, XX%])
+- **Quarter-Kelly Size:** X.X% of portfolio
 
 ---
 
@@ -155,6 +175,8 @@ Filename: TICKER_CONCISE_YYYY-MM-DD.md
 - **Exhaustion:** XX/100 ([NO/LOW/MODERATE/HIGH]_EXHAUSTION) [analyze_ml_enhanced.exhaustion]
 - **Multi-VWAP:** [STRONG_BULLISH/BULLISH/MIXED/BEARISH] alignment [analyze_volume_tool.multi_vwap]
 - **Al Brooks:** [Pattern], [XX]% adjusted probability [analyze_ml_enhanced.al_brooks]
+- **Multi-Timeframe:** Monthly [dir] → Weekly AI=[LONG/SHORT], Pattern=[name] → Daily [pattern]. Confluence: XX/100 Grade [X] | Swing: [HIGH/MODERATE/LOW/AVOID] [analyze_multitimeframe]
+- **Pullback Personality:** Top entry: $XX.XX (score XX/100), MA bounce rates: EMA20 XX%, SMA50 XX%. Half-life XX bars, Z-score XX.XX [analyze_pullback_personality]
 
 **Dalio Economic Machine:** [analyze_volume_tool.dalio_metrics] ⭐ NEW
 - **Dalio Ratio:** X.XXXX ([BULLISH >1.0 / NEUTRAL ~1.0 / BEARISH <1.0])
@@ -199,6 +221,7 @@ Filename: TICKER_CONCISE_YYYY-MM-DD.md
 | Brooks | [LONG/SHORT/NEUTRAL] | Always-In direction |
 | Dalio Ratio | [BULLISH/BEARISH] | >1.0 = BULLISH |
 | Dollar Flow | [BULLISH/BEARISH] | >0 = BULLISH |
+| Weekly Trend | [BULLISH/BEARISH/MIXED] | Weekly Always-In direction |
 
 **Consensus:** X LONG votes, Y SHORT votes → **[LONG/SHORT/NO_CONSENSUS]**
 
@@ -292,7 +315,13 @@ Risk Assessment:
 
 ---
 
-## PHASE 8: AL BROOKS PRICE ACTION (19.6%) ⭐ CRITICAL
+## PHASE 8: AL BROOKS PRICE ACTION (Multi-Timeframe Integrated) (19.6%) ⭐ CRITICAL
+
+*"The monthly trend is the boss." Write one continuous narrative: Monthly → Weekly → Daily → Pattern → Bar Reading → Verdict.*
+
+**MONTHLY:** [Direction from SMA 10/20, RSI, MACD — what does this mean for the daily trade?] `[analyze_multitimeframe]`
+**WEEKLY:** AI=[LONG/SHORT], Pattern=[name], RSI=XX.XX. [How does weekly structure relate to monthly?]
+**DAILY:** [Current structure flowing into Brooks pattern below]
 
 ### A. Always-In Direction
 - **Current:** [LONG/SHORT] since [Date] ([reason])
@@ -320,9 +349,17 @@ Risk Assessment:
 
 **Pattern:** [X consecutive bull/bear bars = Y]
 
-### E. Trap Analysis
-- **Bull Trap Risk:** [HIGH/MEDIUM/LOW] - [Reason]
-- **Bear Trap Risk:** [HIGH/MEDIUM/LOW] - [Reason]
+### E. Trap Analysis `[generate_trading_signal.brooks_analysis]`
+- **Trap Type:** [bull_trap / bear_trap / late_move_trap / failed_reversal_trap / vacuum_fill_trap / none] `[brooks_analysis.trap_type]`
+- **Trap Severity:** [HIGH/MEDIUM/LOW] - [Reason] `[brooks_analysis.trap_classification.severity]`
+- **Trap Action:** [brooks_analysis.trap_classification.action]
+
+### E2. Trend Evolution & Confirmation `[generate_trading_signal.brooks_analysis]`
+- **Trend Phase:** [STRONG_TREND / CHANNEL / BROAD_CHANNEL / TRADING_RANGE] (Score: XX/100) `[brooks_analysis.trend_evolution]`
+- **Confirmation Bar:** [confirmed/not_confirmed] - [bar_quality] `[brooks_analysis.confirmation_status]`
+- **Climax Detection:** [none / simple / consecutive / parabolic / channel_overshoot] `[brooks_analysis.climax_detection.climax_type]`
+- **Micro Channel:** [detected/not detected] [direction] `[brooks_analysis.micro_channel]`
+- **Spike-and-Channel:** [detected/not detected] `[brooks_analysis.spike_and_channel]`
 
 ### F. Brooks Probability Factors
 
@@ -360,14 +397,47 @@ Risk Assessment:
 
 **Base Probability:** XX% ([Pattern Name])
 
-**Context Adjustments:** (See [TRADING_REFERENCE_GUIDE.md](TRADING_REFERENCE_GUIDE.md) for full adjustment table, pattern definitions, bar reading guide, and trap recognition)
+**Probability Narrative:** `[generate_trading_signal.brooks_analysis.probability_narrative]`
+> "Base 50% + 5% [pattern] + 5% [AI aligned] - 3% [trap risk] + 8% [trend phase] = XX%"
 
-- Fundamentals: +/-XX% | Catalyst: +/-XX% | Options: +/-XX%
-- Technicals: +/-XX% | Market: +/-XX% | Dalio: +/-XX%
+**Measured Move Targets:** `[generate_trading_signal.brooks_analysis.measured_move_targets]`
+| Method | Target | Source |
+|--------|--------|--------|
+| Leg1=Leg2 | $XX.XX | Prior leg projected |
+| Spike Projection | $XX.XX | Spike height from channel |
+| Range Projection | $XX.XX | Range height from breakout |
+| **Primary** | **$XX.XX** | Best R/R method |
 
 **FINAL BROOKS PROBABILITY: XX%** (capped 30-80%)
 
 **Score: XX/100** → XX.X pts
+
+### Brooks Lesson (Pattern-Indexed) `[generate_trading_signal.brooks_analysis.pattern_lesson]`
+
+**Pattern:** {pattern_lesson.name} — **Win Rate:** {pattern_lesson.win_rate}
+**Brooks Quote:** "{pattern_lesson.brooks_quote}"
+**Why It Works Here:** {brooks_analysis.lesson}
+**Trap Warning:** {trap_type} — {trap_classification.explanation}
+**Timeframes:** Monthly [dir] → Weekly [dir] → Daily [pattern]. Confluence XX/100.
+**Watch:** [Key invalidation level]
+
+---
+
+### I. Dalio Economic Machine `[analyze_dalio_economic_machine]` + `[get_macro_regime]`
+
+**Source:** `analyze_dalio_economic_machine(ticker)` (standalone tool) + `get_macro_regime()`
+
+| Metric | Value | Signal |
+|--------|-------|--------|
+| Dalio Ratio | X.XXXX | [STRONG_BULLISH / BULLISH / NEUTRAL / BEARISH / STRONG_BEARISH] |
+| Dollar Flow (20d) | $XX.XXM | [ACCUMULATION / DISTRIBUTION] |
+| Sustainability | XX/100 Grade [X] | [SUSTAINABLE / MODERATING / UNSUSTAINABLE] |
+| Institutional | [Detected/None] | [confidence] |
+| **Macro Regime** | [EXPANSION / LATE_CYCLE / CONTRACTION / RECOVERY] | Yield curve: [NORMAL/FLAT/INVERTED] |
+| VIX Regime | XX.X | [COMPLACENT / NORMAL / ELEVATED / PANIC] |
+
+**Spending Analysis:** {dalio_lesson}
+**Money Flow Confirmation:** [Dalio CONFIRMS/CONFLICTS with Brooks direction]
 
 ---
 
@@ -486,8 +556,9 @@ TOTAL:         XX.X/100 ([HIGH/MODERATE/LOW] CONVICTION [LONG/SHORT])
 | Weighted Score | XX.X/100 |
 | **Conviction** | **[HIGH / MODERATE / LOW]** |
 | Brooks Probability | XX% |
-| **McMillan Options Score** | **XX/100** ⭐ NEW |
-| **Options Strategy** | **[Strategy Name]** ⭐ NEW |
+| **McMillan Options Score** | **XX/100** |
+| **Options Strategy** | **[Strategy Name]** |
+| **GEX Flip** | $XXX.XX [POSITIVE/NEGATIVE gamma] |
 | Historical | XX% [LONG/SHORT] |
 | Confidence | [HIGH/MEDIUM/LOW] |
 
@@ -507,14 +578,24 @@ TOTAL:         XX.X/100 ([HIGH/MODERATE/LOW] CONVICTION [LONG/SHORT])
 get_ticker_data(), calculate_fundamental_scores_tool()
 get_earnings_history(), get_nasdaq_earnings_calendar()
 analyze_options_mcmillan(ticker)  # ⭐ McMillan Options (direction-independent)
+analyze_gamma_exposure(ticker)   # ⭐ GEX flip level, gamma walls, dealer positioning
 get_insider_trades(), get_institutional_holders()
 analyze_ml_enhanced()  # ⭐ Full analysis: Al Brooks + Order Blocks + Supply/Demand
+analyze_multitimeframe(ticker)  # Monthly/Weekly trends, Weekly Brooks, Confluence score
 calculate_relative_strength_tool()
 analyze_volume_tool(), get_cnn_fear_greed_index()
+analyze_pullback_personality(ticker)  # ⭐ Stock-specific pullback levels (9 techniques)
+
+# PHASE 7B: Dalio Economic Machine (2 min) ⭐ NEW
+analyze_dalio_economic_machine(ticker)  # Standalone Dalio analysis
+get_macro_regime()  # Macro regime detection
 
 # PHASE 8: Al Brooks (15 min) - DETAILED
-# Use analyze_ml_enhanced() for:
+# Use analyze_ml_enhanced() + generate_trading_signal() for:
 #   - al_brooks: always_in_direction, pattern, probability
+#   - brooks_analysis: trap_type, trend_evolution, climax_detection,
+#     measured_move_targets, confirmation_status, probability_narrative,
+#     lesson, pattern_lesson
 #   - order_blocks: bullish/bearish blocks, closest blocks
 #   - supply_demand: demand/supply zones
 # Add bar-by-bar analysis, probability factors, context adjustments
@@ -540,8 +621,8 @@ find_similar_historical_setups(
 
 ---
 
-**Last Updated:** February 2026
-**Version:** 4.0 - Redundant appendix removed, references TRADING_REFERENCE_GUIDE.md
+**Last Updated:** March 2026
+**Version:** 5.0 - Enhanced Brooks (trap types, trend evolution, measured moves, probability narrative, pattern-indexed lessons) + Dalio standalone tool + macro regime
 
 ---
 

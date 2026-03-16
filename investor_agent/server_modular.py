@@ -7,21 +7,25 @@ tools/*.py modules or investor_agent.core/*.
 Usage:
     python -m investor_agent.server_modular
 
-Modules (14 total, 73 tools):
-    tools/market_data.py        6 tools
-    tools/financial_data.py     5 tools
-    tools/options_analysis.py   7 tools
-    tools/questrade_api.py     14 tools
-    tools/technical_analysis.py 7 tools
-    tools/position_mgmt.py      5 tools
-    tools/risk.py               3 tools
-    tools/funds.py              3 tools
-    tools/tracking.py           6 tools
-    tools/ml_tools.py           4 tools
-    tools/scanning.py           5 tools
-    tools/catalysts.py          5 tools
-    tools/signals.py            2 tools
-    tools/sector_scanner.py     1 tool
+Modules (18 total, 87 tools):
+    tools/market_data.py              6 tools
+    tools/financial_data.py           5 tools
+    tools/options_analysis.py         7 tools
+    tools/questrade_api.py           14 tools
+    tools/technical_analysis.py       7 tools
+    tools/position_mgmt.py            5 tools
+    tools/risk.py                     3 tools
+    tools/funds.py                    3 tools
+    tools/tracking.py                 6 tools
+    tools/ml_tools.py                 4 tools
+    tools/scanning.py                 5 tools
+    tools/catalysts.py                5 tools
+    tools/signals.py                  2 tools
+    tools/sector_scanner.py           1 tool
+    tools/dalio_analysis.py           2 tools
+    tools/statistical_validation.py   7 tools
+    tools/institutional_analysis.py   4 tools
+    tools/pullback_analysis.py        1 tool
 """
 from dotenv import load_dotenv
 load_dotenv()
@@ -64,6 +68,10 @@ from .tools import (
     catalysts,
     signals,
     sector_scanner,
+    dalio_analysis,
+    statistical_validation,
+    institutional_analysis,
+    pullback_analysis,
 )
 
 _modules = [
@@ -81,6 +89,10 @@ _modules = [
     catalysts,
     signals,
     sector_scanner,
+    dalio_analysis,
+    statistical_validation,
+    institutional_analysis,
+    pullback_analysis,
 ]
 
 for mod in _modules:

@@ -56,7 +56,7 @@ Score: N/A (excluded from weighted calculation)
 
 Async: `get_cnn_fear_greed_index()`, `get_nasdaq_earnings_calendar()`, `find_similar_historical_setups()`, `analyze_ml_enhanced()`, `calculate_feature_importance_analysis()`, `get_market_movers()`
 
-Sync: `get_ticker_data()`, `get_financial_statements()`, `get_options()`, `analyze_options_mcmillan()`, `get_insider_trades()`, `get_institutional_holders()`, `get_earnings_history()`, `analyze_technical()`, `find_support_resistance()`, `analyze_volume_tool()`, `analyze_volatility_tool()`, `calculate_relative_strength_tool()`
+Sync: `get_ticker_data()`, `get_financial_statements()`, `get_options()`, `analyze_options_mcmillan()`, `get_insider_trades()`, `get_institutional_holders()`, `get_earnings_history()`, `analyze_technical()`, `find_support_resistance()`, `analyze_volume_tool()`, `analyze_volatility_tool()`, `calculate_relative_strength_tool()`, `analyze_multitimeframe()`
 
 ### Market Hours Check
 
@@ -64,7 +64,47 @@ Before calling intraday functions (`fetch_intraday_1h`, `fetch_intraday_15m`): c
 
 ---
 
+## MANDATORY SECTION ORDER
+
+**The report MUST follow this logical flow. Do NOT put Options before Technical Analysis.**
+
+```
+0. Macro Context Header
+1. Executive Summary + Direction Validation
+2. Stock Overview (company info, fundamentals)
+3. Price Action Analysis (Multi-Timeframe + Al Brooks TOGETHER — not separate)
+   - Multi-timeframe is PART OF Brooks: Monthly → Weekly → Daily confluence
+4. Fundamental Analysis
+5. Smart Money Positioning
+6. McMillan Options Strategy (AFTER technical — options strategy is informed by price action)
+7. Trading Plan (LAST — synthesizes everything above)
+```
+
+---
+
 ## REPORT SECTIONS
+
+### 0. MACRO CONTEXT HEADER `[generate_macro_context_header]` + `[analyze_vix_term_structure]`
+
+**MUST appear at the VERY TOP of every report, before Executive Summary.**
+
+| Metric | Value | Signal |
+|--------|-------|--------|
+| **Regime** | {macro_summary.regime} | [EXPANSION / LATE_CYCLE / CONTRACTION / RECOVERY] |
+| **Yield Curve** | {macro_summary.yield_curve} | [NORMAL / FLAT / INVERTED] (spread: X.XX%) |
+| **VIX** | {macro_summary.vix} | [COMPLACENT / NORMAL / ELEVATED / PANIC] |
+| **VIX Term Structure** | {vix_vix3m_ratio} | [CONTANGO / BACKWARDATION] |
+| **Credit** | {macro_summary.credit} | HYG/LQD ratio |
+| **Fed Stance** | {macro_summary.fed_policy_stance} | [DOVISH / NEUTRAL / HAWKISH] |
+| **Options Bias** | {macro_summary.options_strategy_bias} | [BUY_PREMIUM / SELL_PREMIUM / NEUTRAL] |
+
+**Macro Narrative:** {narrative}
+
+**Trading Implications:** {trading_implications}
+
+**Tools:** `generate_macro_context_header(include_breadth=True, include_intermarket=True)`, `analyze_vix_term_structure()`
+
+---
 
 ### 1. EXECUTIVE SUMMARY
 
@@ -111,6 +151,7 @@ Before calling intraday functions (`fetch_intraday_1h`, `fetch_intraday_15m`): c
 | Brooks Always-In | [LONG/SHORT/NEUTRAL] | [Price action] |
 | Dalio Ratio | [BULLISH/BEARISH] | [>1.0 BULLISH / <1.0 BEARISH] |
 | Dollar Flow | [BULLISH/BEARISH] | [Positive/Negative] |
+| Weekly Trend | [BULLISH/BEARISH/MIXED] | Weekly Always-In direction |
 
 **Consensus:** X LONG votes, Y SHORT votes
 
@@ -178,9 +219,20 @@ Before calling intraday functions (`fetch_intraday_1h`, `fetch_intraday_15m`): c
 
 #### A. Multi-Timeframe Structure
 
-**Weekly:** Overall trend, major swings, key S/R zones `[analyze_ml_enhanced]`
+**Monthly:** Trend from SMA 10/20, RSI, MACD on monthly bars `[analyze_multitimeframe]`
+**Weekly:** Al Brooks bar reading — Always-In, pattern, trend strength `[analyze_multitimeframe]`
+**Weekly S/R:** Weekly support/resistance levels (stronger than daily) `[analyze_multitimeframe]`
 **Daily:** Current structure, pattern, volume `[analyze_technical]`
 **Intraday:** ⚠️ Check market hours. If open: 15m/1h momentum. If closed: skip.
+
+**Confluence Score:** `[analyze_multitimeframe]`
+
+| Metric | Value |
+|--------|-------|
+| Score | XX/100 |
+| Grade | [A/B/C/D/F] |
+| Alignment | [ALIGNED/PARTIAL/CONFLICTING] |
+| Swing Suitability | [HIGH/MODERATE/LOW/AVOID] |
 
 #### B. Brooks Analysis
 
@@ -220,6 +272,13 @@ For each bar: Type (bull/bear/doji/inside), Close (near high/low/middle), Size, 
 
 **Key Indicators:** VWAP, EMA20, EMA50, SMA200, RS vs SPY
 
+**Pullback Personality:** `[analyze_pullback_personality]`
+- **Ranked Entry Levels:** [Top 3-5 confluence zones with scores]
+- **MA Bounce Rates:** EMA20 XX%, SMA50 XX%, SMA200 XX% (historical)
+- **ICT Levels:** Order Blocks, Fair Value Gaps, Liquidity Pools
+- **Mean Reversion:** Half-life XX bars, Z-score XX.XX
+- **Regime Depth:** [SHALLOW / NORMAL / DEEP] pullbacks in current regime
+
 **Supply/Demand Zones:** `[analyze_ml_enhanced → supply_demand]`
 
 | Zone Type | Price Range | Strength | Evidence | Distance |
@@ -253,7 +312,94 @@ For each bar: Type (bull/bear/doji/inside), Close (near high/low/middle), Size, 
 **AL BROOKS PRICE ACTION SCORE: XX/100**
 - Pattern Quality: XX/30 | Bar Reading: XX/25 | Context Alignment: XX/25 | Trap Avoidance: XX/20
 
-**Tools:** `analyze_ml_enhanced()`, `find_support_resistance()`
+#### E. Brooks Lesson (Pattern-Indexed from BROOKS_MASTERY_GUIDE.md)
+
+**Pattern:** {pattern_name} — {pattern_lesson.name}
+**Brooks Quote:** "{pattern_lesson.brooks_quote}"
+**Win Rate:** {pattern_lesson.win_rate}
+**Why This Works Here:** {lesson — from `brooks_analysis.lesson` in generate_trading_signal()}
+
+**Trap Analysis:**
+- **Trap Type:** {trap_type} — {trap_classification.explanation}
+- **Severity:** {trap_classification.severity}
+- **Action:** {trap_classification.action}
+
+**Probability Breakdown:** (from `brooks_analysis.probability_narrative`)
+```
+{probability_narrative — shows each adjustment: Base 50% + X% pattern + Y% Always-In...}
+```
+
+**Measured Move Targets:**
+
+| Method | Target | Source |
+|--------|--------|--------|
+| Leg1=Leg2 | ${leg1_leg2} | Prior leg projected |
+| Range Projection | ${range_projection} | Range height from breakout |
+| Primary Target | ${primary_target} | Best available method |
+
+**Trend Phase:** {trend_evolution.phase} ({trend_evolution.phase_score}/100)
+{trend_evolution.transition_signals — if any}
+
+**Confirmation Status:** {confirmation_status.confirmed} — {confirmation_status.reason}
+
+**Multi-Timeframe Confirmation:** Monthly [dir] → Weekly [dir] → Daily [pattern]. Confluence: XX/100 Grade [X].
+**What Would Invalidate:** [Key level or condition]
+**Trader Takeaway:** [1 sentence actionable lesson the trader can learn from this analysis]
+
+**Tools:** `generate_trading_signal()` → `brooks_analysis.*`, `analyze_multitimeframe()`, `find_support_resistance()`
+
+---
+
+#### F. Dalio Economic Machine Analysis
+
+**Principle:** *Price = Total Spending / Quantity Sold* — Ray Dalio
+
+| Metric | Value | Signal |
+|--------|-------|--------|
+| **Dalio Ratio** | {dalio_ratio.current} | {dalio_ratio.interpretation} ({dalio_ratio.strength}) |
+| **Dollar Flow (20d)** | ${cumulative_dollar_flow.20d} | {cumulative_dollar_flow.direction} |
+| **Sustainability** | {trend_sustainability.score}/100 | Grade {trend_sustainability.grade} |
+| **Institutional Activity** | {institutional_activity.detected} | {institutional_activity.confidence} confidence |
+| **Macro Regime** | {regime} | {yield_curve.status} / VIX {vix_regime.status} |
+
+**Spending Analysis:** {lesson — from analyze_dalio_economic_machine()}
+
+**Money Flow Confirmation:**
+- If Dalio confirms Brooks direction: "Money flow SUPPORTS the price action — real capital flowing in this direction."
+- If Dalio contradicts Brooks: "CAUTION: Money flow CONTRADICTS the pattern. Reduce position size or wait."
+
+**Tools:** `analyze_dalio_economic_machine()`, `get_macro_regime()`
+
+---
+
+#### G. Intermarket Correlations & Expected Move `[analyze_intermarket_correlation]` + `[calculate_expected_move]`
+
+**Intermarket Correlations:** `analyze_intermarket_correlation(ticker, benchmarks=["UUP","^TNX","USO","GLD","SPY","TLT","HYG"])`
+
+| Benchmark | Correlation | Strength | Implication |
+|-----------|-------------|----------|-------------|
+| SPY | X.XX | [STRONG/MODERATE/WEAK] | [Market beta] |
+| UUP (Dollar) | X.XX | [STRONG/MODERATE/WEAK] | [Dollar sensitivity] |
+| ^TNX (10Y Yield) | X.XX | [STRONG/MODERATE/WEAK] | [Rate sensitivity] |
+| USO (Crude) | X.XX | [STRONG/MODERATE/WEAK] | [Energy correlation] |
+| GLD (Gold) | X.XX | [STRONG/MODERATE/WEAK] | [Safe haven correlation] |
+| TLT (Long Bonds) | X.XX | [STRONG/MODERATE/WEAK] | [Duration risk] |
+| HYG (High Yield) | X.XX | [STRONG/MODERATE/WEAK] | [Credit risk] |
+
+**Regime Implications:** {regime_implications}
+**Hedging Suggestions:** {hedging_suggestions}
+
+**Expected Move:** `calculate_expected_move(ticker, dte=30, use_straddle=True)`
+
+| Method | Move ($) | Move (%) | Lower | Upper |
+|--------|----------|----------|-------|-------|
+| IV-Based | ±$X.XX | ±X.X% | $XXX.XX | $XXX.XX |
+| Straddle (×0.85) | ±$X.XX | ±X.X% | $XXX.XX | $XXX.XX |
+| **Primary** | **±$X.XX** | **±X.X%** | **$XXX.XX** | **$XXX.XX** |
+
+**Strike Selection Guidance:** Use expected move to validate options strike placement — short strikes should be OUTSIDE the expected move range.
+
+**Tools:** `analyze_intermarket_correlation()`, `calculate_expected_move()`
 
 ---
 
@@ -448,11 +594,84 @@ For each bar: Type (bull/bear/doji/inside), Close (near high/low/middle), Size, 
 | BASE | 50 | 50 | Starting neutral |
 | **TOTAL** | **XX/100** | 100 | **[HIGH/MODERATE/LOW]** |
 
-**Tools:** `analyze_options_mcmillan()`, `get_options()`, `detect_unusual_options_activity()`
+#### G. McMillan Mastery Analysis `[analyze_options_mcmillan → mcmillan_mastery]`
+
+**Volatility Regime:**
+
+| Component | Value | Signal |
+|-----------|-------|--------|
+| IV Percentile Signal | [ELEVATED / LOW / NORMAL] | `[mcmillan_mastery.volatility_regime.percentile_signal]` |
+| IV vs HV Signal | [OVERPRICED / UNDERPRICED / FAIR] | `[mcmillan_mastery.volatility_regime.iv_hv_signal]` |
+| **Composite Regime** | **[STRONG_BUY_VOL / BUY_VOL / NEUTRAL / SELL_VOL / STRONG_SELL_VOL]** | `[mcmillan_mastery.volatility_regime.volatility_regime]` |
+| Percentile Action | [Sell premium / Buy options / Neutral] | `[mcmillan_mastery.volatility_regime.percentile_action]` |
+
+**Narrative:** `[mcmillan_mastery.volatility_regime.narrative]`
+
+**P/C Ratio Narrative (McMillan Ch.30):**
+
+> [mcmillan_mastery.pc_ratio_narrative — dynamic interpretation of put/call ratio using McMillan's Chapter 30 framework]
+
+**Vega-Theta Trade-Off:**
+
+| Metric | Value |
+|--------|-------|
+| Seller Risk | **[HIGH / MODERATE / LOW]** `[mcmillan_mastery.vega_theta_tradeoff.seller_risk]` |
+| Seller Warning | [Warning text — e.g., "High vega exposure makes short premium risky"] `[mcmillan_mastery.vega_theta_tradeoff.seller_warning]` |
+| Buyer Opportunity | [Opportunity text] `[mcmillan_mastery.vega_theta_tradeoff.buyer_opportunity]` |
+
+**Skew Opportunity:**
+
+| Metric | Value |
+|--------|-------|
+| Skew Type | **[NEGATIVE_SKEW / POSITIVE_SKEW / FLAT_SKEW]** `[mcmillan_mastery.skew_opportunity.skew_type]` |
+| Skew Points | X.X `[mcmillan_mastery.skew_opportunity.skew_points]` |
+| Recommended Strategies | [Strategy 1, Strategy 2, ...] `[mcmillan_mastery.skew_opportunity.recommended_strategies]` |
+| Rationale | [Why these strategies fit the skew] `[mcmillan_mastery.skew_opportunity.rationale]` |
+
+**McMillan Lesson:**
+
+| Field | Value |
+|-------|-------|
+| **Strategy** | [Strategy name] `[mcmillan_mastery.lesson.strategy]` |
+| **McMillan Quote** | *"[Quote from McMillan]"* `[mcmillan_mastery.lesson.mcmillan_quote]` |
+| **Chapter** | Ch. XX `[mcmillan_mastery.lesson.chapter]` |
+| **Win Rate** | XX% `[mcmillan_mastery.lesson.win_rate]` |
+| **When to Use** | [Conditions] `[mcmillan_mastery.lesson.when_to_use]` |
+| **Key Risk** | [Primary risk] `[mcmillan_mastery.lesson.key_risk]` |
+
+**Lesson:** `[mcmillan_mastery.lesson.lesson]`
+
+**Summary Fields (also in top-level summary):**
+
+- **Vol Regime:** `[summary.vol_regime]` — `[summary.vol_regime_action]`
+- **Skew Type:** `[summary.skew_type]`
+- **Vega-Theta Risk:** `[summary.vega_theta_risk]`
+
+**Tools:** `analyze_options_mcmillan()` (returns `mcmillan_mastery` block), `get_options()`, `detect_unusual_options_activity()`
 
 ---
 
-### 6B. OPTIMAL OPTIONS TRADE SETUP (Risk-Managed)
+#### H. Gamma Exposure (GEX) Analysis `[analyze_gamma_exposure]`
+
+| Metric | Value | Implication |
+|--------|-------|-------------|
+| **GEX Flip Level** | $XXX.XX | Above = positive gamma (mean-reverting), Below = negative gamma (trending) |
+| **Gamma Wall (Call)** | $XXX.XX | Magnetic resistance — dealers sell here |
+| **Gamma Wall (Put)** | $XXX.XX | Magnetic support — dealers buy here |
+| **Net GEX** | [POSITIVE / NEGATIVE] | Positive = range-bound, Negative = volatile moves |
+| **Dealer Positioning** | [LONG_GAMMA / SHORT_GAMMA] | Long = dealers dampen moves, Short = dealers amplify moves |
+
+**GEX + Brooks Integration:**
+
+- [If positive gamma + trading range]: "GEX CONFIRMS range — fade extremes per Brooks"
+- [If negative gamma + trend]: "GEX CONFIRMS trend — dealers amplifying directional move"
+- [If GEX conflicts with Brooks]: "⚠️ GEX DIVERGENCE — gamma regime conflicts with price action setup"
+
+**Tools:** `analyze_gamma_exposure()`
+
+---
+
+### 6B. OPTIMAL OPTIONS TRADE SETUP (Risk-Managed) `[generate_options_trade_plan]`
 
 **All strategies use SPREADS for defined risk (no naked options).**
 
@@ -508,7 +727,7 @@ For each bar: Type (bull/bear/doji/inside), Close (near high/low/middle), Size, 
 - [ ] Exit rules defined
 - [ ] No earnings within expiry (unless intentional)
 
-**Tools:** `analyze_options_mcmillan()`, `get_options()`, `get_questrade_option_quotes()`
+**Tools:** `analyze_options_mcmillan()`, `get_options()`, `get_questrade_option_quotes()`, `generate_options_trade_plan()`, `analyze_gamma_exposure()`
 
 ---
 
@@ -716,6 +935,30 @@ For each bar: Type (bull/bear/doji/inside), Close (near high/low/middle), Size, 
 **ML Summary:** [2-3 sentences combining triple-barrier, trend-scanning, meta-label, and Dalio findings]
 
 **Tools:** `analyze_ml_enhanced()`, `calculate_feature_importance_analysis()`
+
+---
+
+### 10B. STATISTICAL VALIDATION (Phase 6 — Statistical Edge)
+
+**Pattern Win Rate Backtesting:** `[validate_brooks_pattern_win_rate]`
+
+| Pattern | Backtested Win Rate | Expected Win Rate | Sample Size | 95% Confidence |
+|---------|--------------------|--------------------|-------------|----------------|
+| [Pattern Name] | XX.X% | XX% | XX trades | [XX%, XX%] |
+
+**Edge Quantification:** `[quantify_pattern_edge]`
+
+| Metric | Value |
+|--------|-------|
+| Expected Return/Trade | +X.XX% |
+| Edge Quality | [STRONG / MODERATE / WEAK / NO_EDGE] |
+| Quarter-Kelly Size | X.X% of portfolio |
+| Recommendation | [TRADE / REDUCE_SIZE / SKIP] |
+
+**Probability Narrative:** `[quantify_pattern_edge.recommendation]`
+> [Edge analysis narrative — e.g., "Pattern shows XX% win rate over XX samples with X.X:1 reward/risk. Quarter-Kelly sizing limits drawdown while capturing edge."]
+
+**Tools:** `validate_brooks_pattern_win_rate()`, `quantify_pattern_edge()`
 
 ---
 
@@ -982,6 +1225,11 @@ find_similar_historical_setups(
 - [ ] Position sizing calculated (1% risk rule)
 - [ ] Risk/reward ≥ 2:1
 
+**Multi-Timeframe:**
+- [ ] Multi-timeframe analysis completed (analyze_multitimeframe called)
+- [ ] Brooks Lesson included with educational insight
+- [ ] Confluence score reported
+
 **Data Integrity:**
 - [ ] Every number tagged with source tool
 - [ ] No fabricated data
@@ -1023,3 +1271,4 @@ For educational details on all methodologies used in this report, see **[TRADING
 - **Ray Dalio Economic Machine** — Dalio Ratio, Dollar Flow, Sustainability, Gate 2 Enhanced (6 checks), Brooks probability adjustments
 - **Position Management Framework** — 5-priority management system (50% profit, 21 DTE, direction change, tested position, earnings)
 - **Scoring Tiers & Decision Matrix** — Conviction tiers, weighted score thresholds, trading plan generation rules
+- **Statistical Validation** — Pattern win rate backtesting (`validate_brooks_pattern_win_rate`), edge quantification (`quantify_pattern_edge`), Kelly position sizing

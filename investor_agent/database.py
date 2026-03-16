@@ -35,25 +35,53 @@ def get_connection_string() -> str:
 def create_db_engine(connection_string: str | None = None) -> Engine:
     """
     Create SQLAlchemy engine for MSSQL.
-
-    Args:
-        connection_string: Optional connection string. Uses env var if not provided.
-
-    Returns:
-        SQLAlchemy Engine instance
+    Tries the given connection string first, then probes common Docker bridge IPs
+    if the original IP is unreachable (containers get new IPs on restart).
     """
+    import re
+
     conn_str = connection_string or get_connection_string()
 
-    engine = create_engine(
-        conn_str,
-        pool_size=5,
-        max_overflow=10,
-        pool_timeout=30,
-        pool_recycle=1800,  # Recycle connections after 30 minutes
-        echo=False  # Set to True for SQL debugging
-    )
+    def _try_engine(cs: str) -> Engine:
+        eng = create_engine(
+            cs, pool_size=5, max_overflow=10, pool_timeout=5,
+            pool_recycle=1800, echo=False
+        )
+        with eng.connect() as c:
+            c.execute(text("SELECT 1"))
+        # Reconnect with normal timeout
+        return create_engine(
+            cs, pool_size=5, max_overflow=10, pool_timeout=30,
+            pool_recycle=1800, echo=False
+        )
 
-    return engine
+    # Try original connection string first
+    try:
+        return _try_engine(conn_str)
+    except Exception:
+        pass
+
+    # Probe common Docker bridge IPs (172.17.0.2 through .6)
+    ip_match = re.search(r'@([\d.]+):', conn_str)
+    if ip_match:
+        original_ip = ip_match.group(1)
+        for last_octet in range(2, 7):
+            probe_ip = f"172.17.0.{last_octet}"
+            if probe_ip == original_ip:
+                continue
+            probe_str = conn_str.replace(original_ip, probe_ip)
+            try:
+                engine = _try_engine(probe_str)
+                logger.info(f"MSSQL IP auto-resolved: {original_ip} -> {probe_ip}")
+                return engine
+            except Exception:
+                continue
+
+    # Last resort: return engine with original string (will fail on use)
+    return create_engine(
+        conn_str, pool_size=5, max_overflow=10, pool_timeout=30,
+        pool_recycle=1800, echo=False
+    )
 
 
 # Global engine instance (lazy initialized)

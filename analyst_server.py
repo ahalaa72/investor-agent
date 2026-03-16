@@ -87,8 +87,8 @@ VAULT       = Path("/Users/AhmedE/Ahmed/Trading Reports")
 CLAUDE_BIN  = "/Users/AhmedE/.nvm/versions/node/v22.20.0/bin/claude"
 GEMINI_BIN  = "/Users/AhmedE/.nvm/versions/node/v22.20.0/bin/gemini"
 CLAUDE_PATH = "/Users/AhmedE/.nvm/versions/node/v22.20.0/bin"   # node + gemini live here
-EMAIL_FROM  = "aalaa72@gmail.com"
-EMAIL_TO    = "ahalaa@yahoo.com"
+EMAIL_FROM  = ""  # loaded from .env after load_env()
+EMAIL_TO    = ""   # loaded from .env after load_env()
 
 # Context files injected into every Stage 1 prompt
 CONTEXT_FILES = [
@@ -146,7 +146,9 @@ def load_env():
     return creds
 
 ENV = load_env()
-GMAIL_PASS = ENV.get("GMAIL_APP_PASSWORD", "")
+EMAIL_FROM  = ENV.get("EMAIL_FROM", "clinicreservation73@gmail.com")
+EMAIL_TO    = ENV.get("EMAIL_TO", "ahalaa@yahoo.com")
+GMAIL_PASS  = ENV.get("GMAIL_APP_PASSWORD", "")
 WEBHOOK_URL = ENV.get("WEBHOOK_URL", "")
 if WEBHOOK_URL:
     print(f"  Webhook: {WEBHOOK_URL[:60]}...")
@@ -256,10 +258,10 @@ HUMAN_REVIEW_REQUIRED
 
 CONTEXT:
 - Ahmed trades Canadian CCPC accounts (7 Questrade accounts)
-- War context: US-Israel struck Iran Feb 28 2026. Hormuz threatened.
-- Hedges active: VIXY 250 shares, ZGLD.TO 200 shares, GLD 10 shares, SLV 200 shares
+- Current positions and hedges are in the MCP data above — use LIVE portfolio data, do NOT assume any specific positions
 - Options: McMillan + TastyTrade. 50% profit target. 21 DTE roll. 16-delta. Half-Kelly. NO stops.
-- Tax: Interest ~50.17%, Capital gains ~25.08%, RDTOH mechanism"""
+- Tax: Interest ~50.17%, Capital gains ~25.08%, RDTOH mechanism
+- Geopolitical/macro context: Use WebSearch for CURRENT situation — do NOT reference stale events"""
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -281,7 +283,10 @@ def _wrap_data_section(label: str, content: str) -> str:
 # ── Direct MCP Tool Calls (parallel, bypass claude -p) ───────────────────────
 
 _SLOW_TOOLS = {"scan_long_candidates", "scan_short_candidates", "scan_market_opportunities",
-                "scan_market_by_sector", "scan_stocks_by_setup"}
+                "scan_market_by_sector", "scan_stocks_by_setup",
+                "generate_trading_signal", "calculate_relative_strength_tool",
+                "analyze_technical", "analyze_options_mcmillan",
+                "analyze_pullback_personality"}
 
 MAX_MCP_RESPONSE_SIZE = 500_000  # 500KB max per tool
 
@@ -452,6 +457,21 @@ def _build_tool_list(request_type: str, tickers: list) -> list:
             (f"unusual_options_{t}",    "detect_unusual_options_activity",    {"ticker": t}),
             (f"candles_{t}",            "get_questrade_candles",              {"symbol": t, "interval": "OneDay", "window": 60}),
         ]
+        # Phase 5: Institutional Analysis
+        tools += [
+            (f"intermarket_{t}",    "analyze_intermarket_correlation", {"ticker": t}),
+            ("vix_ts",              "analyze_vix_term_structure",      {}),
+            (f"expected_move_{t}",  "calculate_expected_move",         {"ticker": t, "dte": 30}),
+            ("macro_header",        "generate_macro_context_header",   {}),
+        ]
+        # Pullback Personality — stock-specific entry levels (9 techniques)
+        tools += [
+            (f"pullback_{t}",      "analyze_pullback_personality",     {"ticker": t}),
+        ]
+        # Phase 6: Statistical Validation
+        tools += [
+            (f"pattern_edge_{t}",   "quantify_pattern_edge",           {"ticker": t}),
+        ]
         # Positions across all accounts
         for acct in QUESTRADE_ACCOUNTS:
             tools.append((f"positions_{acct}", "get_questrade_positions", {"account_number": acct}))
@@ -466,6 +486,12 @@ def _build_tool_list(request_type: str, tickers: list) -> list:
                 (f"signal_{t}",            "generate_trading_signal",     {"ticker": t}),
                 (f"catalysts_{t}",         "detect_catalyst_strength",    {"ticker": t}),
                 (f"ticker_data_{t}",       "get_ticker_data",             {"ticker": t}),
+            ]
+            # Phase 5: Institutional Analysis (critical for options)
+            tools += [
+                ("vix_ts",              "analyze_vix_term_structure",      {}),
+                (f"expected_move_{t}",  "calculate_expected_move",         {"ticker": t, "dte": 30}),
+                ("macro_header",        "generate_macro_context_header",   {}),
             ]
             for acct in QUESTRADE_ACCOUNTS:
                 tools.append((f"positions_{acct}", "get_questrade_positions", {"account_number": acct}))
@@ -493,12 +519,25 @@ def _build_tool_list(request_type: str, tickers: list) -> list:
                 (f"unusual_options_{t}",    "detect_unusual_options_activity",    {"ticker": t}),
                 (f"candles_{t}",            "get_questrade_candles",              {"symbol": t, "interval": "OneDay", "window": 60}),
             ]
+            # Phase 5: Institutional Analysis (per ticker)
+            tools += [
+                (f"intermarket_{t}",    "analyze_intermarket_correlation", {"ticker": t}),
+                (f"expected_move_{t}",  "calculate_expected_move",         {"ticker": t, "dte": 30}),
+                (f"pattern_edge_{t}",   "quantify_pattern_edge",           {"ticker": t}),
+            ]
+        # Shared macro tools (once for comparison)
+        tools += [
+            ("vix_ts",       "analyze_vix_term_structure",    {}),
+            ("macro_header", "generate_macro_context_header", {}),
+        ]
 
     elif request_type == "market_scan_long":
         tools += [
             ("fear_greed",       "get_cnn_fear_greed_index",  {}),  # light — token warmup
             ("scan_long",        "scan_long_candidates",     {}),
             ("scan_market",      "scan_market_opportunities", {}),
+            ("vix_ts",           "analyze_vix_term_structure",    {}),
+            ("macro_header",     "generate_macro_context_header", {}),
         ]
 
     elif request_type == "market_scan_short":
@@ -506,6 +545,8 @@ def _build_tool_list(request_type: str, tickers: list) -> list:
             ("fear_greed",       "get_cnn_fear_greed_index",  {}),  # light — token warmup
             ("scan_short",       "scan_short_candidates",     {}),
             ("scan_market",      "scan_market_opportunities", {}),
+            ("vix_ts",           "analyze_vix_term_structure",    {}),
+            ("macro_header",     "generate_macro_context_header", {}),
         ]
 
     elif request_type == "market_scan":
@@ -514,6 +555,8 @@ def _build_tool_list(request_type: str, tickers: list) -> list:
             ("scan_long",        "scan_long_candidates",      {}),
             ("scan_short",       "scan_short_candidates",     {}),
             ("scan_market",      "scan_market_opportunities", {}),
+            ("vix_ts",           "analyze_vix_term_structure",    {}),
+            ("macro_header",     "generate_macro_context_header", {}),
         ]
 
     elif request_type == "portfolio_review":
@@ -586,7 +629,7 @@ def _gather_mcp_data_inner(tools, pq, stage, log, total):
     remaining = tools[1:]
     if remaining:
         log(f"Parallel: {len(remaining)} tools")
-    with ThreadPoolExecutor(max_workers=max(len(remaining), 1)) as pool:
+    with ThreadPoolExecutor(max_workers=min(len(remaining), 6)) as pool:
         futures = {}
         for label, real_name, args in remaining:
             f = pool.submit(_call_mcp_tool, real_name, args)
@@ -714,9 +757,42 @@ def _compact_mcp_summary(mcp_data: dict) -> str:
             brooks = d.get("brooks_analysis") or {}
             if brooks:
                 lines.append(f"  Brooks: {brooks.get('pattern', '?')} | Prob {brooks.get('probability', '?')}% | Trap {brooks.get('trap_risk', '?')}")
+                # Phase 2 enhanced Brooks fields
+                te = brooks.get("trend_evolution") or {}
+                if te:
+                    lines.append(f"  Trend Phase: {te.get('phase', '?')} ({te.get('phase_score', '?')}/100)")
+                tc = brooks.get("trap_classification") or {}
+                if tc.get("trap_type") and tc["trap_type"] != "none":
+                    lines.append(f"  Trap: {tc.get('trap_type', '?')} [{tc.get('severity', '?')}] — {tc.get('explanation', '?')[:80]}")
+                mm = brooks.get("measured_move_targets") or {}
+                if mm.get("primary_target"):
+                    lines.append(f"  Measured Move: Primary ${_n(mm.get('primary_target'))} | L1=L2 ${_n(mm.get('leg1_leg2'))} | Spike ${_n(mm.get('spike_projection'))}")
+                cs = brooks.get("confirmation_status") or {}
+                if cs:
+                    lines.append(f"  Confirmation: {'YES' if cs.get('confirmed') else 'NO'} ({cs.get('bar_quality', '?')}) — {cs.get('reason', '?')[:60]}")
+                pn = brooks.get("probability_narrative", "")
+                if pn:
+                    lines.append(f"  Prob Narrative: {pn[:150]}")
+                lesson = brooks.get("lesson", "")
+                if lesson:
+                    lines.append(f"  Brooks Lesson: {lesson[:150]}")
             ot = d.get("options_tradability") or {}
             if ot:
                 lines.append(f"  Opts: allowed={ot.get('options_allowed')} | IV rank {ot.get('iv_rank', '?')} | {ot.get('liquidity_tier', '?')} | Earnings {ot.get('days_to_earnings', '?')}d")
+            # Multi-timeframe confluence
+            tfa = d.get("timeframe_analysis") or {}
+            if tfa:
+                lines.append(
+                    f"  MTF: Monthly {tfa.get('monthly_trend', '?')} | Weekly {tfa.get('weekly_trend', '?')} "
+                    f"(AI: {tfa.get('weekly_always_in', '?')}, Pattern: {tfa.get('weekly_pattern', '?')}) | "
+                    f"Daily {tfa.get('daily_trend', '?')}"
+                )
+                lines.append(
+                    f"  Confluence: {tfa.get('confluence_score', '?')}/100 Grade {tfa.get('confluence_grade', '?')} | "
+                    f"{tfa.get('alignment', '?')} | Swing: {tfa.get('swing_suitability', '?')}"
+                )
+                if tfa.get("conflicts"):
+                    lines.append(f"  Conflicts: {', '.join(tfa['conflicts'])}")
 
         # ── Technical ──
         elif label.startswith("technical_"):
@@ -734,13 +810,51 @@ def _compact_mcp_summary(mcp_data: dict) -> str:
                 f"  BB: ${_n(bb.get('upper'))}/{_n(bb.get('middle'))}/{_n(bb.get('lower'))} | "
                 f"SMA20 ${_n(ma.get('sma_20'))} SMA50 ${_n(ma.get('sma_50'))} SMA200 ${_n(ma.get('sma_200'))} | {ma.get('trend', '?')}"
             )
-            ab = a.get("al_brooks_analysis", {})
+            ab = a.get("al_brooks", a.get("al_brooks_analysis", {}))
             if ab:
-                lines.append(f"  Brooks: {ab.get('pattern', '?')} | Prob {ab.get('probability', '?')}% | Trap {ab.get('trap_risk', '?')}")
+                lines.append(f"  Brooks: {ab.get('pattern', '?')} | Prob {ab.get('adjusted_probability', ab.get('probability', '?'))}% | Trap {ab.get('trap_risk', '?')}")
+                # Phase 2 enhanced fields
+                te = ab.get("trend_evolution", {})
+                if te:
+                    lines.append(f"  Brooks Phase: {te.get('phase', '?')} ({te.get('phase_score', '?')}/100)")
+                tt = ab.get("trap_type", ab.get("trap_classification", {}).get("trap_type", ""))
+                if tt and tt != "none":
+                    lines.append(f"  Trap Type: {tt}")
+                mm = ab.get("measured_move_targets", {})
+                if mm and mm.get("primary_target"):
+                    lines.append(f"  Measured Move: ${_n(mm.get('primary_target'))} (method: {mm.get('primary_method', '?')})")
+                pn = ab.get("probability_narrative", "")
+                if pn:
+                    lines.append(f"  Prob Math: {pn}")
+                lesson = ab.get("lesson", "")
+                if lesson:
+                    lines.append(f"  Lesson: {lesson[:120]}")
+                pl = ab.get("pattern_lesson", {})
+                if pl and pl.get("brooks_quote"):
+                    lines.append(f"  Brooks Quote: \"{pl['brooks_quote'][:100]}\"")
+                cs = ab.get("confirmation_status", {})
+                if cs and cs.get("confirmed") is not None:
+                    lines.append(f"  Confirmation: {'YES' if cs['confirmed'] else 'NO'} — {cs.get('reason', '?')}")
             ml = d.get("ml_probability_layer", {})
             if ml and ml.get("similar_setups_found"):
                 rate = ml.get("historical_success_rate_10d", 0)
                 lines.append(f"  ML: {ml.get('similar_setups_found')} setups | {rate*100 if isinstance(rate, (int, float)) else '?'}% win | E[R] {_n(ml.get('expected_return'), '.1f')}%")
+            # Multi-timeframe Brooks (from analyze_technical)
+            mtb = d.get("multi_timeframe_brooks", {})
+            if mtb:
+                lines.append(
+                    f"  Brooks MTF: Monthly {mtb.get('monthly_trend', '?')} | Weekly AI: {mtb.get('weekly_always_in', '?')} "
+                    f"Pattern: {mtb.get('weekly_pattern', '?')} | Daily AI: {mtb.get('daily_always_in', '?')}"
+                )
+                lines.append(
+                    f"  Confluence: {mtb.get('confluence_score', '?')}/100 Grade {mtb.get('confluence_grade', '?')} | "
+                    f"{mtb.get('alignment', '?')} | Swing: {mtb.get('swing_suitability', '?')}"
+                )
+                if mtb.get("conflicts"):
+                    lines.append(f"  Conflicts: {', '.join(mtb['conflicts'][:3])}")
+                wpd = mtb.get("weekly_pattern_description", "")
+                if wpd:
+                    lines.append(f"  Weekly Brooks: {wpd[:150]}")
 
         # ── Support/Resistance ──
         elif label.startswith("support_resistance_"):
@@ -798,6 +912,42 @@ def _compact_mcp_summary(mcp_data: dict) -> str:
                 f"  P/C {_n(pc.get('overall_ratio'), '.2f')} ({pc.get('sentiment', '?')}) | "
                 f"Max Pain ${_n(oi.get('max_pain'))} | Grade {inst.get('liquidity_grade', '?')} {inst.get('liquidity_tier', '?')}"
             )
+            # McMillan Mastery Insights (Phase 2 enhancements)
+            mm = d.get("mcmillan_mastery", {})
+            if mm:
+                vr = mm.get("volatility_regime", {})
+                if vr:
+                    lines.append(
+                        f"  McMillan Vol Regime: {vr.get('composite', '?')} | "
+                        f"Action: {str(vr.get('percentile_action', '?'))[:80]}"
+                    )
+                vt = mm.get("vega_theta_tradeoff", {})
+                if vt:
+                    risk = vt.get("seller_risk", "?")
+                    warn = f" — {vt.get('seller_warning', '')[:100]}" if risk == "HIGH" else ""
+                    lines.append(f"  Seller Risk: {risk}{warn}")
+                sk = mm.get("skew_opportunity", {})
+                if sk:
+                    lines.append(
+                        f"  Skew: {sk.get('skew_type', '?')} | {str(sk.get('rationale', ''))[:100]}"
+                    )
+                ls = mm.get("lesson", {})
+                if ls:
+                    lines.append(
+                        f"  McMillan Lesson: {ls.get('strategy', '?')} | "
+                        f"Win Rate: {ls.get('win_rate', '?')} | "
+                        f"{str(ls.get('lesson', ''))[:120]}"
+                    )
+            # Greeks assessment
+            ga = d.get("greeks_assessment", {})
+            if ga:
+                atm_call = ga.get("atm_call", {})
+                atm_put = ga.get("atm_put", {})
+                if atm_call:
+                    lines.append(
+                        f"  Greeks Call: Δ{_n(atm_call.get('delta'), '.2f')} Γ{_n(atm_call.get('gamma'), '.4f')} "
+                        f"Θ{_n(atm_call.get('theta'), '.2f')} V{_n(atm_call.get('vega'), '.2f')}"
+                    )
 
         # ── Options Trade Plan ──
         elif label.startswith("options_plan_"):
@@ -959,6 +1109,87 @@ def _compact_mcp_summary(mcp_data: dict) -> str:
             else:
                 lines.append(f"[{label}]: {str(d)[:150]}")
 
+        # ── Phase 5: Institutional Analysis ──
+        elif label.startswith("intermarket_"):
+            strongest = d.get("strongest_correlation", {})
+            weakest = d.get("weakest_correlation", {})
+            lines.append(f"INTERMARKET CORRELATION:")
+            lines.append(f"  Strongest: {strongest.get('label', '?')} r={_n(strongest.get('correlation'))}")
+            lines.append(f"  Weakest: {weakest.get('label', '?')} r={_n(weakest.get('correlation'))}")
+            tc = d.get("ticker_correlations", {})
+            for sym, cd in list(tc.items())[:5]:
+                lines.append(f"  {sym} ({cd.get('label','')}): r={_n(cd.get('correlation'))} [{cd.get('strength','?')}]")
+            for imp in d.get("regime_implications", [])[:3]:
+                lines.append(f"  Implication: {imp}")
+            for h in d.get("hedging_suggestions", [])[:2]:
+                lines.append(f"  Hedge: {h}")
+
+        elif label == "vix_ts":
+            lines.append(f"VIX TERM STRUCTURE:")
+            lines.append(f"  VIX spot: {_n(d.get('vix_spot'))} | 20d avg: {_n(d.get('vix_20d_avg'))} | percentile: {d.get('vix_percentile_6mo','?')}%")
+            lines.append(f"  Structure: {d.get('term_structure','?')} | Regime: {d.get('vix_regime','?')} | Trend: {d.get('vix_trend','?')}")
+            if d.get("vix_3m"):
+                lines.append(f"  VIX3M: {_n(d.get('vix_3m'))} | Ratio: {_n(d.get('vix_vix3m_ratio'))} | Ratio pctile: {d.get('ratio_percentile_6mo','?')}%")
+            lines.append(f"  Options bias: {d.get('options_bias','?')}")
+            for imp in d.get("trading_implications", [])[:3]:
+                lines.append(f"  {imp}")
+
+        elif label.startswith("expected_move_"):
+            primary = d.get("primary", {})
+            lines.append(f"EXPECTED MOVE ({d.get('dte','?')} DTE):")
+            lines.append(f"  Price: ${_n(d.get('current_price'))} | Method: {primary.get('method','?')}")
+            lines.append(f"  Move: ${_n(primary.get('expected_move_dollars'))} ({_n(primary.get('expected_move_pct'))}%)")
+            lines.append(f"  Range: ${_n(primary.get('lower_bound'))} — ${_n(primary.get('upper_bound'))}")
+            if d.get("iv_method"):
+                iv = d["iv_method"]
+                lines.append(f"  IV method: IV={iv.get('iv_used_pct','?')}% → ±${_n(iv.get('expected_move_dollars'))}")
+            if d.get("straddle_method"):
+                st = d["straddle_method"]
+                lines.append(f"  Straddle: ${_n(st.get('straddle_price'))} × 0.85 = ${_n(st.get('expected_move_dollars'))} (exp {st.get('expiration','?')})")
+            lines.append(f"  Interpretation: {d.get('interpretation','?')}")
+
+        elif label == "macro_header":
+            ms = d.get("macro_summary", {})
+            lines.append(f"MACRO CONTEXT:")
+            lines.append(f"  Regime: {d.get('regime','?')} | Yield curve: {ms.get('yield_curve','?')} | VIX: {ms.get('vix','?')}")
+            lines.append(f"  Credit: {ms.get('credit','?')} | Fed stance: {ms.get('fed_policy_stance','?')} | Options bias: {ms.get('options_strategy_bias','?')}")
+            lines.append(f"  VIX term structure: {ms.get('vix_term_structure','?')}")
+            kl = d.get("key_levels", {})
+            if kl:
+                lines.append(f"  Key levels: 10Y={kl.get('10y_yield','?')}% VIX={kl.get('vix_spot','?')}")
+            narrative = d.get("narrative", "")
+            if narrative:
+                lines.append(f"  Narrative: {narrative[:200]}")
+            for imp in d.get("trading_implications", [])[:3]:
+                lines.append(f"  {imp}")
+
+        # ── Phase 6: Statistical Validation ──
+        elif label.startswith("pullback_"):
+            top = d.get("top_entry") or {}
+            lines.append(f"PULLBACK PERSONALITY:")
+            lines.append(f"  Top entry: ${_n(top.get('price'))} (score {_n(top.get('score'),'.0f')}/100, {top.get('type','?')})")
+            bounces = d.get("ma_bounce_rates") or {}
+            if bounces:
+                bounce_str = " | ".join(f"{k}: {_n(v.get('bounce_rate'),'.0f')}%" for k, v in list(bounces.items())[:4])
+                lines.append(f"  MA bounces: {bounce_str}")
+            ou = d.get("ornstein_uhlenbeck") or {}
+            if ou:
+                lines.append(f"  Half-life: {_n(ou.get('half_life_bars'),'.1f')} bars | Z-score: {_n(ou.get('z_score'),'.2f')} | Mean-rev speed: {ou.get('speed_label','?')}")
+            regime = d.get("regime_depth") or {}
+            if regime:
+                lines.append(f"  Regime: {regime.get('regime','?')} | Typical depth: {_n(regime.get('typical_depth_pct'),'.1f')}%")
+
+        elif label.startswith("pattern_edge_"):
+            lines.append(f"STATISTICAL EDGE:")
+            lines.append(f"  Pattern: {d.get('pattern','?')} | Signal: {d.get('signal','?')}")
+            lines.append(f"  Win rate: {d.get('win_rate','?')} | Trades: {d.get('total_trades','?')} | Edge: {d.get('edge_assessment','?')}")
+            if d.get("profit_factor"):
+                lines.append(f"  Profit factor: {_n(d.get('profit_factor'))} | Avg win: {_n(d.get('avg_win_pct'))}% | Avg loss: {_n(d.get('avg_loss_pct'))}%")
+            if d.get("kelly_fraction"):
+                lines.append(f"  Kelly: {_n(d.get('kelly_fraction'))} | Rec size: {d.get('recommended_size','?')}")
+            if d.get("interpretation"):
+                lines.append(f"  {d.get('interpretation')}")
+
         # ── Market scans / fear-greed / other ──
         elif label.startswith("fear_greed"):
             fg = d.get("value") or d.get("score") or d.get("fear_greed_index")
@@ -1104,7 +1335,7 @@ def _run_claude_once(prompt: str, stage: str, pq, env: dict, needs_mcp: bool = T
                 "--output-format", "stream-json", "--verbose",
                 "--input-format", "stream-json",
                 "--include-partial-messages",
-                "--disallowed-tools", "Agent,TodoWrite,TaskOutput,Write,Edit,Bash,Glob,Grep,Read,NotebookEdit,Skill,EnterPlanMode,EnterWorktree,AskUserQuestion,WebFetch"]
+                "--disallowed-tools", "Agent,TodoWrite,TaskOutput,Write,Edit,Bash,Glob,Grep,Read,NotebookEdit,Skill,EnterPlanMode,EnterWorktree,AskUserQuestion,WebFetch,ToolSearch"]
     if model:
         base_cmd += ["--model", model]
     if not needs_mcp:
@@ -1258,7 +1489,15 @@ def _run_claude_once(prompt: str, stage: str, pq, env: dict, needs_mcp: bool = T
 
                 # Result message — final combined output
                 elif etype == "result":
-                    result_text = ev.get("result", "")
+                    result_from_event = ev.get("result", "")
+                    # The result event only has Claude's LAST text output (after
+                    # final tool call). text_parts has ALL streamed text across
+                    # all turns. Use whichever is longer.
+                    streamed = "".join(text_parts).strip()
+                    if len(streamed) > len(result_from_event):
+                        result_text = streamed
+                    else:
+                        result_text = result_from_event
                     # Push result to UI so user sees Claude output (not just Gemini)
                     if result_text and not text_parts:
                         # No streaming deltas arrived — push full result as chunk
@@ -1530,8 +1769,8 @@ def run_gemini(prompt: str, stage: str, pq) -> str:
     env = _build_clean_env()
     env.pop("GEMINI_API_KEY", None)   # Gemini uses Google login, not API key
 
-    cmd = [GEMINI_BIN, "-p", "", "--sandbox", "--approval-mode", "plan"]
-    log(f"CMD: gemini -p --sandbox --approval-mode plan")
+    cmd = [GEMINI_BIN, "-p", "", "--approval-mode", "yolo"]
+    log(f"CMD: gemini -p --approval-mode yolo")
     log(f"Prompt: {len(prompt):,} chars")
 
     try:
@@ -1621,7 +1860,7 @@ def send_email(subject: str, body: str) -> str:
 </body></html>"""
         msg.attach(MIMEText(body, "plain"))
         msg.attach(MIMEText(html, "html"))
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as s:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=15) as s:
             s.login(EMAIL_FROM, GMAIL_PASS)
             s.sendmail(EMAIL_FROM, EMAIL_TO, msg.as_string())
         return f"EMAIL_SENT → {EMAIL_TO}"
@@ -2162,7 +2401,13 @@ INSTRUCTIONS:
 - UNUSUAL OPTIONS ACTIVITY: If smart money flow or unusual volume detected, include in options analysis.
 - CANDLES: Use daily candle data for Al Brooks price action analysis (support/resistance confirmation).
 - POSITIONS: Data includes positions from all 7 Questrade accounts. Report any holdings of analyzed tickers with account, quantity, cost basis, P&L. If none, state clearly.
-- OPTIONS: Include full McMillan analysis and options trade plan with specific strikes, expiries, strategy. Include IV skew analysis if available.
+- OPTIONS: Include full McMillan analysis and options trade plan with specific strikes, expiries, strategy. Include IV skew analysis if available. If McMILLAN MASTERY data is present (Vol Regime, Seller Risk, Skew, McMillan Lesson), create a dedicated "McMillan Mastery Insights" subsection showing vol regime composite signal, seller risk assessment with warnings, skew type with trading rationale, and the strategy lesson with win rate. Include Greeks (Delta, Gamma, Theta, Vega) for ATM strikes.
+- MACRO CONTEXT: If MACRO CONTEXT data is present, add a "Macro Environment" header at the TOP of the report showing regime, yield curve, VIX regime, credit, Fed stance, and options bias. This sets the stage for the entire analysis.
+- VIX TERM STRUCTURE: If VIX TERM STRUCTURE data is present, integrate into the macro section and options strategy selection. Contango = sell premium, backwardation = buy protection.
+- INTERMARKET CORRELATION: If INTERMARKET CORRELATION data is present, include cross-asset analysis showing strongest/weakest correlations, hedging suggestions, and regime implications.
+- EXPECTED MOVE: If EXPECTED MOVE data is present, include the expected 1-SD range (both IV and straddle methods). Use this to validate strike selection and set realistic price targets.
+- STATISTICAL EDGE: If STATISTICAL EDGE data is present, include pattern win rate, profit factor, Kelly fraction, and edge assessment. This gives the reader confidence calibration on the Brooks pattern.
+- MULTI-TIMEFRAME: ALWAYS include a dedicated Multi-Timeframe Analysis section BEFORE the Al Brooks section. Show Monthly/Weekly/Daily trends in a table, confluence score, alignment grade, and position sizing impact. If timeframes conflict (e.g., Monthly BEARISH vs Weekly BULLISH), explain the conflict and recommend reduced position size. This is CRITICAL — never skip it.
 - SOURCES: Cite URLs from web searches in relevant sections (e.g., analyst upgrade source, news article).
 
 End with:
@@ -2484,6 +2729,16 @@ Report:
                 if json_clean.startswith("```"):
                     json_clean = re.sub(r'^```(?:json)?\s*', '', json_clean)
                     json_clean = re.sub(r'\s*```$', '', json_clean)
+                # Extract first valid JSON object — ignore trailing text
+                brace_start = json_clean.find("{")
+                if brace_start >= 0:
+                    depth = 0
+                    for i, ch in enumerate(json_clean[brace_start:], brace_start):
+                        if ch == "{": depth += 1
+                        elif ch == "}": depth -= 1
+                        if depth == 0:
+                            json_clean = json_clean[brace_start:i+1]
+                            break
                 structured_json = json.loads(json_clean)
                 print(f"  [json] Extracted structured data: {list(structured_json.keys())}", flush=True)
             except (json.JSONDecodeError, TypeError) as je:
@@ -2579,6 +2834,7 @@ Report:
         # ── Prediction tracking — use signal data from MCP gathering ──
         # generate_trading_signal has auto_store=True, so predictions are typically
         # already stored during MCP gathering. We log the ID or fallback to manual store.
+        final_pred_id = ""  # Track prediction ID for report attachment
         if ticker and q_score >= 50:
             try:
                 signal_label = f"signal_{ticker}"
@@ -2597,6 +2853,7 @@ Report:
 
                     if pred_id:
                         # Prediction already stored by auto_store — just log it
+                        final_pred_id = pred_id
                         print(f"  [prediction] Auto-stored during MCP: {ticker} {signal_val} "
                               f"@ ${entry_price} (id={pred_id})", flush=True)
                         push(pq, "prediction", "done",
@@ -2619,6 +2876,12 @@ Report:
                             push(pq, "prediction", "done",
                                  f"Prediction store failed: {pred_result['error'][:60]}")
                         else:
+                            # Extract prediction_id from manual store result
+                            try:
+                                pr_data = json.loads(pred_result.get("data", "{}")) if isinstance(pred_result.get("data"), str) else pred_result.get("data", {})
+                                final_pred_id = pr_data.get("prediction_id", "") if isinstance(pr_data, dict) else ""
+                            except (json.JSONDecodeError, TypeError):
+                                pass
                             print(f"  [prediction] Stored: {ticker} {signal_val} @ ${entry_price}", flush=True)
                             push(pq, "prediction", "done",
                                  f"Prediction stored: {ticker} {signal_val} @ ${entry_price}")
@@ -2630,6 +2893,25 @@ Report:
             except Exception as pred_err:
                 print(f"  [prediction] ERROR: {pred_err}", flush=True)
 
+        # ── Attach report to prediction in database ───────────────────────
+        if final_pred_id:
+            try:
+                db_args = {
+                    "prediction_id": final_pred_id,
+                    "report_markdown": header + final_text,
+                    "quality_score": q_score,
+                    "quality_grade": q_grade,
+                    "vault_file": str(final_file),
+                }
+                db_result = _call_mcp_tool("update_prediction_report", db_args, timeout=30)
+                if "error" in db_result:
+                    print(f"  [db] ERROR attaching report: {db_result['error'][:80]}", flush=True)
+                else:
+                    print(f"  [db] Report attached to prediction {str(final_pred_id)[:8]} "
+                          f"({len(final_text):,} chars)", flush=True)
+            except Exception as db_err:
+                print(f"  [db] ERROR: {db_err}", flush=True)
+
         # ── Email FINAL report (quality-gated) ───────────────────────────
         if q_score < 40:
             # Score too low — save draft only, no email
@@ -2640,8 +2922,13 @@ Report:
             push(pq, "email", "running", f"Emailing to {EMAIL_TO}…")
             quality_tag = f"[LOW QUALITY] " if q_score < 60 else ""
             subject = f"{quality_tag}[Analyst] {report_title} — {datetime.now():%Y-%m-%d %H:%M}"
-            email_status = send_email(subject, final_text)
-            push(pq, "email", "done", email_status)
+            _final_text_for_email = final_text
+            def _send_async(subj, body, _pq=pq):
+                result = send_email(subj, body)
+                print(f"  [email] {result}", flush=True)
+                push(_pq, "email", "done", result)
+            threading.Thread(target=_send_async, args=(subject, _final_text_for_email), daemon=True).start()
+            email_status = f"EMAIL_QUEUED → {EMAIL_TO}"
 
         # ── Webhook notification (Telegram/Slack via n8n) ────────────────
         if WEBHOOK_URL:
@@ -3051,6 +3338,63 @@ class Handler(BaseHTTPRequestHandler):
             finally:
                 bq.unsubscribe(sq)
 
+        elif path == "/self-improvement/data":
+            # ── Self-Improvement API — read cached results from DB (fast, ~2s) ──
+            try:
+                results = {}
+                db_code = (
+                    "import json\n"
+                    "from investor_agent.database import execute_query\n"
+                    "out = {}\n"
+                    "try:\n"
+                    "    rows = execute_query('SELECT TOP 1 * FROM calibration_history ORDER BY calibration_date DESC')\n"
+                    "    if rows:\n"
+                    "        r = rows[0]\n"
+                    "        out['calibration'] = {'status':'calibrated','brier_score':float(r.get('brier_score') or 0),'sample_size':int(r.get('total_predictions') or 0),'overall_win_rate':round(float(r.get('total_resolved') or 0)/max(float(r.get('total_predictions') or 1),1)*100,1),'interpretation':'Cached from DB','buckets':{'50_60':{'avg_predicted':55,'actual_rate':float(r.get('bucket_50_60_actual') or 0),'n':int(r.get('bucket_50_60_n') or 0),'multiplier':float(r.get('multiplier_50_60') or 1)},'60_70':{'avg_predicted':65,'actual_rate':float(r.get('bucket_60_70_actual') or 0),'n':int(r.get('bucket_60_70_n') or 0),'multiplier':float(r.get('multiplier_60_70') or 1)},'70_80':{'avg_predicted':75,'actual_rate':float(r.get('bucket_70_80_actual') or 0),'n':int(r.get('bucket_70_80_n') or 0),'multiplier':float(r.get('multiplier_70_80') or 1)},'80_plus':{'avg_predicted':85,'actual_rate':float(r.get('bucket_80_plus_actual') or 0),'n':int(r.get('bucket_80_plus_n') or 0),'multiplier':float(r.get('multiplier_80_plus') or 1)}}}\n"
+                    "    else: out['calibration'] = {'error':'no data'}\n"
+                    "except Exception as e: out['calibration'] = {'error':str(e)}\n"
+                    "try:\n"
+                    "    rows = execute_query('SELECT job_name, last_run_at, last_status, last_duration_ms, consecutive_failures, last_error FROM job_checkpoints')\n"
+                    "    out['job_checkpoints'] = [{k: str(v) if v is not None else None for k, v in r.items()} for r in rows]\n"
+                    "except: out['job_checkpoints'] = []\n"
+                    "print(json.dumps(out, default=str))\n"
+                )
+                db_proc = subprocess.run(
+                    ["docker", "exec", "-i", "investor-agent-mcp", "python", "-c", db_code],
+                    capture_output=True, text=True, timeout=30
+                )
+                if db_proc.returncode == 0 and db_proc.stdout.strip():
+                    results = json.loads(db_proc.stdout.strip())
+                else:
+                    print(f"  [SI] DB read failed: rc={db_proc.returncode} err={db_proc.stderr[:200]}", flush=True)
+
+                # Gate effectiveness, stop optimization, efficiency — call MCP in parallel (60s timeout)
+                from concurrent.futures import ThreadPoolExecutor, as_completed as _as_completed
+                live_tools = {
+                    "gate_effectiveness": ("analyze_gate_effectiveness", {"days": 90}),
+                    "stop_optimization": ("optimize_stops_targets", {"days": 180}),
+                    "efficiency": ("generate_efficiency_report", {"period_days": 30, "min_sample": 3}),
+                }
+                with ThreadPoolExecutor(max_workers=3) as pool:
+                    futures = {pool.submit(_call_mcp_tool, t, a, 60): k for k, (t, a) in live_tools.items()}
+                    for f in _as_completed(futures):
+                        k = futures[f]
+                        try:
+                            r = f.result()
+                            raw = r.get("data", "{}")
+                            results[k] = json.loads(raw) if isinstance(raw, str) else raw
+                        except Exception as e:
+                            results[k] = {"error": str(e)}
+
+                results["generated_at"] = datetime.now().isoformat()
+                self._json(200, results)
+            except Exception as e:
+                self._json(500, {"error": str(e)})
+
+        elif path == "/self-improvement/run":
+            # handled by POST
+            self._json(405, {"error": "Use POST"})
+
         elif path == "/predictions":
             # ── Predictions dashboard — cached predictions + efficiency report ──
             qs = parse_qs(urlparse(self.path).query)
@@ -3111,10 +3455,56 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed = urlparse(self.path)
 
-        if parsed.path not in ("/analyze", "/notify"):
+        if parsed.path not in ("/analyze", "/notify", "/self-improvement/run"):
             self.send_response(404); self.send_header("Content-Length", "0"); self.end_headers(); return
 
         if not self._check_auth():
+            return
+
+        # ── /self-improvement/run — trigger a self-improvement job on-demand ──
+        if parsed.path == "/self-improvement/run":
+            n = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(n)) if n > 0 else {}
+            job_name = body.get("job", "")
+            TOOL_MAP = {
+                "daily_outcomes": ("update_prediction_outcomes", {}),
+                "daily_vault_ingest": None,  # special: runs scheduler job
+                "weekly_calibration": ("calibrate_confidence", {"days": 90}),
+                "weekly_gate_effectiveness": ("analyze_gate_effectiveness", {"days": 90}),
+                "weekly_efficiency_report": ("generate_efficiency_report", {"period_days": 30, "min_sample": 3}),
+                "weekly_model_decay": ("detect_model_decay", {"days": 60}),
+                "monthly_stop_optimization": ("optimize_stops_targets", {"days": 180}),
+            }
+            if job_name not in TOOL_MAP:
+                self._json(400, {"error": f"Unknown job: {job_name}", "available": list(TOOL_MAP.keys())})
+                return
+            try:
+                if TOOL_MAP[job_name] is None:
+                    # Host-side job — run via scheduler script
+                    scheduler = str(REPO / "scripts" / "self-improvement-scheduler.py")
+                    proc = subprocess.run(
+                        ["python3", scheduler, "--run", job_name],
+                        capture_output=True, text=True, timeout=300
+                    )
+                    if proc.returncode == 0:
+                        self._json(200, {"job": job_name, "status": "completed",
+                                        "data": proc.stdout.strip()[-500:],
+                                        "ran_at": datetime.now().isoformat()})
+                    else:
+                        self._json(500, {"job": job_name, "status": "error",
+                                        "error": proc.stderr.strip()[-300:]})
+                else:
+                    tool, args = TOOL_MAP[job_name]
+                    result = _call_mcp_tool(tool, args, timeout=300)
+                    raw = result.get("data", "{}")
+                    try:
+                        data = json.loads(raw) if isinstance(raw, str) else raw
+                    except (json.JSONDecodeError, TypeError):
+                        data = {"raw": str(raw)[:500]}
+                    self._json(200, {"job": job_name, "status": "completed", "data": data,
+                                    "ran_at": datetime.now().isoformat()})
+            except Exception as e:
+                self._json(500, {"job": job_name, "status": "error", "error": str(e)})
             return
 
         # ── /notify — send an email via the server's configured SMTP ─────
@@ -3191,6 +3581,442 @@ class Handler(BaseHTTPRequestHandler):
 
 
 # ── UI ────────────────────────────────────────────────────────────────────────
+
+_SI_STANDALONE_REMOVED = "merged into main UI as tab"
+# The standalone SELF_IMPROVEMENT_UI HTML was here but is now part of the main UI.
+
+UI_UNUSED = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Self-Improvement Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=Cormorant+Garamond:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0c0c10;--surf:#111118;--card:#16161f;--b0:#1c1c2a;--b1:#282840;
+  --gold:#d4a853;--goldDim:#7a5e28;--goldGlow:rgba(212,168,83,.12);
+  --green:#4caf7d;--red:#e05555;--blue:#5b8ef0;--purple:#b06ef0;--orange:#e07b5a;
+  --txt:#dddbe8;--dim:#6e6c84;--muted:#35334a;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--txt);font-family:'IBM Plex Mono',monospace;
+     min-height:100vh;padding:0}
+
+header{background:var(--surf);border-bottom:1px solid var(--b0);
+       display:flex;align-items:center;padding:14px 28px;gap:16px;position:sticky;top:0;z-index:10}
+.brand{font-family:'Cormorant Garamond',serif;font-size:22px;font-weight:700;
+       color:var(--gold);letter-spacing:.04em}
+.brand em{font-style:normal;font-size:9px;color:var(--dim);margin-left:8px;
+           font-family:'IBM Plex Mono',monospace;letter-spacing:.12em;text-transform:uppercase}
+.back{color:var(--dim);text-decoration:none;font-size:11px;letter-spacing:.08em;
+      border:1px solid var(--b0);padding:4px 12px;border-radius:4px}
+.back:hover{border-color:var(--gold);color:var(--gold)}
+.refresh-btn{margin-left:auto;background:none;border:1px solid var(--b0);color:var(--dim);
+             padding:5px 14px;border-radius:4px;cursor:pointer;font-family:inherit;font-size:10px;
+             letter-spacing:.08em;text-transform:uppercase}
+.refresh-btn:hover{border-color:var(--gold);color:var(--gold)}
+.refresh-btn.loading{opacity:.5;pointer-events:none}
+.ts{font-size:9px;color:var(--muted);letter-spacing:.06em}
+
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;padding:22px 28px;max-width:1400px}
+@media(max-width:900px){.grid{grid-template-columns:1fr}}
+
+.card{background:var(--card);border:1px solid var(--b0);border-radius:6px;padding:20px;
+      transition:border-color .2s}
+.card:hover{border-color:var(--b1)}
+.card.full{grid-column:1/-1}
+.card h2{font-family:'Cormorant Garamond',serif;font-size:17px;font-weight:600;
+         color:var(--gold);margin-bottom:14px;letter-spacing:.03em}
+.card h3{font-size:10px;color:var(--dim);letter-spacing:.1em;text-transform:uppercase;
+         margin:14px 0 8px}
+
+table{width:100%;border-collapse:collapse;font-size:11px}
+th{text-align:left;font-size:9px;color:var(--dim);letter-spacing:.1em;text-transform:uppercase;
+   padding:6px 10px;border-bottom:1px solid var(--b0);font-weight:500}
+td{padding:7px 10px;border-bottom:1px solid rgba(28,28,42,.5)}
+tr:last-child td{border-bottom:none}
+
+.metric{display:flex;flex-direction:column;gap:2px}
+.metric .val{font-size:22px;font-weight:600;color:var(--gold)}
+.metric .lbl{font-size:9px;color:var(--dim);letter-spacing:.08em;text-transform:uppercase}
+.metrics-row{display:flex;gap:24px;flex-wrap:wrap;margin-bottom:14px}
+
+.bar-wrap{height:6px;background:var(--b0);border-radius:3px;overflow:hidden;margin-top:4px}
+.bar{height:100%;border-radius:3px;transition:width .6s ease}
+
+.tag{display:inline-block;padding:2px 8px;border-radius:3px;font-size:9px;font-weight:500;
+     letter-spacing:.06em}
+.tag.pass{background:rgba(76,175,125,.12);color:var(--green)}
+.tag.fail{background:rgba(224,85,85,.12);color:var(--red)}
+.tag.warn{background:rgba(212,168,83,.12);color:var(--gold)}
+.tag.info{background:rgba(91,142,240,.12);color:var(--blue)}
+
+.run-btn{background:none;border:1px solid var(--b1);color:var(--dim);padding:3px 10px;
+         border-radius:3px;cursor:pointer;font-family:inherit;font-size:9px;letter-spacing:.06em}
+.run-btn:hover{border-color:var(--gold);color:var(--gold)}
+.run-btn.running{opacity:.5;pointer-events:none;color:var(--orange)}
+
+.suggestion{background:var(--surf);border-left:2px solid var(--gold);padding:10px 14px;
+            margin-bottom:8px;border-radius:0 4px 4px 0;font-size:11px;line-height:1.6}
+.suggestion .comp{color:var(--gold);font-weight:500}
+.suggestion .fix{color:var(--txt)}
+.suggestion .impact{color:var(--green);font-size:10px}
+
+#loading{display:flex;align-items:center;justify-content:center;height:60vh;
+         font-size:12px;color:var(--dim);letter-spacing:.1em}
+#error{display:none;padding:22px 28px;color:var(--red);font-size:12px}
+</style>
+</head>
+<body>
+
+<header>
+  <a class="back" href="/">&#8592; Analyst</a>
+  <span class="brand">Self-Improvement<em>Dashboard</em></span>
+  <button class="refresh-btn" onclick="loadData()">Refresh</button>
+  <span class="ts" id="timestamp"></span>
+</header>
+
+<div id="loading">Loading self-improvement data...</div>
+<div id="error"></div>
+<div class="grid" id="dashboard" style="display:none">
+
+  <!-- ═══ BRIER SCORE / CALIBRATION ═══ -->
+  <div class="card" id="calibration-card">
+    <h2>Confidence Calibration</h2>
+    <div class="metrics-row" id="cal-metrics"></div>
+    <h3>Calibration Curve — Predicted vs Actual Win Rate</h3>
+    <table id="cal-table"><thead><tr>
+      <th>Bucket</th><th>Predicted</th><th>Actual</th><th>N</th><th>Multiplier</th><th>Gap</th>
+    </tr></thead><tbody></tbody></table>
+  </div>
+
+  <!-- ═══ GATE EFFECTIVENESS ═══ -->
+  <div class="card" id="gates-card">
+    <h2>Gate Effectiveness</h2>
+    <div class="metrics-row" id="gate-metrics"></div>
+    <h3>Lift Score — PASS Win Rate vs FAIL Win Rate</h3>
+    <table id="gates-table"><thead><tr>
+      <th>Gate</th><th>PASS WR</th><th>FAIL WR</th><th>Lift</th><th>Weight</th><th>N</th>
+    </tr></thead><tbody></tbody></table>
+  </div>
+
+  <!-- ═══ STOP / TARGET OPTIMIZATION ═══ -->
+  <div class="card" id="stops-card">
+    <h2>Stop / Target Optimization</h2>
+    <div class="metrics-row" id="stop-metrics"></div>
+    <h3>MFE/MAE Analysis by Direction</h3>
+    <table id="stops-table"><thead><tr>
+      <th>Group</th><th>Win Rate</th><th>MFE 20d</th><th>MAE 20d</th>
+      <th>Optimal Stop</th><th>Optimal Target</th><th>Profit Left</th><th>N</th>
+    </tr></thead><tbody></tbody></table>
+  </div>
+
+  <!-- ═══ EFFICIENCY REPORT ═══ -->
+  <div class="card" id="efficiency-card">
+    <h2>Efficiency Report</h2>
+    <div class="metrics-row" id="eff-metrics"></div>
+    <h3>Performance by Signal</h3>
+    <table id="eff-signal-table"><thead><tr>
+      <th>Signal</th><th>Count</th><th>Win Rate</th><th>Bar</th>
+    </tr></thead><tbody></tbody></table>
+    <h3>Performance by Gates Passed</h3>
+    <table id="eff-gates-table"><thead><tr>
+      <th>Gates</th><th>Count</th><th>Win Rate</th><th>Bar</th>
+    </tr></thead><tbody></tbody></table>
+  </div>
+
+  <!-- ═══ IMPROVEMENT SUGGESTIONS ═══ -->
+  <div class="card full" id="suggestions-card">
+    <h2>Improvement Suggestions</h2>
+    <div id="suggestions-list"></div>
+  </div>
+
+  <!-- ═══ JOB SCHEDULER STATUS ═══ -->
+  <div class="card full" id="scheduler-card">
+    <h2>Scheduler Jobs</h2>
+    <table id="scheduler-table"><thead><tr>
+      <th>Job</th><th>Last Run</th><th>Status</th><th>Duration</th><th>Failures</th><th>Action</th>
+    </tr></thead><tbody></tbody></table>
+  </div>
+
+</div>
+
+<script>
+const AUTH = localStorage.getItem('auth') || '';
+
+async function api(path, opts={}) {
+  const headers = {'Content-Type':'application/json'};
+  if (AUTH) headers['Authorization'] = 'Basic ' + AUTH;
+  const r = await fetch(path, {...opts, headers});
+  if (r.status === 401) {
+    const u = prompt('Username:');
+    const p = prompt('Password:');
+    if (u && p) {
+      localStorage.setItem('auth', btoa(u+':'+p));
+      location.reload();
+    }
+    throw new Error('Auth required');
+  }
+  return r.json();
+}
+
+function tag(cls, text) { return `<span class="tag ${cls}">${text}</span>`; }
+
+function barHtml(pct, color) {
+  const c = pct >= 60 ? 'var(--green)' : pct >= 50 ? 'var(--gold)' : 'var(--red)';
+  return `<div class="bar-wrap"><div class="bar" style="width:${Math.min(pct,100)}%;background:${color||c}"></div></div>`;
+}
+
+function renderCalibration(cal) {
+  if (!cal || cal.error || cal.status === 'insufficient_data') {
+    document.getElementById('cal-metrics').innerHTML = `<div class="metric"><span class="val">--</span><span class="lbl">${cal?.message || cal?.error || 'No data'}</span></div>`;
+    return;
+  }
+
+  const interp = cal.interpretation || '';
+  const brierTag = cal.brier_score < 0.15 ? 'pass' : cal.brier_score < 0.25 ? 'warn' : 'fail';
+
+  document.getElementById('cal-metrics').innerHTML = `
+    <div class="metric"><span class="val">${cal.brier_score?.toFixed(4)}</span><span class="lbl">Brier Score ${tag(brierTag, interp.split('—')[0]?.trim())}</span></div>
+    <div class="metric"><span class="val">${cal.overall_win_rate}%</span><span class="lbl">Overall Win Rate</span></div>
+    <div class="metric"><span class="val">${cal.sample_size}</span><span class="lbl">Predictions</span></div>
+  `;
+
+  const tbody = document.querySelector('#cal-table tbody');
+  tbody.innerHTML = '';
+  const buckets = cal.buckets || {};
+  for (const [key, b] of Object.entries(buckets)) {
+    if (!b || b.n === 0) continue;
+    const gap = (b.actual_rate - b.avg_predicted).toFixed(1);
+    const gapCls = gap > 0 ? 'pass' : 'fail';
+    const multCls = b.multiplier < 0.85 ? 'fail' : b.multiplier > 1.1 ? 'pass' : 'warn';
+    tbody.innerHTML += `<tr>
+      <td>${key.replace('_', '-')}%</td>
+      <td>${b.avg_predicted}%</td>
+      <td>${b.actual_rate}%</td>
+      <td>${b.n}</td>
+      <td>${tag(multCls, b.multiplier?.toFixed(4))}</td>
+      <td>${tag(gapCls, (gap > 0 ? '+' : '') + gap + '%')}</td>
+    </tr>`;
+  }
+}
+
+function renderGates(gates) {
+  if (!gates || gates.error || gates.status !== 'analyzed') {
+    document.getElementById('gate-metrics').innerHTML = `<div class="metric"><span class="val">--</span><span class="lbl">${gates?.error || 'No data'}</span></div>`;
+    return;
+  }
+
+  document.getElementById('gate-metrics').innerHTML = `
+    <div class="metric"><span class="val">${gates.best_gate || '--'}</span><span class="lbl">Best Gate</span></div>
+    <div class="metric"><span class="val">${gates.worst_gate || '--'}</span><span class="lbl">Worst Gate</span></div>
+  `;
+
+  const tbody = document.querySelector('#gates-table tbody');
+  tbody.innerHTML = '';
+  const ranking = gates.ranking || [];
+  for (const r of ranking) {
+    const g = gates.gates?.[r.gate] || {};
+    const liftCls = g.lift_score > 5 ? 'pass' : g.lift_score > 0 ? 'warn' : 'fail';
+    tbody.innerHTML += `<tr>
+      <td style="text-transform:capitalize;font-weight:500">${r.gate}</td>
+      <td>${g.pass_win_rate}%</td>
+      <td>${g.fail_win_rate}%</td>
+      <td>${tag(liftCls, (g.lift_score > 0 ? '+' : '') + g.lift_score + '%')}</td>
+      <td>${(g.recommended_weight * 100).toFixed(1)}%</td>
+      <td>${g.sample_size}${g.significant ? '' : ' ' + tag('warn', 'low N')}</td>
+    </tr>`;
+  }
+}
+
+function renderStops(stops) {
+  if (!stops || stops.error || stops.status === 'insufficient_data') {
+    document.getElementById('stop-metrics').innerHTML = `<div class="metric"><span class="val">--</span><span class="lbl">${stops?.message || stops?.error || 'No MFE/MAE data yet'}</span></div>`;
+    return;
+  }
+
+  const o = stops.overall || {};
+  document.getElementById('stop-metrics').innerHTML = `
+    <div class="metric"><span class="val">${o.optimal_stop_pct}%</span><span class="lbl">Optimal Stop</span></div>
+    <div class="metric"><span class="val">${o.optimal_target_pct}%</span><span class="lbl">Optimal Target</span></div>
+    <div class="metric"><span class="val">${o.winners_stopped_prematurely_pct}%</span><span class="lbl">Premature Stops</span></div>
+    <div class="metric"><span class="val">${o.avg_profit_left_on_table_pct}%</span><span class="lbl">Profit Left</span></div>
+  `;
+
+  const tbody = document.querySelector('#stops-table tbody');
+  tbody.innerHTML = '';
+  const groups = [
+    ['Overall', stops.overall],
+    ['LONG', stops.by_direction_long],
+    ['SHORT', stops.by_direction_short],
+  ];
+  // Add regime groups
+  for (const [k, v] of Object.entries(stops)) {
+    if (k.startsWith('by_regime_')) groups.push([k.replace('by_regime_', '').toUpperCase(), v]);
+  }
+
+  for (const [label, g] of groups) {
+    if (!g || !g.n) continue;
+    const wrCls = g.win_rate >= 60 ? 'pass' : g.win_rate >= 50 ? 'warn' : 'fail';
+    tbody.innerHTML += `<tr>
+      <td style="font-weight:500">${label}</td>
+      <td>${tag(wrCls, g.win_rate + '%')}</td>
+      <td>${g.mfe_20d_median}%</td>
+      <td>${g.mae_20d_median}%</td>
+      <td>${g.optimal_stop_pct}%</td>
+      <td>${g.optimal_target_pct}%</td>
+      <td>${g.avg_profit_left_on_table_pct}%</td>
+      <td>${g.n}</td>
+    </tr>`;
+  }
+}
+
+function renderEfficiency(eff) {
+  if (!eff || eff.error || eff.status === 'insufficient_data') {
+    document.getElementById('eff-metrics').innerHTML = `<div class="metric"><span class="val">--</span><span class="lbl">${eff?.message || eff?.error || 'No data'}</span></div>`;
+    return;
+  }
+
+  const s = eff.executive_summary || {};
+  const wrTag = s.overall_win_rate >= 60 ? 'pass' : s.overall_win_rate >= 50 ? 'warn' : 'fail';
+  document.getElementById('eff-metrics').innerHTML = `
+    <div class="metric"><span class="val">${s.overall_win_rate || 0}%</span><span class="lbl">Win Rate ${tag(wrTag, s.overall_win_rate >= 55 ? 'GOOD' : 'NEEDS WORK')}</span></div>
+    <div class="metric"><span class="val">${s.total_predictions || 0}</span><span class="lbl">Total Predictions</span></div>
+    <div class="metric"><span class="val">${s.validated || 0}</span><span class="lbl">Validated</span></div>
+    <div class="metric"><span class="val">${s.best_component || '--'}</span><span class="lbl">Best Component (${s.best_accuracy || 0}%)</span></div>
+  `;
+
+  // Signal table
+  const sigTbody = document.querySelector('#eff-signal-table tbody');
+  sigTbody.innerHTML = '';
+  for (const [sig, d] of Object.entries(eff.by_signal || {})) {
+    const cls = d.win_rate >= 60 ? 'var(--green)' : d.win_rate >= 50 ? 'var(--gold)' : 'var(--red)';
+    sigTbody.innerHTML += `<tr>
+      <td style="font-weight:500">${sig}</td><td>${d.count}</td><td>${d.win_rate}%</td>
+      <td>${barHtml(d.win_rate, cls)}</td>
+    </tr>`;
+  }
+
+  // Gates table
+  const gatesTbody = document.querySelector('#eff-gates-table tbody');
+  gatesTbody.innerHTML = '';
+  for (const [g, d] of Object.entries(eff.by_gates_passed || {})) {
+    const cls = d.win_rate >= 60 ? 'var(--green)' : d.win_rate >= 50 ? 'var(--gold)' : 'var(--red)';
+    gatesTbody.innerHTML += `<tr>
+      <td style="font-weight:500">${g}</td><td>${d.count}</td><td>${d.win_rate}%</td>
+      <td>${barHtml(d.win_rate, cls)}</td>
+    </tr>`;
+  }
+
+  // Suggestions
+  const suggestions = eff.improvement_suggestions || [];
+  const sugDiv = document.getElementById('suggestions-list');
+  if (suggestions.length === 0) {
+    sugDiv.innerHTML = '<div style="color:var(--dim);font-size:11px">No suggestions — all components above threshold</div>';
+  } else {
+    sugDiv.innerHTML = suggestions.map(s => `
+      <div class="suggestion">
+        <span class="comp">${s.component}</span> — ${s.current_accuracy}% accuracy (target: ${s.target_accuracy}%)<br>
+        <span class="fix">${s.suggestion}</span><br>
+        <span class="impact">Expected: ${s.expected_impact}</span>
+      </div>
+    `).join('');
+  }
+}
+
+function renderScheduler(checkpoints) {
+  const tbody = document.querySelector('#scheduler-table tbody');
+  tbody.innerHTML = '';
+  if (!checkpoints || !checkpoints.length) {
+    tbody.innerHTML = '<tr><td colspan="6" style="color:var(--dim)">No checkpoint data</td></tr>';
+    return;
+  }
+
+  const labels = {
+    daily_outcomes: 'Update Outcomes (MFE/MAE)',
+    weekly_calibration: 'Brier Calibration',
+    weekly_gate_effectiveness: 'Gate Lift Scores',
+    weekly_efficiency_report: 'Efficiency Report',
+    monthly_stop_optimization: 'Stop/Target Optimization',
+  };
+
+  for (const cp of checkpoints) {
+    const name = cp.job_name;
+    const statusCls = cp.last_status === 'SUCCESS' ? 'pass' : cp.last_status === 'FAILED' ? 'fail' : 'warn';
+    const dur = cp.last_duration_ms && cp.last_duration_ms !== 'None'
+      ? (parseInt(cp.last_duration_ms) / 1000).toFixed(1) + 's' : '--';
+    const failures = parseInt(cp.consecutive_failures || 0);
+    const failTag = failures > 0 ? tag('fail', failures) : tag('pass', '0');
+    let lastRun = cp.last_run_at || 'Never';
+    if (lastRun.length > 19) lastRun = lastRun.substring(0, 19);
+
+    tbody.innerHTML += `<tr>
+      <td><span style="font-weight:500">${labels[name] || name}</span><br>
+          <span style="font-size:9px;color:var(--muted)">${name}</span></td>
+      <td style="font-size:10px">${lastRun}</td>
+      <td>${tag(statusCls, cp.last_status)}</td>
+      <td>${dur}</td>
+      <td>${failTag}</td>
+      <td><button class="run-btn" onclick="runJob('${name}', this)">Run Now</button></td>
+    </tr>`;
+  }
+}
+
+async function runJob(jobName, btn) {
+  btn.classList.add('running');
+  btn.textContent = 'Running...';
+  try {
+    const r = await api('/self-improvement/run', {
+      method: 'POST',
+      body: JSON.stringify({job: jobName})
+    });
+    btn.textContent = r.status === 'completed' ? 'Done' : 'Error';
+    btn.classList.remove('running');
+    setTimeout(() => { btn.textContent = 'Run Now'; }, 3000);
+    loadData(); // refresh dashboard
+  } catch(e) {
+    btn.textContent = 'Error';
+    btn.classList.remove('running');
+    setTimeout(() => { btn.textContent = 'Run Now'; }, 3000);
+  }
+}
+
+async function loadData() {
+  const btn = document.querySelector('.refresh-btn');
+  btn.classList.add('loading');
+  btn.textContent = 'Loading...';
+
+  try {
+    const data = await api('/self-improvement/data');
+
+    document.getElementById('loading').style.display = 'none';
+    document.getElementById('error').style.display = 'none';
+    document.getElementById('dashboard').style.display = 'grid';
+    document.getElementById('timestamp').textContent = 'Updated: ' + new Date(data.generated_at).toLocaleTimeString();
+
+    renderCalibration(data.calibration);
+    renderGates(data.gate_effectiveness);
+    renderStops(data.stop_optimization);
+    renderEfficiency(data.efficiency);
+    renderScheduler(data.job_checkpoints);
+  } catch(e) {
+    document.getElementById('loading').style.display = 'none';
+    document.getElementById('error').style.display = 'block';
+    document.getElementById('error').textContent = 'Failed to load: ' + e.message;
+  }
+
+  btn.classList.remove('loading');
+  btn.textContent = 'Refresh';
+}
+
+// Auto-load on page open
+loadData();
+</script>
+</body>
+</html>
+"""
 
 UI = r"""<!DOCTYPE html>
 <html lang="en">
@@ -3356,6 +4182,62 @@ textarea::placeholder{color:var(--muted)}
      font-weight:500;padding:8px 18px;transition:all .17s;white-space:nowrap;align-self:flex-end}
 .run:hover{background:#ddb860}
 .hint{font-size:9px;color:var(--muted)}
+/* ── Tabs ── */
+.tabs{display:flex;gap:0;margin-left:16px}
+.tab{padding:6px 16px;font-size:10px;letter-spacing:.1em;text-transform:uppercase;
+     color:var(--dim);cursor:pointer;border:1px solid transparent;border-bottom:none;
+     border-radius:4px 4px 0 0;transition:all .2s;font-family:inherit;background:none;
+     position:relative;top:1px}
+.tab:hover{color:var(--txt)}
+.tab.active{color:var(--gold);border-color:var(--b0);background:var(--bg);font-weight:500}
+
+/* ── Tab wrappers ── */
+#tab-analyst{display:contents}
+#tab-analyst.hidden main,#tab-analyst.hidden .ia{display:none}
+/* ── Self-Improvement tab content ── */
+#tab-si{display:none;overflow-y:auto;grid-row:2/4}
+#tab-si .si-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;padding:22px 28px;max-width:1400px}
+@media(max-width:900px){#tab-si .si-grid{grid-template-columns:1fr}}
+#tab-si .si-card{background:var(--card);border:1px solid var(--b0);border-radius:6px;padding:20px;
+      transition:border-color .2s}
+#tab-si .si-card:hover{border-color:var(--b1)}
+#tab-si .si-card.full{grid-column:1/-1}
+#tab-si .si-card h2{font-family:'Cormorant Garamond',serif;font-size:17px;font-weight:600;
+         color:var(--gold);margin-bottom:14px;letter-spacing:.03em}
+#tab-si .si-card h3{font-size:10px;color:var(--dim);letter-spacing:.1em;text-transform:uppercase;
+         margin:14px 0 8px}
+#tab-si table{width:100%;border-collapse:collapse;font-size:11px}
+#tab-si th{text-align:left;font-size:9px;color:var(--dim);letter-spacing:.1em;text-transform:uppercase;
+   padding:6px 10px;border-bottom:1px solid var(--b0);font-weight:500}
+#tab-si td{padding:7px 10px;border-bottom:1px solid rgba(28,28,42,.5)}
+#tab-si tr:last-child td{border-bottom:none}
+.si-metric{display:flex;flex-direction:column;gap:2px}
+.si-metric .val{font-size:22px;font-weight:600;color:var(--gold)}
+.si-metric .lbl{font-size:9px;color:var(--dim);letter-spacing:.08em;text-transform:uppercase}
+.si-metrics-row{display:flex;gap:24px;flex-wrap:wrap;margin-bottom:14px}
+.si-bar-wrap{height:6px;background:var(--b0);border-radius:3px;overflow:hidden;margin-top:4px}
+.si-bar{height:100%;border-radius:3px;transition:width .6s ease}
+.si-tag{display:inline-block;padding:2px 8px;border-radius:3px;font-size:9px;font-weight:500;letter-spacing:.06em}
+.si-tag.pass{background:rgba(76,175,125,.12);color:var(--green,#4caf7d)}
+.si-tag.fail{background:rgba(224,85,85,.12);color:var(--red,#e05555)}
+.si-tag.warn{background:rgba(212,168,83,.12);color:var(--gold)}
+.si-tag.info{background:rgba(91,142,240,.12);color:var(--blue,#5b8ef0)}
+.si-run-btn{background:none;border:1px solid var(--b1);color:var(--dim);padding:3px 10px;
+         border-radius:3px;cursor:pointer;font-family:inherit;font-size:9px;letter-spacing:.06em}
+.si-run-btn:hover{border-color:var(--gold);color:var(--gold)}
+.si-run-btn.running{opacity:.5;pointer-events:none;color:var(--orange,#e07b5a)}
+.si-suggestion{background:var(--surf);border-left:2px solid var(--gold);padding:10px 14px;
+            margin-bottom:8px;border-radius:0 4px 4px 0;font-size:11px;line-height:1.6}
+.si-suggestion .comp{color:var(--gold);font-weight:500}
+.si-suggestion .impact{color:var(--green,#4caf7d);font-size:10px}
+#si-loading{display:flex;align-items:center;justify-content:center;height:40vh;
+         font-size:12px;color:var(--dim);letter-spacing:.1em}
+.si-refresh{background:none;border:1px solid var(--b0);color:var(--dim);
+            padding:5px 14px;border-radius:4px;cursor:pointer;font-family:inherit;font-size:10px;
+            letter-spacing:.08em;text-transform:uppercase;margin:22px 28px 0}
+.si-refresh:hover{border-color:var(--gold);color:var(--gold)}
+.si-ts{font-size:9px;color:var(--muted);margin-left:12px}
+
 /* ── Mobile: stack layout, hide sidebar by default ── */
 @media(max-width:700px){
   main{grid-template-columns:1fr!important}
@@ -3373,7 +4255,10 @@ textarea::placeholder{color:var(--muted)}
 
 <header>
   <div class="brand">Analyst <em>by Ahmed</em></div>
-  <div class="free-badge">✓ Subscription — No API Credits</div>
+  <div class="tabs">
+    <button class="tab active" onclick="switchTab('analyst')">Pipeline</button>
+    <button class="tab" onclick="switchTab('si')">Self-Improvement</button>
+  </div>
   <div class="pills">
     <div class="pill" id="p1"><span class="pip"></span>Generator</div>
     <div class="pill" id="p2"><span class="pip"></span>Auditor</div>
@@ -3381,6 +4266,7 @@ textarea::placeholder{color:var(--muted)}
   </div>
 </header>
 
+<div id="tab-analyst">
 <main>
   <div class="chat">
     <div class="msgs" id="msgs">
@@ -3409,11 +4295,10 @@ textarea::placeholder{color:var(--muted)}
     <div>
       <div class="et">Quick Prompts</div>
       <div class="chips">
-        <div class="chip" onclick="use(this)">Full Monday war portfolio report — all 7 accounts</div>
-        <div class="chip" onclick="use(this)">AVGO puts — both CCPC accounts, roll or close?</div>
-        <div class="chip" onclick="use(this)">VIXY 250 shares — optimal spike exit timing</div>
-        <div class="chip" onclick="use(this)">OKTA — war risk + earnings double risk + CCPC tax</div>
+        <div class="chip" onclick="use(this)">Full portfolio report — all 7 accounts</div>
         <div class="chip" onclick="use(this)">Monday EOD action list — all open positions</div>
+        <div class="chip" onclick="use(this)">Scan for LONG opportunities</div>
+        <div class="chip" onclick="use(this)">Scan for SHORT opportunities</div>
       </div>
     </div>
   </div>
@@ -3434,6 +4319,49 @@ textarea::placeholder{color:var(--muted)}
     <button class="run" id="run" onclick="go()">▶ Run</button>
   </div>
   <div class="hint">Ctrl+Enter · Saves final report to vault · Emails ahalaa@yahoo.com · Up to 3 concurrent</div>
+</div>
+</div><!-- end #tab-analyst -->
+
+<div id="tab-si">
+  <button class="si-refresh" onclick="loadSI()">Refresh Data</button>
+  <span class="si-ts" id="si-timestamp"></span>
+  <div id="si-loading">Loading self-improvement data...</div>
+  <div class="si-grid" id="si-dashboard" style="display:none">
+    <div class="si-card" id="cal-card">
+      <h2>Confidence Calibration</h2>
+      <div class="si-metrics-row" id="cal-metrics"></div>
+      <h3>Calibration Curve</h3>
+      <table id="cal-table"><thead><tr><th>Bucket</th><th>Predicted</th><th>Actual</th><th>N</th><th>Multiplier</th><th>Gap</th></tr></thead><tbody></tbody></table>
+    </div>
+    <div class="si-card" id="gates-card">
+      <h2>Gate Effectiveness</h2>
+      <div class="si-metrics-row" id="gate-metrics"></div>
+      <h3>Lift Score</h3>
+      <table id="gates-table"><thead><tr><th>Gate</th><th>PASS WR</th><th>FAIL WR</th><th>Lift</th><th>Weight</th><th>N</th></tr></thead><tbody></tbody></table>
+    </div>
+    <div class="si-card" id="stops-card">
+      <h2>Stop / Target Optimization</h2>
+      <div class="si-metrics-row" id="stop-metrics"></div>
+      <h3>MFE/MAE by Direction</h3>
+      <table id="stops-table"><thead><tr><th>Group</th><th>Win Rate</th><th>MFE 20d</th><th>MAE 20d</th><th>Stop</th><th>Target</th><th>Left</th><th>N</th></tr></thead><tbody></tbody></table>
+    </div>
+    <div class="si-card" id="eff-card">
+      <h2>Efficiency Report</h2>
+      <div class="si-metrics-row" id="eff-metrics"></div>
+      <h3>By Signal</h3>
+      <table id="eff-signal-table"><thead><tr><th>Signal</th><th>Count</th><th>Win Rate</th><th></th></tr></thead><tbody></tbody></table>
+      <h3>By Gates Passed</h3>
+      <table id="eff-gates-table"><thead><tr><th>Gates</th><th>Count</th><th>Win Rate</th><th></th></tr></thead><tbody></tbody></table>
+    </div>
+    <div class="si-card full" id="sug-card">
+      <h2>Improvement Suggestions</h2>
+      <div id="suggestions-list"></div>
+    </div>
+    <div class="si-card full" id="sched-card">
+      <h2>Scheduler Jobs</h2>
+      <table id="scheduler-table"><thead><tr><th>Job</th><th>Last Run</th><th>Status</th><th>Duration</th><th>Failures</th><th></th></tr></thead><tbody></tbody></table>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -3944,6 +4872,167 @@ async function loadJobs(){
 // Initial load + periodic refresh (only if we have credentials)
 if(_cred){loadJobs()}
 setInterval(()=>{if(_cred)loadJobs();updateSidebar()},15000);
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   TAB SWITCHING
+   ══════════════════════════════════════════════════════════════════════════════ */
+let _siLoaded=false;
+function switchTab(tab){
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  if(tab==='analyst'){
+    document.getElementById('tab-analyst').classList.remove('hidden');
+    document.getElementById('tab-si').style.display='none';
+    document.querySelectorAll('.tab')[0].classList.add('active');
+    document.querySelector('.pills').style.display='';
+  }else{
+    document.getElementById('tab-analyst').classList.add('hidden');
+    document.getElementById('tab-si').style.display='block';
+    document.querySelectorAll('.tab')[1].classList.add('active');
+    document.querySelector('.pills').style.display='none';
+    if(!_siLoaded){_siLoaded=true;loadSI()}
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   SELF-IMPROVEMENT DASHBOARD
+   ══════════════════════════════════════════════════════════════════════════════ */
+function siTag(cls,text){return '<span class="si-tag '+cls+'">'+text+'</span>'}
+function siBar(pct,color){
+  const c=pct>=60?'var(--green,#4caf7d)':pct>=50?'var(--gold)':'var(--red,#e05555)';
+  return '<div class="si-bar-wrap"><div class="si-bar" style="width:'+Math.min(pct,100)+'%;background:'+(color||c)+'"></div></div>';
+}
+
+function renderCal(cal){
+  const m=document.getElementById('cal-metrics');
+  if(!cal||cal.error||cal.status==='insufficient_data'){
+    m.innerHTML='<div class="si-metric"><span class="val">--</span><span class="lbl">'+(cal?.message||cal?.error||'No data')+'</span></div>';return;
+  }
+  const bt=cal.brier_score<0.15?'pass':cal.brier_score<0.25?'warn':'fail';
+  m.innerHTML='<div class="si-metric"><span class="val">'+cal.brier_score?.toFixed(4)+'</span><span class="lbl">Brier Score '+siTag(bt,cal.interpretation?.split('—')[0]?.trim()||'')+'</span></div>'+
+    '<div class="si-metric"><span class="val">'+cal.overall_win_rate+'%</span><span class="lbl">Win Rate</span></div>'+
+    '<div class="si-metric"><span class="val">'+cal.sample_size+'</span><span class="lbl">Predictions</span></div>';
+  const tb=document.querySelector('#cal-table tbody');tb.innerHTML='';
+  for(const[k,b]of Object.entries(cal.buckets||{})){
+    if(!b||b.n===0)continue;
+    const gap=(b.actual_rate-b.avg_predicted).toFixed(1);
+    const gc=gap>0?'pass':'fail';const mc=b.multiplier<0.85?'fail':b.multiplier>1.1?'pass':'warn';
+    tb.innerHTML+='<tr><td>'+k.replace('_','-')+'%</td><td>'+b.avg_predicted+'%</td><td>'+b.actual_rate+'%</td><td>'+b.n+'</td><td>'+siTag(mc,b.multiplier?.toFixed(4))+'</td><td>'+siTag(gc,(gap>0?'+':'')+gap+'%')+'</td></tr>';
+  }
+}
+
+function renderGates(g){
+  const m=document.getElementById('gate-metrics');
+  if(!g||g.error||g.status!=='analyzed'){
+    m.innerHTML='<div class="si-metric"><span class="val">--</span><span class="lbl">'+(g?.error||'No data')+'</span></div>';return;
+  }
+  m.innerHTML='<div class="si-metric"><span class="val">'+( g.best_gate||'--')+'</span><span class="lbl">Best Gate</span></div>'+
+    '<div class="si-metric"><span class="val">'+(g.worst_gate||'--')+'</span><span class="lbl">Worst Gate</span></div>';
+  const tb=document.querySelector('#gates-table tbody');tb.innerHTML='';
+  for(const r of(g.ranking||[])){
+    const d=g.gates?.[r.gate]||{};
+    const lc=d.lift_score>5?'pass':d.lift_score>0?'warn':'fail';
+    tb.innerHTML+='<tr><td style="text-transform:capitalize;font-weight:500">'+r.gate+'</td><td>'+d.pass_win_rate+'%</td><td>'+d.fail_win_rate+'%</td><td>'+siTag(lc,(d.lift_score>0?'+':'')+d.lift_score+'%')+'</td><td>'+(d.recommended_weight*100).toFixed(1)+'%</td><td>'+d.sample_size+(d.significant?'':' '+siTag('warn','low N'))+'</td></tr>';
+  }
+}
+
+function renderStops(s){
+  const m=document.getElementById('stop-metrics');
+  if(!s||s.error||s.status==='insufficient_data'){
+    m.innerHTML='<div class="si-metric"><span class="val">--</span><span class="lbl">'+(s?.message||s?.error||'No MFE/MAE data')+'</span></div>';return;
+  }
+  const o=s.overall||{};
+  m.innerHTML='<div class="si-metric"><span class="val">'+o.optimal_stop_pct+'%</span><span class="lbl">Optimal Stop</span></div>'+
+    '<div class="si-metric"><span class="val">'+o.optimal_target_pct+'%</span><span class="lbl">Optimal Target</span></div>'+
+    '<div class="si-metric"><span class="val">'+o.winners_stopped_prematurely_pct+'%</span><span class="lbl">Premature Stops</span></div>'+
+    '<div class="si-metric"><span class="val">'+o.avg_profit_left_on_table_pct+'%</span><span class="lbl">Profit Left</span></div>';
+  const tb=document.querySelector('#stops-table tbody');tb.innerHTML='';
+  const groups=[['Overall',s.overall],['LONG',s.by_direction_long],['SHORT',s.by_direction_short]];
+  for(const[k,v]of Object.entries(s)){if(k.startsWith('by_regime_'))groups.push([k.replace('by_regime_','').toUpperCase(),v])}
+  for(const[l,g]of groups){
+    if(!g||!g.n)continue;
+    const wc=g.win_rate>=60?'pass':g.win_rate>=50?'warn':'fail';
+    tb.innerHTML+='<tr><td style="font-weight:500">'+l+'</td><td>'+siTag(wc,g.win_rate+'%')+'</td><td>'+g.mfe_20d_median+'%</td><td>'+g.mae_20d_median+'%</td><td>'+g.optimal_stop_pct+'%</td><td>'+g.optimal_target_pct+'%</td><td>'+g.avg_profit_left_on_table_pct+'%</td><td>'+g.n+'</td></tr>';
+  }
+}
+
+function renderEff(e){
+  const m=document.getElementById('eff-metrics');
+  if(!e||e.error||e.status==='insufficient_data'){
+    m.innerHTML='<div class="si-metric"><span class="val">--</span><span class="lbl">'+(e?.message||e?.error||'No data')+'</span></div>';return;
+  }
+  const s=e.executive_summary||{};
+  const wt=s.overall_win_rate>=55?'pass':'warn';
+  m.innerHTML='<div class="si-metric"><span class="val">'+(s.overall_win_rate||0)+'%</span><span class="lbl">Win Rate '+siTag(wt,s.overall_win_rate>=55?'GOOD':'NEEDS WORK')+'</span></div>'+
+    '<div class="si-metric"><span class="val">'+(s.total_predictions||0)+'</span><span class="lbl">Total</span></div>'+
+    '<div class="si-metric"><span class="val">'+(s.validated||0)+'</span><span class="lbl">Validated</span></div>'+
+    '<div class="si-metric"><span class="val">'+(s.best_component||'--')+'</span><span class="lbl">Best ('+(s.best_accuracy||0)+'%)</span></div>';
+  const st=document.querySelector('#eff-signal-table tbody');st.innerHTML='';
+  for(const[sig,d]of Object.entries(e.by_signal||{})){
+    st.innerHTML+='<tr><td style="font-weight:500">'+sig+'</td><td>'+d.count+'</td><td>'+d.win_rate+'%</td><td>'+siBar(d.win_rate)+'</td></tr>';
+  }
+  const gt=document.querySelector('#eff-gates-table tbody');gt.innerHTML='';
+  for(const[g,d]of Object.entries(e.by_gates_passed||{})){
+    gt.innerHTML+='<tr><td style="font-weight:500">'+g+'</td><td>'+d.count+'</td><td>'+d.win_rate+'%</td><td>'+siBar(d.win_rate)+'</td></tr>';
+  }
+  const sug=e.improvement_suggestions||[];
+  const sd=document.getElementById('suggestions-list');
+  if(!sug.length){sd.innerHTML='<div style="color:var(--dim);font-size:11px">All components above threshold</div>'}
+  else{sd.innerHTML=sug.map(s=>'<div class="si-suggestion"><span class="comp">'+s.component+'</span> — '+s.current_accuracy+'% (target: '+s.target_accuracy+'%)<br>'+s.suggestion+'<br><span class="impact">Expected: '+s.expected_impact+'</span></div>').join('')}
+}
+
+function renderSched(cp){
+  const tb=document.querySelector('#scheduler-table tbody');tb.innerHTML='';
+  if(!cp||!cp.length){tb.innerHTML='<tr><td colspan="6" style="color:var(--dim)">No data</td></tr>';return}
+  const labels={daily_outcomes:'Update Outcomes',weekly_calibration:'Brier Calibration',weekly_gate_effectiveness:'Gate Lift Scores',weekly_efficiency_report:'Efficiency Report',monthly_stop_optimization:'Stop/Target Optimization'};
+  for(const c of cp){
+    const sc=c.last_status==='SUCCESS'?'pass':c.last_status==='FAILED'?'fail':'warn';
+    const dur=c.last_duration_ms&&c.last_duration_ms!=='None'?(parseInt(c.last_duration_ms)/1000).toFixed(1)+'s':'--';
+    const f=parseInt(c.consecutive_failures||0);
+    let lr=c.last_run_at||'Never';if(lr.length>19)lr=lr.substring(0,19);
+    tb.innerHTML+='<tr><td><span style="font-weight:500">'+(labels[c.job_name]||c.job_name)+'</span><br><span style="font-size:9px;color:var(--muted)">'+c.job_name+'</span></td><td style="font-size:10px">'+lr+'</td><td>'+siTag(sc,c.last_status)+'</td><td>'+dur+'</td><td>'+siTag(f>0?'fail':'pass',f)+'</td><td><button class="si-run-btn" onclick="runSIJob(\''+c.job_name+'\',this)">Run Now</button></td></tr>';
+  }
+}
+
+async function runSIJob(name,btn){
+  btn.classList.add('running');btn.textContent='Running...';
+  const ac=new AbortController();
+  const timer=setTimeout(()=>ac.abort(),330000); // 5.5 min timeout
+  let elapsed=0;const tick=setInterval(()=>{elapsed++;btn.textContent='Running '+elapsed+'s...'},1000);
+  try{
+    const r=await afetch('/self-improvement/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({job:name}),signal:ac.signal});
+    clearInterval(tick);clearTimeout(timer);
+    const d=await r.json();
+    if(d.status==='completed'){btn.textContent='Done ✓';btn.style.borderColor='var(--resolve)'}
+    else{btn.textContent='Error: '+(d.error||'').substring(0,30);btn.style.borderColor='var(--claude)'}
+    btn.classList.remove('running');
+    setTimeout(()=>{btn.textContent='Run Now';btn.style.borderColor=''},5000);
+    loadSI();
+  }catch(e){
+    clearInterval(tick);clearTimeout(timer);
+    btn.textContent=e.name==='AbortError'?'Timeout (5m)':'Error';
+    btn.classList.remove('running');
+    setTimeout(()=>{btn.textContent='Run Now';btn.style.borderColor=''},5000);
+  }
+}
+
+async function loadSI(){
+  const btn=document.querySelector('.si-refresh');
+  if(btn){btn.style.opacity='.5';btn.textContent='Loading...'}
+  try{
+    const r=await afetch('/self-improvement/data');
+    const data=await r.json();
+    document.getElementById('si-loading').style.display='none';
+    document.getElementById('si-dashboard').style.display='grid';
+    document.getElementById('si-timestamp').textContent='Updated: '+new Date(data.generated_at).toLocaleTimeString();
+    renderCal(data.calibration);renderGates(data.gate_effectiveness);
+    renderStops(data.stop_optimization);renderEff(data.efficiency);
+    renderSched(data.job_checkpoints);
+  }catch(e){
+    document.getElementById('si-loading').textContent='Failed: '+e.message;
+    document.getElementById('si-loading').style.display='flex';
+  }
+  if(btn){btn.style.opacity='1';btn.textContent='Refresh Data'}
+}
 </script>
 </body>
 </html>"""

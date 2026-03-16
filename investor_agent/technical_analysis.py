@@ -809,3 +809,89 @@ class TechnicalAnalysis:
             "patterns_found": len(patterns_detected),
             "patterns": patterns_detected if patterns_detected else [{"pattern": "None", "description": "No clear patterns detected", "signal": "Neutral"}]
         }
+
+    # ================================================================
+    # MULTI-TIMEFRAME ANALYSIS
+    # ================================================================
+
+    @staticmethod
+    def calculate_multitimeframe_indicators(
+        daily_df: pd.DataFrame,
+        weekly_df: pd.DataFrame | None = None,
+        monthly_df: pd.DataFrame | None = None,
+    ) -> Dict[str, Any]:
+        """
+        Run indicators on daily, weekly, and monthly DataFrames.
+
+        Weekly SMA periods: 10/20/40 (≈ 50/100/200 daily)
+        Monthly SMA periods: 10/20 (≈ 200/400 daily)
+        """
+        result: Dict[str, Any] = {
+            "daily": TechnicalAnalysis.calculate_comprehensive_indicators(daily_df),
+        }
+
+        for label, df, sma_periods in [
+            ("weekly", weekly_df, [10, 20, 40]),
+            ("monthly", monthly_df, [10, 20]),
+        ]:
+            if df is None or df.empty or len(df) < 5:
+                result[label] = None
+                continue
+
+            # Core indicators (reuse existing)
+            indicators = TechnicalAnalysis.calculate_comprehensive_indicators(df)
+
+            # Override SMAs with timeframe-appropriate periods
+            closes = df["Close"].values
+            custom_smas = {}
+            for p in sma_periods:
+                sma = TechnicalIndicators.calculate_sma(closes, p)
+                val = sma[-1]
+                custom_smas[f"sma_{p}"] = f"${val:.2f}" if not np.isnan(val) else "N/A"
+            indicators["moving_averages"].update(custom_smas)
+
+            # Add trend direction summary
+            current_price = closes[-1]
+            rsi_val = float(indicators["rsi"]["value"])
+            macd_trend = indicators["macd"]["trend"]
+
+            if current_price > TechnicalIndicators.calculate_sma(closes, min(sma_periods))[-1]:
+                price_vs_sma = "ABOVE"
+            else:
+                price_vs_sma = "BELOW"
+
+            indicators["trend_summary"] = {
+                "direction": "BULLISH" if macd_trend == "Bullish" and price_vs_sma == "ABOVE"
+                    else "BEARISH" if macd_trend == "Bearish" and price_vs_sma == "BELOW"
+                    else "MIXED",
+                "rsi": rsi_val,
+                "macd_trend": macd_trend,
+                "price_vs_fast_sma": price_vs_sma,
+            }
+
+            result[label] = indicators
+
+        return result
+
+    @staticmethod
+    def find_support_resistance_multitimeframe(
+        daily_df: pd.DataFrame,
+        weekly_df: pd.DataFrame | None = None,
+    ) -> Dict[str, Any]:
+        """
+        Find support/resistance on daily and weekly timeframes.
+        Weekly S/R levels use order=3 (stronger, fewer levels).
+        """
+        result: Dict[str, Any] = {
+            "daily": TechnicalAnalysis.find_support_resistance(daily_df, order=5),
+        }
+
+        if weekly_df is not None and not weekly_df.empty and len(weekly_df) >= 10:
+            weekly_sr = TechnicalAnalysis.find_support_resistance(weekly_df, order=3)
+            # Tag levels as weekly (stronger significance)
+            weekly_sr["level_significance"] = "WEEKLY (stronger than daily)"
+            result["weekly"] = weekly_sr
+        else:
+            result["weekly"] = None
+
+        return result

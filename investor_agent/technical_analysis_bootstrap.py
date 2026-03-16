@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 # Module-level cache for price history (5 minute TTL)
 _price_history_cache: Dict[str, tuple] = {}
+_price_history_mtf_cache: Dict[str, tuple] = {}  # Multi-timeframe cache (separate from daily)
 _cache_ttl_seconds = 300  # 5 minutes
 _last_data_source: Dict[str, str] = {}  # Track last data source per ticker
 
@@ -96,6 +97,99 @@ def _get_price_history(ticker: str, period: str = "3mo") -> pd.DataFrame:
         _last_data_source[ticker] = "YFINANCE"
 
     return df
+
+
+def _get_price_history_multitimeframe(
+    ticker: str, interval: str = "OneWeek", period: str = "2y"
+) -> pd.DataFrame:
+    """
+    Get weekly or monthly price history. Questrade primary, yfinance fallback,
+    resample daily as last resort.
+    CACHED: Same ticker/interval/period returns cached data for 5 minutes.
+
+    Args:
+        ticker: Stock symbol
+        interval: "OneWeek" or "OneMonth"
+        period: yfinance-style period string ("2y", "5y", etc.)
+    """
+    cache_key = f"{ticker}_{interval}_{period}"
+    if cache_key in _price_history_mtf_cache:
+        df, timestamp, source = _price_history_mtf_cache[cache_key]
+        age_seconds = (datetime.now() - timestamp).total_seconds()
+        if age_seconds < _cache_ttl_seconds:
+            logger.debug(f"💾 MTF cache HIT for {ticker} {interval} from {source} (age: {age_seconds:.1f}s)")
+            _last_data_source[f"{ticker}_{interval}"] = source
+            return df.copy()
+
+    # Map period to Questrade window (number of bars)
+    period_windows = {
+        "1y": {"OneWeek": 52, "OneMonth": 12},
+        "2y": {"OneWeek": 104, "OneMonth": 24},
+        "5y": {"OneWeek": 260, "OneMonth": 60},
+    }
+    window = period_windows.get(period, {}).get(interval, 104)
+
+    # --- Source 1: Questrade ---
+    try:
+        from .tools.questrade_api import get_questrade_candles_impl as get_questrade_candles
+
+        candles_result = get_questrade_candles(ticker, interval, window=window)
+        min_bars = 5 if interval == "OneMonth" else 10
+        if candles_result and candles_result.get("candles") and len(candles_result["candles"]) >= min_bars:
+            df = pd.DataFrame(candles_result["candles"])
+            df = df.rename(columns={
+                "start": "Date", "open": "Open", "high": "High",
+                "low": "Low", "close": "Close", "volume": "Volume",
+            })
+            if "VWAP" in df.columns:
+                df = df.rename(columns={"VWAP": "vwap"})
+            df["Date"] = pd.to_datetime(df["Date"], utc=True)
+            df.set_index("Date", inplace=True)
+            df.index = df.index.tz_convert(None)
+            logger.info(f"✅ Using QUESTRADE {interval} data for {ticker} ({len(df)} bars)")
+            _price_history_mtf_cache[cache_key] = (df.copy(), datetime.now(), "QUESTRADE")
+            _last_data_source[f"{ticker}_{interval}"] = "QUESTRADE"
+            return df
+    except Exception as e:
+        logger.warning(f"⚠️ Questrade {interval} failed for {ticker}: {e}")
+
+    # --- Source 2: yfinance ---
+    yf_interval_map = {"OneWeek": "1wk", "OneMonth": "1mo"}
+    yf_interval = yf_interval_map.get(interval)
+    if yf_interval:
+        try:
+            stock = yf.Ticker(ticker)
+            df = stock.history(period=period, interval=yf_interval)
+            if isinstance(df.index, pd.DatetimeIndex) and df.index.tz is not None:
+                df.index = df.index.tz_localize(None)
+            if not df.empty and len(df) >= 5:
+                logger.info(f"✅ Using YFINANCE {interval} data for {ticker} ({len(df)} bars)")
+                _price_history_mtf_cache[cache_key] = (df.copy(), datetime.now(), "YFINANCE")
+                _last_data_source[f"{ticker}_{interval}"] = "YFINANCE"
+                return df
+        except Exception as e:
+            logger.warning(f"⚠️ yfinance {interval} failed for {ticker}: {e}")
+
+    # --- Source 3: Resample daily data ---
+    try:
+        daily_period = "2y" if interval == "OneWeek" else "5y"
+        daily = _get_price_history(ticker, period=daily_period)
+        if not daily.empty:
+            rule = "W" if interval == "OneWeek" else "ME"
+            df = daily.resample(rule).agg({
+                "Open": "first", "High": "max", "Low": "min",
+                "Close": "last", "Volume": "sum",
+            }).dropna()
+            if len(df) >= 5:
+                logger.info(f"✅ Using RESAMPLED daily→{interval} for {ticker} ({len(df)} bars)")
+                _price_history_mtf_cache[cache_key] = (df.copy(), datetime.now(), "RESAMPLED")
+                _last_data_source[f"{ticker}_{interval}"] = "RESAMPLED"
+                return df
+    except Exception as e:
+        logger.warning(f"⚠️ Resample fallback failed for {ticker}: {e}")
+
+    logger.error(f"❌ No {interval} data available for {ticker}")
+    return pd.DataFrame()
 
 
 # ============================================================================
@@ -1337,69 +1431,110 @@ def analyze_volatility(ticker: str, period: str = "6mo") -> dict:
 
 def calculate_relative_strength(ticker: str, benchmark: str = "SPY", period: str = "3mo") -> dict:
     """
-    Calculate relative strength to identify market leaders.
-    RS Rating >70 = Buy only leaders (IBD methodology)
-    
+    Calculate relative strength using weighted multi-timeframe approach (IBD-style).
+
+    IBD RS Rating methodology: Weight recent performance more heavily.
+    Weights: 40% most recent 1mo, 20% prior 1mo, 20% prior 1mo, 20% trend bonus.
+    This prevents a single-window distortion where a stock that rallied 200% then
+    pulled back 20% appears weaker than a flat stock.
+
     Args:
         ticker: Stock ticker symbol
         benchmark: Benchmark ticker (default SPY)
-        period: Comparison period (1mo, 3mo, 6mo, 1y, 2y)
-    
+        period: Comparison period (used as max lookback, default 3mo)
+
     Returns:
         Dictionary containing RS metrics
     """
     try:
-        # Use Questrade-first approach
-        stock = _get_price_history(ticker, period)
-        bench = _get_price_history(benchmark, period)
+        # Fetch 6mo of data to calculate multi-timeframe returns
+        lookback = "6mo"
+        stock = _get_price_history(ticker, lookback)
+        bench = _get_price_history(benchmark, lookback)
 
         if stock.empty or bench.empty:
             return {"error": f"No data available"}
-        
+
         # Align dates
-        combined = pd.merge(stock[['Close']], bench[['Close']], 
+        combined = pd.merge(stock[['Close']], bench[['Close']],
                           left_index=True, right_index=True, suffixes=('_stock', '_bench'))
-        
-        # Calculate returns from start
+
+        if len(combined) < 10:
+            return {"error": f"Insufficient data ({len(combined)} days)"}
+
+        # Calculate returns over multiple timeframes
+        def _calc_return(series, days):
+            """Calculate return over last N trading days."""
+            if len(series) < days:
+                days = len(series)
+            if days < 2:
+                return 0.0
+            start_val = series.iloc[-days]
+            end_val = series.iloc[-1]
+            if start_val == 0:
+                return 0.0
+            return ((end_val / start_val) - 1) * 100
+
+        # Multi-timeframe stock and benchmark returns
+        stock_1mo = _calc_return(combined['Close_stock'], 21)
+        bench_1mo = _calc_return(combined['Close_bench'], 21)
+        stock_2mo = _calc_return(combined['Close_stock'], 42)
+        bench_2mo = _calc_return(combined['Close_bench'], 42)
+        stock_3mo = _calc_return(combined['Close_stock'], 63)
+        bench_3mo = _calc_return(combined['Close_bench'], 63)
+
+        # Outperformance per timeframe
+        outperf_1mo = stock_1mo - bench_1mo
+        outperf_2mo = stock_2mo - bench_2mo
+        outperf_3mo = stock_3mo - bench_3mo
+
+        # IBD-style weighted outperformance:
+        # 40% most recent month (captures current momentum)
+        # 30% two-month window (medium-term trend)
+        # 30% three-month window (longer context)
+        weighted_outperformance = (outperf_1mo * 0.40) + (outperf_2mo * 0.30) + (outperf_3mo * 0.30)
+
+        # RS Trend (improving or deteriorating?) - use last 20 days of relative returns
         combined['Stock_Return'] = (combined['Close_stock'] / combined['Close_stock'].iloc[0] - 1) * 100
         combined['Bench_Return'] = (combined['Close_bench'] / combined['Close_bench'].iloc[0] - 1) * 100
         combined['Relative_Return'] = combined['Stock_Return'] - combined['Bench_Return']
-        
-        # Current outperformance
-        outperformance = combined['Relative_Return'].iloc[-1]
-        
-        # RS Trend (improving or deteriorating?)
+
         recent_rs = combined['Relative_Return'].tail(20)
         rs_slope = np.polyfit(range(len(recent_rs)), recent_rs, 1)[0]
         rs_trend = "Improving" if rs_slope > 0 else "Deteriorating"
-        
-        # RS Score (0-100, IBD-style)
-        # Professional traders focus on RS > 70
-        if outperformance > 20:
+
+        # Trend bonus: +5 if improving, -5 if deteriorating
+        trend_bonus = 5 if rs_trend == "Improving" else -5
+
+        # RS Score (0-100, IBD-style) from weighted outperformance
+        if weighted_outperformance > 20:
             rs_score = 99
-        elif outperformance > 15:
+        elif weighted_outperformance > 15:
             rs_score = 95
-        elif outperformance > 10:
+        elif weighted_outperformance > 10:
             rs_score = 90
-        elif outperformance > 7:
+        elif weighted_outperformance > 7:
             rs_score = 85
-        elif outperformance > 5:
+        elif weighted_outperformance > 5:
             rs_score = 80
-        elif outperformance > 3:
+        elif weighted_outperformance > 3:
             rs_score = 75
-        elif outperformance > 1:
+        elif weighted_outperformance > 1:
             rs_score = 70
-        elif outperformance > 0:
+        elif weighted_outperformance > 0:
             rs_score = 60
-        elif outperformance > -2:
+        elif weighted_outperformance > -2:
             rs_score = 50
-        elif outperformance > -5:
+        elif weighted_outperformance > -5:
             rs_score = 40
-        elif outperformance > -10:
+        elif weighted_outperformance > -10:
             rs_score = 30
         else:
             rs_score = 20
-        
+
+        # Apply trend bonus with clamp
+        rs_score = max(1, min(99, rs_score + trend_bonus))
+
         # Classification
         if rs_score >= 90:
             classification = "EXCEPTIONAL LEADER"
@@ -1413,7 +1548,7 @@ def calculate_relative_strength(ticker: str, benchmark: str = "SPY", period: str
             classification = "LAGGARD"
         else:
             classification = "WEAK LAGGARD"
-        
+
         # Trading recommendation based on RS
         if rs_score >= 70 and rs_trend == "Improving":
             recommendation = "BUY - Strong leader with improving RS"
@@ -1423,7 +1558,7 @@ def calculate_relative_strength(ticker: str, benchmark: str = "SPY", period: str
             recommendation = "NEUTRAL - Wait for RS improvement"
         else:
             recommendation = "AVOID - Weak relative strength"
-        
+
         return {
             "ticker": ticker,
             "benchmark": benchmark,
@@ -1431,11 +1566,16 @@ def calculate_relative_strength(ticker: str, benchmark: str = "SPY", period: str
             "rs_score": rs_score,
             "rs_trend": rs_trend,
             "classification": classification,
-            "outperformance_%": round(outperformance, 2),
-            "stock_return_%": round(combined['Stock_Return'].iloc[-1], 2),
-            "benchmark_return_%": round(combined['Bench_Return'].iloc[-1], 2),
+            "weighted_outperformance_%": round(weighted_outperformance, 2),
+            "outperformance_1mo_%": round(outperf_1mo, 2),
+            "outperformance_2mo_%": round(outperf_2mo, 2),
+            "outperformance_3mo_%": round(outperf_3mo, 2),
+            "stock_return_1mo_%": round(stock_1mo, 2),
+            "stock_return_3mo_%": round(stock_3mo, 2),
+            "benchmark_return_1mo_%": round(bench_1mo, 2),
+            "benchmark_return_3mo_%": round(bench_3mo, 2),
             "recommendation": recommendation,
-            "ibd_note": "IBD methodology: Only buy stocks with RS > 70"
+            "ibd_note": "IBD-style weighted RS: 40% 1mo + 30% 2mo + 30% 3mo + trend bonus"
         }
     except Exception as e:
         return {"error": str(e), "ticker": ticker}

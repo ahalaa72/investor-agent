@@ -127,6 +127,50 @@ Weak bar, low volume, immediate pullback. Retail buys breakout. Breakout fails. 
 
 *"Recognizing traps is more important than recognizing setups."*
 
+### Trap Type Taxonomy (5 Types)
+
+| Trap Type | Description | Severity | How to Trade |
+|-----------|-------------|----------|-------------|
+| `bull_trap` | Failed breakout above resistance | HIGH | Short when price drops back below resistance |
+| `bear_trap` | Failed breakdown below support | HIGH | Long when price recovers above support |
+| `late_move_trap` | Entry after 3+ pushes, exhaustion imminent | MOD-HIGH | Reduce size, tighten stops, watch for reversal |
+| `failed_reversal_trap` | Reversal pattern fails, trend resumes | HIGH | Re-enter with trend — failed reversals are strongest continuation |
+| `vacuum_fill_trap` | Price fills gap then reverses | MODERATE | Tight stop — once gap filled, original direction often resumes |
+
+**Full details:** See [BROOKS_MASTERY_GUIDE.md](BROOKS_MASTERY_GUIDE.md) Section 2.
+
+### Trend Evolution Model
+
+```
+STRONG_TREND (80-100) → CHANNEL (60-80) → BROAD_CHANNEL (40-60) → TRADING_RANGE (20-40)
+```
+
+| Phase | Bar Overlap | Pullback Depth | How to Trade |
+|-------|------------|----------------|-------------|
+| STRONG_TREND | <20% | <30% | With trend ONLY. Buy any dip. |
+| CHANNEL | 20-40% | 30-50% | Buy trend line, sell channel line. |
+| BROAD_CHANNEL | 40-60% | 50-70% | Reduced size. Both directions at extremes. |
+| TRADING_RANGE | >60% | >70% | Buy low, sell high, scalp. Iron condors. |
+
+### Climax Detection (4 Types)
+
+| Type | Definition | Severity | Expected Resolution |
+|------|-----------|----------|-------------------|
+| Simple | Single bar, body > 2x avg | LOW | 1-3 bar pullback |
+| Consecutive | 3+ strong bars same direction | MODERATE | Multi-bar pullback to EMA |
+| Parabolic | Each bar LARGER than previous | HIGH | Deep pullback or reversal |
+| Channel Overshoot | Price breaks channel line | HIGH | Reversal to channel |
+
+### Measured Move Methods
+
+| Method | Calculation | Reliability |
+|--------|------------|------------|
+| Leg1 = Leg2 | Target = Pullback_Low + Leg1_Height | HIGH (60-70%) |
+| Range Projection | Target = Breakout + Range_Height | HIGH for strong breakouts |
+| Spike Projection | Target = Current + Spike_Height | MODERATE (50-60%) |
+
+When 2+ methods agree within 2%: HIGH CONFIDENCE target.
+
 ---
 
 ### Brooks Probability Framework
@@ -246,6 +290,52 @@ Max pain = price where option sellers profit most. Market makers delta-hedge, cr
 
 16-delta strikes provide the **best risk-adjusted returns**: 84% win rate, reasonable premium, positive expected value.
 
+### McMillan Volatility Regime Assessment (NEW)
+
+`analyze_options_mcmillan()` now returns a `mcmillan_mastery` block with institutional-depth volatility analysis.
+
+**Volatility Regime (McMillan Ch.39 Three-Step Process):**
+
+| Regime | IV Percentile | Action |
+|--------|--------------|--------|
+| STRONG_BUY_VOL | 0-10% + IV < 80% of HV | Aggressive buying: straddles, strangles, backspreads |
+| BUY_VOL | 10-30% | Moderate buying: debit spreads, calendars, long options |
+| NEUTRAL | 30-70% | Flexible: match strategy to directional outlook |
+| SELL_VOL | 70-90% | Moderate selling: credit spreads, iron condors, covered calls |
+| STRONG_SELL_VOL | 90-100% + IV > 120% of HV | Check for insider activity first. If clear: aggressive selling |
+
+**McMillan's Percentile Method:** Uses 600 trading days of IV history. The width of the IV range must be sufficient — if a rise from current to the 50th percentile won't offset one month of time decay, the range is too narrow.
+
+**Vega-Theta Trade-Off (McMillan Ch.37):**
+- A 6-point IV increase can offset ONE FULL MONTH of ATM time decay
+- Premium sellers at low IV face HIGH vega risk (IV likely to expand)
+- Premium sellers at high IV face LOW vega risk (IV likely to contract via mean reversion)
+
+**Volatility Skew Trading (McMillan Ch.39):**
+
+| Skew Type | Description | High IV Strategy | Low IV Strategy |
+|-----------|-------------|-----------------|-----------------|
+| NEGATIVE | OTM puts expensive (equity indices) | Put Ratio Write | Call Backspread |
+| POSITIVE | OTM calls expensive (commodities) | Call Ratio Spread | Put Backspread |
+| FLAT | No significant imbalance | Standard IV-based selection | Standard IV-based selection |
+
+*"Always buy lower IV, sell higher IV. At expiration, the skew must disappear, so holding to expiration creates positive expected return."*
+
+**McMillan Strategy Lessons:**
+
+Each strategy now returns pattern-indexed educational content with:
+- McMillan quote and chapter reference
+- Historical win rate range
+- When to use (market conditions)
+- Key risk to monitor
+- Educational lesson explaining the strategy dynamics
+
+Key McMillan rules surfaced in lessons:
+- *"Taking small profits on straddles is a POOR strategy"* — the edge comes from infrequent large winners
+- *"Selling short-term, fractionally-priced OTM options is a poor strategy"* — pennies in front of steamroller
+- *"NEVER leverage your account heavily in naked puts regardless of stock quality"*
+- *"Strategies with limited profit and unlimited risk are INFERIOR under fat-tail distributions"*
+
 ### Options Data Interpretation Warning
 
 `analyze_options_mcmillan()` analyzes ONE expiration (optimal 30-45 DTE). `detect_unusual_options_activity()` scans ALL expirations. When they appear contradictory, they're analyzing different expirations — always specify which expiration in the report.
@@ -302,6 +392,70 @@ Max pain = price where option sellers profit most. Market makers delta-hedge, cr
 | Sustainability ≤30 | -3% |
 
 **Total Dalio impact:** Up to ±11% probability adjustment.
+
+---
+
+## STATISTICAL VALIDATION FRAMEWORK
+
+**Source:** López de Prado — *Advances in Financial Machine Learning* + Kelly Criterion (Ed Thorp)
+
+### Kelly Criterion Position Sizing
+
+The Kelly Criterion calculates the optimal fraction of capital to risk on a trade, given edge and odds.
+
+**Formula:** `f* = (p × b - q) / b` where p = win rate, b = avg win / avg loss, q = 1 - p
+
+**Fractional Kelly (Quarter-Kelly):** Use 25% of full Kelly to reduce variance and drawdown risk. Full Kelly maximizes geometric growth but produces large drawdowns. Half-Kelly cuts variance by 75% with only 25% reduction in growth. Quarter-Kelly is conservative and suitable for most traders.
+
+**Tools:** `recommend_kelly_position_size(win_rate, avg_win_pct, avg_loss_pct, account_value, kelly_fraction, max_position_pct)`
+
+### Edge Quantification
+
+Edge = Expected Return per trade. A positive edge means the strategy is profitable over many trades.
+
+**Edge Quality Tiers:**
+
+| Edge Quality | Expected Return | Action |
+|-------------|-----------------|--------|
+| STRONG | >1.0% per trade | Full Kelly sizing |
+| MODERATE | 0.3-1.0% per trade | Half or Quarter-Kelly |
+| WEAK | 0.0-0.3% per trade | Minimum size or skip |
+| NO_EDGE | <0.0% per trade | Do not trade |
+
+**Tools:** `quantify_pattern_edge(ticker, pattern_id, lookback_days, holding_period)`, `validate_brooks_pattern_win_rate(ticker, pattern_id, lookback_days, holding_period, profit_target_pct, stop_loss_pct)`
+
+### Monte Carlo Stress Testing
+
+Simulates thousands of portfolio return paths using historical return distributions. Captures fat tails and correlation breakdowns that parametric models miss.
+
+**Key Outputs:**
+
+| Metric | Definition | Use |
+|--------|-----------|-----|
+| VaR 95% | Max loss in 95% of scenarios | Daily risk budget |
+| VaR 99% | Max loss in 99% of scenarios | Extreme risk limit |
+| CVaR 95% | Average loss in worst 5% of scenarios | Tail risk assessment |
+| Probability of >10% loss | Frequency of large drawdowns | Portfolio stress tolerance |
+
+**Tools:** `run_monte_carlo_stress_test(account_number, n_simulations, time_horizon_days, lookback_days)`
+
+### Drawdown Analysis
+
+Measures peak-to-trough portfolio declines — the most psychologically and financially damaging aspect of trading.
+
+| Metric | Definition | Good | Poor |
+|--------|-----------|------|------|
+| Max Drawdown | Largest peak-to-trough decline | <15% | >30% |
+| Calmar Ratio | Annual return / Max drawdown | >1.0 | <0.5 |
+| Ulcer Index | RMS of drawdown depth × duration | <5 | >15 |
+
+**Tools:** `calculate_drawdown_analysis(account_number, lookback_days)`
+
+### Model Decay Detection
+
+Monitors whether the 5-gate signal system is degrading over time. Gate trends, prediction accuracy, and best/worst predictors are tracked.
+
+**Tools:** `detect_model_decay(days, threshold)`
 
 ---
 
@@ -366,4 +520,52 @@ Used across all report sections:
 
 ---
 
-*Last Updated: February 2026 | Extracted from COMPREHENSIVE_REPORT_GENERATOR.md v3.1*
+## INTERMARKET ANALYSIS FRAMEWORK
+
+**Source:** John Murphy — *Intermarket Analysis* + Ray Dalio — *How the Economic Machine Works*
+
+### Correlation Interpretation
+
+| Benchmark | Ticker | Positive Correlation Means | Negative Correlation Means |
+|-----------|--------|---------------------------|---------------------------|
+| **UUP** (US Dollar) | UUP | Stock rises with dollar (exporters hurt) | Stock falls with dollar (dollar-sensitive) |
+| **^TNX** (10Y Yield) | ^TNX | Stock rises with rates (financials, value) | Stock falls with rates (growth, tech, REITs) |
+| **USO** (Crude Oil) | USO | Stock rises with oil (energy, transports) | Stock falls with oil (airlines, consumers) |
+| **GLD** (Gold) | GLD | Stock rises with gold (safe haven, miners) | Stock falls with gold (risk-on asset) |
+| **SPY** (S&P 500) | SPY | High beta, moves with market | Defensive/counter-cyclical |
+| **TLT** (Long Bonds) | TLT | Stock rises with bonds (rate-sensitive) | Stock rises when bonds fall (risk-on) |
+| **HYG** (High Yield) | HYG | Credit-correlated (risk-on) | Defensive/quality |
+
+**Correlation Strength:** |r| > 0.7 = STRONG | 0.4-0.7 = MODERATE | < 0.4 = WEAK
+
+### VIX Term Structure Rules
+
+| Structure | VIX Spot vs VIX3M | Market Signal | Options Bias |
+|-----------|-------------------|---------------|-------------|
+| **CONTANGO** | Spot < 3M (ratio < 1.0) | Normal/complacent | Sell premium (IV likely to decay) |
+| **BACKWARDATION** | Spot > 3M (ratio > 1.0) | Fear/stress | Buy premium (hedging demand elevated) |
+| **STEEP CONTANGO** | Ratio < 0.85 | Extreme complacency | Sell premium aggressively, but watch for reversal |
+| **STEEP BACKWARDATION** | Ratio > 1.10 | Panic/crisis | Buy protection, reduce exposure |
+
+**Key Rule:** Persistent backwardation (>3 days) signals regime change — reduce risk. Contango normalization after a spike = risk-on signal.
+
+### Expected Move Methodology
+
+**Two methods, use the most reliable:**
+
+1. **IV-Based Expected Move:** `EM = Price × IV × √(DTE / 365)`
+   - Derived from implied volatility of at-the-money options
+   - Best when options are liquid and IV is stable
+
+2. **Straddle-Based Expected Move:** `EM = ATM Straddle Price × 0.85`
+   - Uses actual market pricing of ATM straddle
+   - The 0.85 multiplier accounts for time decay already embedded in straddle pricing
+   - Best when straddle is liquid and tightly quoted
+
+**Usage:** Short strikes for credit spreads should be placed OUTSIDE the expected move range. If a short strike is inside the EM, the trade has <50% probability of profit.
+
+**Tools:** `analyze_intermarket_correlation()`, `analyze_vix_term_structure()`, `calculate_expected_move()`
+
+---
+
+*Last Updated: March 2026 | Extracted from COMPREHENSIVE_REPORT_GENERATOR.md v3.1 + Statistical Validation Framework + Intermarket Analysis Framework*

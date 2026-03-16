@@ -55,7 +55,7 @@ Every trade MUST have a identifiable catalyst. This is a HARD GATE, not a bonus.
 | 3. McMillan Options | 13.4% | IV Rank, P/C Ratio, Max Pain, UOA |
 | 4. Insiders | 4.5% | Cluster buying/selling patterns |
 | 5. Institutions | 4.5% | 13F holdings, accumulation/distribution |
-| 6. Technical | 17.9% | ML signals (9.8%) + Indicators (8.1%) |
+| 6. Technical | 17.9% | ML signals (9.8%) + Indicators (8.1%) — includes Multi-Timeframe Analysis (Monthly/Weekly/Daily) |
 | 7. Market Context | 5.3% | Fear/Greed, sector analysis |
 | 8. Al Brooks | 19.6% | Context-informed price action **(CENTRAL)** |
 | 9. Historical | 0% | Confirmation only, not weighted |
@@ -608,6 +608,7 @@ detect_unusual_options_activity(ticker)   # NEW: Smart money options detection
 
 # SECTION D: Al Brooks Price Action (CENTRAL)
 analyze_technical(ticker)                 # RSI, MACD, EMAs, price data + AL BROOKS OUTPUT
+analyze_multitimeframe(ticker)            # MANDATORY: Monthly/Weekly/Daily Brooks alignment + confluence scoring
 calculate_relative_strength_tool(ticker)  # RS vs SPY
 analyze_volume_tool(ticker)               # OBV, CVD, accumulation/distribution + DALIO METRICS
 analyze_competitors(ticker, top_n=5)      # NEW: Sector comparison + leader detection
@@ -623,6 +624,9 @@ analyze_competitors(ticker, top_n=5)      # NEW: Sector comparison + leader dete
 
 # FINAL: Generate Trading Signal with 5 Gates (includes Dalio in freshness_analysis)
 generate_trading_signal(ticker, direction="LONG", account_size=10000)  # Complete signal with Dalio
+
+# ⚠️ MANDATORY: Multi-Timeframe Analysis (must be called for EVERY deep analysis)
+analyze_multitimeframe(ticker)            # Monthly/Weekly/Daily Brooks alignment, confluence score, swing suitability
 ```
 
 ### Step 2: Generate Full Report
@@ -631,7 +635,8 @@ Follow the report structure in `SCANNER_REPORT_GENERATOR.md` with all sections:
 - Section A: Company Overview + Quality Score
 - Section B: Catalyst Verification (MANDATORY)
 - Section C: McMillan Options Strategy + Smart Money
-- Section D: Al Brooks Price Action Analysis (CENTRAL)
+- Section D: Al Brooks Price Action Analysis (CENTRAL) — includes Multi-Timeframe alignment from `analyze_multitimeframe()`
+- Section D.1: Brooks Lesson (MANDATORY — pattern explanation, invalidation level, timeframe alignment)
 - **Section E: Dalio Economic Machine Analysis** (from analyze_volume_tool)
 - **Section F: Trading Signal with 5-Gate Validation**
 
@@ -1149,12 +1154,49 @@ Returns unified quality metrics:
 
 ## AL BROOKS ANALYSIS GUIDE (CENTRAL)
 
-### Determining Always-In Direction
+### Multi-Timeframe Brooks Analysis
+
+**MANDATORY:** Every deep analysis must include multi-timeframe alignment via `analyze_multitimeframe(ticker)`.
+
+**Analysis Order: Monthly --> Weekly --> Daily (Top-Down)**
+
+| Timeframe | Purpose | Key Indicators |
+|-----------|---------|----------------|
+| **Monthly Trend** | Establishes the macro direction | SMA 10/20, RSI, MACD on monthly bars. This is the "big picture" — trade WITH the monthly trend, not against it. |
+| **Weekly Al Brooks** | Intermediate structure and pattern context | Always-In direction, Brooks pattern, bar reading on weekly bars. Weekly S/R levels are stronger than daily. |
+| **Daily Setup** | Entry trigger and timing | Daily Brooks pattern, entry bar, stop placement. The daily is WHERE you enter, but monthly/weekly tell you WHETHER to enter. |
+
+**Key Principles:**
+- **Weekly S/R levels are stronger than daily** — a daily breakout that runs into weekly resistance will likely fail
+- **Monthly trend overrides** — do not take daily LONG setups against a monthly downtrend unless weekly shows reversal evidence
+- **Weekly Always-In direction** carries more weight than daily for swing trades
+
+**Confluence Scoring (from `analyze_multitimeframe()`):**
+
+| Score Range | Grade | Meaning |
+|-------------|-------|---------|
+| 80-100 | A | All timeframes aligned — highest conviction |
+| 60-79 | B | Monthly + one lower timeframe aligned — good setup |
+| 40-59 | C | Mixed signals — reduce size or wait |
+| 20-39 | D | Conflicting timeframes — high risk |
+| 0-19 | F | Opposing timeframes — avoid trade |
+
+**Swing Suitability (from `analyze_multitimeframe()`):**
+
+| Rating | Meaning |
+|--------|---------|
+| **HIGH** | Monthly, weekly, and daily all aligned. Ideal for multi-day/week holds. |
+| **MODERATE** | Two of three timeframes aligned. Acceptable with tighter stops. |
+| **LOW** | Only one timeframe supports the trade. Day-trade only, not a swing. |
+| **AVOID** | Timeframes conflict. No swing trade — wait for alignment. |
+
+### Determining Always-In Direction (Daily and Weekly)
 - **LONG** if: Price above EMAs, higher highs/lows, bullish momentum
 - **SHORT** if: Price below EMAs, lower highs/lows, bearish momentum
 - **Flip Level:** Price that would reverse the Always-In direction
+- **Weekly bars** provide the intermediate Always-In direction — check weekly alongside daily
 
-### Pattern Recognition
+### Pattern Recognition (Daily and Weekly Bars)
 
 **LONG Patterns:**
 | Pattern | Description | Base Prob |
@@ -1187,6 +1229,28 @@ Add/subtract from base probability:
 - **-5%** Exhaustion score > 40
 - **-5%** Near major resistance (LONG) or support (SHORT)
 - **-10%** HIGH trap risk
+
+---
+
+### BROOKS LESSON (MANDATORY IN EVERY REPORT)
+
+**Every report MUST include a Brooks Lesson section.** This teaches the trader WHY the pattern works, not just what it is.
+
+**Report Template:**
+
+```markdown
+### Brooks Lesson
+**Pattern:** [Pattern Name from Brooks analysis — e.g., "High 2 in Bull Channel"]
+**Why This Pattern Works:** [2-3 sentence explanation from Al Brooks methodology. Example: "A High 2 is the second attempt by bulls to resume the trend after a pullback. The first pullback (High 1) often fails because bears are still aggressive, but by the High 2, sellers have exhausted their momentum. The two-legged pullback creates a measured move target and attracts breakout buyers."]
+**What to Watch:** [Key level or condition that would invalidate the pattern. Example: "A close below the High 1 pullback low at $142.50 would negate this pattern and flip Always-In to SHORT."]
+**Timeframe Alignment:** [Monthly/Weekly/Daily alignment status and what it means. Example: "Monthly LONG (SMA 10 > SMA 20), Weekly Always-In LONG with High 2, Daily triggering entry — all three timeframes aligned (Grade A confluence). This is the highest conviction setup."]
+```
+
+**Rules:**
+- Pull the pattern name from `analyze_technical()` Brooks output
+- Pull timeframe alignment from `analyze_multitimeframe()` confluence data
+- The explanation must be educational — teach the trader, not just label the pattern
+- The invalidation level must be a specific price, not vague guidance
 
 ---
 
@@ -1292,7 +1356,7 @@ for chunk in chunks_of_20:
 | Role | Tools |
 |------|-------|
 | **Role 1: Market Scan** | `get_raw_scan_candidates()` → `scan_long_candidates()` → `scan_short_candidates()` |
-| **Role 2: Ticker Scan** | All analysis tools + `generate_trading_signal()` + `WebSearch` (supplemental) |
+| **Role 2: Ticker Scan** | All analysis tools + `analyze_multitimeframe()` + `generate_trading_signal()` + `WebSearch` (supplemental) |
 
 ### Tools by Section (Role 2)
 
@@ -1301,7 +1365,7 @@ for chunk in chunks_of_20:
 | Overview | `get_ticker_data()`, `calculate_quality_score()` |
 | Catalyst | `detect_catalyst_strength()`, `detect_insider_cluster()`, `get_earnings_history()`, `get_institutional_holders()` |
 | McMillan Options | `analyze_options_mcmillan()`, `detect_unusual_options_activity()`, `analyze_iv_term_structure()`, `analyze_iv_skew()` |
-| Al Brooks | `analyze_technical()`, `calculate_relative_strength_tool()`, `analyze_competitors()` |
+| Al Brooks | `analyze_technical()`, `analyze_multitimeframe()`, `calculate_relative_strength_tool()`, `analyze_competitors()` |
 | **Dalio Economic Machine** | `analyze_volume_tool()` → `dalio_metrics` section |
 | Trading Signal | `generate_trading_signal()` → includes `dalio_economic_machine` in output |
 
@@ -1347,8 +1411,8 @@ for chunk in chunks_of_20:
 
 ---
 
-**Last Updated:** January 8, 2026
-**Version:** 2.6 - Added OPTIONS WISDOM + Trading Plan Rules
+**Last Updated:** March 14, 2026
+**Version:** 2.7 - Added Multi-Timeframe Brooks Analysis + Brooks Lesson + analyze_multitimeframe() tool
 
 ---
 
