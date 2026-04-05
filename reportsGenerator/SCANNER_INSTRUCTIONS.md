@@ -1123,8 +1123,8 @@ If unusual activity appears on expiration within 7 days of earnings:
 3. Time Stop: 21 DTE
 
 **Position Sizing (1% risk):**
-- Account: $10,000
-- Max Risk: $100
+- Account: Use totalEquity from BALANCE data (NEVER hardcode $10,000)
+- Max Risk: 1% of totalEquity
 - Max Contracts: {X}
 ```
 

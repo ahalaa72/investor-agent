@@ -514,6 +514,39 @@ Path: /Users/AhmedE/Ahmed/Trading Reports/
 
 ---
 
+### Fixed Income & Bond Analysis Tools
+
+49. **`monitor_credit_spreads()`** — Credit spread monitor with FRED OAS + ETF proxies
+    - PRIMARY: FRED ICE BofA OAS (IG/HY/CCC/BBB/AAA). FALLBACK: HYG/LQD ETF ratio.
+    - Returns: `oas_spreads` (IG/HY/CCC + signal), `credit_spreads` (HYG/LQD ratio), `risk_regime` (TLT/SPY correlation), `yield_curve` (shape), `breakeven_inflation` (TIPS signal), `term_premium` (ACM 10Y), `composite` (stress score 0-100), `lessons` (educational content)
+    - Use for: Macro context header, portfolio risk assessment, sector rotation timing
+    - Stress levels: BENIGN (0-34), CAUTIOUS (35-54), STRESS (55-74), CRISIS (75-100)
+
+50. **`analyze_yield_curve()`** — Full US + Canadian yield curve analysis
+    - US curve: FRED 11 points (1M-30Y). Canadian: Bank of Canada Valet API (free, no key).
+    - Returns: `us_curve` (points, shape, direction), `canadian_curve` (points, shape), `butterfly` (2s5s10s curvature), `roll_down` (best maturity position), `carry` (yield - financing), `implications`, `lessons`
+    - Use for: Duration positioning, recession forecasting, curve trade identification
+    - Key: Bull steepening = best bond environment. Inverted = recession warning (8/8 hit rate).
+
+51. **`recommend_bond_trades(risk_target="MODERATE", currency_preference="BOTH", include_high_yield=True)`** — Bond ETF scanner
+    - Scans 28+ ETFs, combines 8 macro/credit/rate signals into BUY/SELL/HOLD per ETF (score 0-100).
+    - Returns: `macro_bond_environment` (regime signals), `recommendations` (scored ETFs), `account_allocation` (tax-optimal placement), `lessons` (market-condition wisdom), `tax_lessons` (always included)
+    - Use for: Portfolio bond allocation, fixed income rebalancing, tax-optimized placement
+    - Tax rules: RRSP (interest sheltered), CCPC (HBB.TO swap-based), TFSA (keep equity)
+
+52. **`analyze_bond_allocation(risk_target="MODERATE")`** — Tax-aware bond placement
+    - Recommends bond ETFs with account-specific tax optimization (2026 Canadian rules).
+    - Returns: `recommended_purchases` (per-account ETFs), `account_placement_rules` (tax rates + notes)
+    - Use for: Portfolio review bond section, new bond allocation decisions
+    - Key: RRSP/LIRA = bond home. CCPC = HBB.TO only. TFSA = keep equity.
+
+53. **`calculate_bond_beta(ticker, benchmark="AGG", window_days=120)`** — Bond ETF beta analysis
+    - Rolling beta vs AGG, beta trend, rate regime asymmetry, SPY hedge effectiveness.
+    - Returns: `current_beta_vs_benchmark`, `beta_trend`, `rate_regime_beta` (rising vs falling), `vs_spy` (correlation, hedge quality)
+    - Use for: Bond ETF selection, hedge effectiveness validation, duration risk assessment
+
+---
+
 ### Options Advanced Tools (Greeks & Flow)
 
 46. **`generate_options_trade_plan(ticker, direction, account_size=10000, risk_pct=2.0)`**

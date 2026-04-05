@@ -84,11 +84,15 @@ def analyze_technical_impl(
 
     indicators = TechnicalAnalysis.calculate_comprehensive_indicators(history)
 
+    # Support/Resistance with breach detection
+    sr_levels = TechnicalAnalysis.find_support_resistance(history)
+
     result = {
         "symbol": ticker,
         "period": period,
         "data_points": len(history),
         "analysis": indicators,
+        "support_resistance": sr_levels,
     }
 
     # ML probability layer

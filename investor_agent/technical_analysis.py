@@ -599,33 +599,231 @@ class TechnicalAnalysis:
     
     @staticmethod
     def find_support_resistance(df: pd.DataFrame, order: int = 5) -> Dict[str, Any]:
-        """Find support and resistance levels using local extrema."""
+        """
+        Find support/resistance levels using multiple methods:
+        1. Local extrema (argrelextrema)
+        2. Consolidation zone clustering (close price density)
+        3. Key moving averages as dynamic S/R
+        4. Intraday reversal bar detection (bear/bull traps)
+        """
         highs = df['High'].values
         lows = df['Low'].values
         closes = df['Close'].values
         current_price = closes[-1]
 
-        # Find local maxima (resistance) and minima (support)
+        # ── METHOD 1: Local extrema (original) ──
         resistance_indices = argrelextrema(highs, np.greater, order=order)[0]
         support_indices = argrelextrema(lows, np.less, order=order)[0]
 
-        # Filter resistance levels to only those ABOVE current price
-        resistance_candidates = [highs[i] for i in resistance_indices if highs[i] > current_price]
-        # Sort ascending and take closest 3
+        resistance_candidates = [float(highs[i]) for i in resistance_indices if highs[i] > current_price]
         resistance_levels = sorted(resistance_candidates)[:3] if resistance_candidates else []
 
-        # Filter support levels to only those BELOW current price
-        support_candidates = [lows[i] for i in support_indices if lows[i] < current_price]
-        # Sort descending and take closest 3
+        support_candidates = [float(lows[i]) for i in support_indices if lows[i] < current_price]
         support_levels = sorted(support_candidates, reverse=True)[:3] if support_candidates else []
 
-        return {
+        # ── METHOD 2: Consolidation zones (cluster of closes/lows in tight range) ──
+        # Scan recent 20 bars for price clusters that act as support/resistance
+        recent_n = min(20, len(df))
+        recent_lows = lows[-recent_n:]
+        recent_closes = closes[-recent_n:]
+        atr_14 = np.mean([
+            max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1]))
+            for i in range(max(1, len(df) - 14), len(df))
+        ]) if len(df) > 14 else (highs[-1] - lows[-1])
+        cluster_tolerance = atr_14 * 0.5  # Half ATR = tight cluster
+
+        # Find support clusters: group recent lows within cluster_tolerance
+        consolidation_supports = []
+        used = set()
+        for i, lo in enumerate(recent_lows):
+            if i in used or lo >= current_price:
+                continue
+            cluster = [lo]
+            for j, lo2 in enumerate(recent_lows):
+                if j != i and j not in used and abs(lo2 - lo) < cluster_tolerance and lo2 < current_price:
+                    cluster.append(lo2)
+                    used.add(j)
+            used.add(i)
+            if len(cluster) >= 2:  # At least 2 touches = valid support
+                level = float(np.mean(cluster))
+                consolidation_supports.append((level, len(cluster)))
+
+        # Add consolidation supports that aren't duplicates of extrema supports
+        for level, touches in sorted(consolidation_supports, key=lambda x: -x[0]):
+            is_dup = any(abs(level - s) < cluster_tolerance for s in support_levels)
+            if not is_dup and len(support_levels) < 5:
+                support_levels.append(level)
+
+        # Re-sort support (descending = nearest first)
+        support_levels = sorted(support_levels, reverse=True)[:5]
+
+        # ── METHOD 3: Key MAs as dynamic support/resistance ──
+        ma_levels = {}
+        for period_len in [10, 20, 50]:
+            if len(closes) >= period_len:
+                ma_val = float(np.mean(closes[-period_len:]))
+                ma_levels[f"SMA{period_len}"] = ma_val
+
+        # ── Broken supports (former support now above price) ──
+        broken_supports = []
+        if not support_levels or (support_levels and support_levels[0] < current_price * 0.95):
+            # Stock is near lows — find former support above price
+            broken_candidates = sorted(
+                [float(lows[i]) for i in support_indices if lows[i] > current_price],
+            )[:3]
+            broken_supports = broken_candidates
+            # Add absolute low as implicit support
+            abs_low = float(np.min(lows))
+            if abs_low < current_price and abs_low not in support_levels:
+                support_levels.append(abs_low)
+                support_levels = sorted(support_levels, reverse=True)
+
+        # ── REVERSAL BAR DETECTION (bear traps / bull traps from price action) ──
+        # Detects bars with large tails = intraday reversal = trapped traders
+        reversal_bars = []
+        for i in range(max(len(df) - 10, 0), len(df)):  # Last 10 bars
+            bar_range = highs[i] - lows[i]
+            if bar_range <= 0:
+                continue
+            bar_close = closes[i]
+            bar_low = lows[i]
+            bar_high = highs[i]
+            bar_open = df['Open'].values[i] if 'Open' in df.columns else bar_close
+            bar_date = str(df.index[i].date()) if hasattr(df.index[i], 'date') else str(df.index[i])
+
+            lower_tail = min(bar_open, bar_close) - bar_low
+            upper_tail = bar_high - max(bar_open, bar_close)
+            lower_tail_pct = lower_tail / bar_range
+            upper_tail_pct = upper_tail / bar_range
+
+            # Bear trap: large lower tail (>40% of range) + close in upper half
+            if lower_tail_pct > 0.40 and (bar_close - bar_low) / bar_range > 0.50:
+                # Check if this bar made a new N-day low
+                lookback_start = max(0, i - 10)
+                is_new_low = bar_low <= np.min(lows[lookback_start:i]) if i > lookback_start else False
+
+                reversal_bars.append({
+                    "date": bar_date,
+                    "type": "BEAR_TRAP",
+                    "low": f"${bar_low:.2f}",
+                    "close": f"${bar_close:.2f}",
+                    "high": f"${bar_high:.2f}",
+                    "lower_tail_pct": round(lower_tail_pct * 100, 0),
+                    "recovery": f"${bar_close - bar_low:.2f}",
+                    "new_low": is_new_low,
+                    "interpretation": (
+                        f"{'NEW LOW ' if is_new_low else ''}Bear trap — price dropped to ${bar_low:.2f} "
+                        f"but recovered to close ${bar_close:.2f} "
+                        f"({lower_tail_pct:.0%} lower tail). "
+                        f"Bears trapped below ${bar_low:.2f}, forced to cover = bullish signal."
+                    )
+                })
+
+            # Bull trap: large upper tail (>40% of range) + close in lower half
+            elif upper_tail_pct > 0.40 and (bar_high - bar_close) / bar_range > 0.50:
+                lookback_start = max(0, i - 10)
+                is_new_high = bar_high >= np.max(highs[lookback_start:i]) if i > lookback_start else False
+
+                reversal_bars.append({
+                    "date": bar_date,
+                    "type": "BULL_TRAP",
+                    "high": f"${bar_high:.2f}",
+                    "close": f"${bar_close:.2f}",
+                    "low": f"${bar_low:.2f}",
+                    "upper_tail_pct": round(upper_tail_pct * 100, 0),
+                    "rejection": f"${bar_high - bar_close:.2f}",
+                    "new_high": is_new_high,
+                    "interpretation": (
+                        f"{'NEW HIGH ' if is_new_high else ''}Bull trap — price spiked to ${bar_high:.2f} "
+                        f"but fell back to close ${bar_close:.2f} "
+                        f"({upper_tail_pct:.0%} upper tail). "
+                        f"Bulls trapped above ${bar_high:.2f} = bearish signal."
+                    )
+                })
+
+        # ── Level breach detection (support/resistance tested intraday) ──
+        breach_events = []
+        all_support_to_check = list(support_levels[:3]) + broken_supports[:3]
+        for sup_level in all_support_to_check:
+            tolerance = sup_level * 0.002
+            for i in range(max(len(df) - 20, 0), len(df)):
+                bar_low = lows[i]
+                bar_close = closes[i]
+                if bar_low < sup_level - tolerance and bar_close > sup_level:
+                    breach_pct = round((sup_level - bar_low) / sup_level * 100, 2)
+                    bar_date = str(df.index[i].date()) if hasattr(df.index[i], 'date') else str(df.index[i])
+                    breach_events.append({
+                        "support_level": f"${sup_level:.2f}",
+                        "breach_low": f"${bar_low:.2f}",
+                        "close": f"${bar_close:.2f}",
+                        "breach_depth_pct": breach_pct,
+                        "date": bar_date,
+                        "signal": "BEAR_TRAP" if bar_close > sup_level * 1.005 else "FAILED_BREAKDOWN",
+                        "interpretation": (
+                            f"Price breached ${sup_level:.2f} support (low ${bar_low:.2f}, "
+                            f"-{breach_pct}%) but recovered to close ${bar_close:.2f}. "
+                            "Failed breakdown = bears couldn't hold below = bullish signal."
+                        )
+                    })
+
+        for res_level in resistance_levels[:3]:
+            tolerance = res_level * 0.002
+            for i in range(max(len(df) - 20, 0), len(df)):
+                bar_high = highs[i]
+                bar_close = closes[i]
+                if bar_high > res_level + tolerance and bar_close < res_level:
+                    breach_pct = round((bar_high - res_level) / res_level * 100, 2)
+                    bar_date = str(df.index[i].date()) if hasattr(df.index[i], 'date') else str(df.index[i])
+                    breach_events.append({
+                        "resistance_level": f"${res_level:.2f}",
+                        "breach_high": f"${bar_high:.2f}",
+                        "close": f"${bar_close:.2f}",
+                        "breach_depth_pct": breach_pct,
+                        "date": bar_date,
+                        "signal": "BULL_TRAP" if bar_close < res_level * 0.995 else "FAILED_BREAKOUT",
+                        "interpretation": (
+                            f"Price breached ${res_level:.2f} resistance (high ${bar_high:.2f}, "
+                            f"+{breach_pct}%) but fell back to close ${bar_close:.2f}. "
+                            "Failed breakout = bulls couldn't hold above = bearish signal."
+                        )
+                    })
+
+        # ── Build result ──
+        result = {
             "current_price": f"${current_price:.2f}",
             "resistance_levels": [f"${level:.2f}" for level in resistance_levels],
             "support_levels": [f"${level:.2f}" for level in support_levels],
             "nearest_resistance": f"${resistance_levels[0]:.2f}" if resistance_levels else "N/A",
-            "nearest_support": f"${support_levels[0]:.2f}" if support_levels else "N/A"
+            "nearest_support": f"${support_levels[0]:.2f}" if support_levels else "N/A",
+            "dynamic_ma_levels": {k: f"${v:.2f}" for k, v in ma_levels.items()},
         }
+
+        if broken_supports:
+            result["broken_supports"] = [f"${level:.2f}" for level in broken_supports]
+            result["broken_supports_note"] = (
+                "Former support levels now above price — broken and may act as resistance. "
+                "Stock is near period lows."
+            )
+
+        if reversal_bars:
+            result["reversal_bars"] = reversal_bars
+            bear_traps = [r for r in reversal_bars if r["type"] == "BEAR_TRAP"]
+            bull_traps = [r for r in reversal_bars if r["type"] == "BULL_TRAP"]
+            parts = []
+            if bear_traps:
+                parts.append(f"{len(bear_traps)} bear trap(s) — intraday drop recovered, shorts trapped")
+            if bull_traps:
+                parts.append(f"{len(bull_traps)} bull trap(s) — intraday spike rejected, longs trapped")
+            result["reversal_summary"] = ". ".join(parts)
+
+        if breach_events:
+            result["breach_events"] = breach_events
+            result["breach_summary"] = (
+                f"{len(breach_events)} level breach(es) in last 20 bars. "
+                "Intraday breaches that recover trap traders on the wrong side."
+            )
+
+        return result
     
     @staticmethod
     def calculate_trend_strength(df: pd.DataFrame) -> Dict[str, Any]:

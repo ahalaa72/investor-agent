@@ -153,6 +153,23 @@ Filename: PORTFOLIO_YYYY-MM-DD.md
 
 ---
 
+## FIXED INCOME & CREDIT ENVIRONMENT `[monitor_credit_spreads]` + `[analyze_bond_allocation]`
+
+| Metric | Value | Signal |
+|--------|-------|--------|
+| **HYG/LQD Ratio** | {credit_spreads.hyg_lqd_ratio} | {credit_spreads.signal} (Δ20d: {change_20d}%) |
+| **TLT/SPY Corr** | {credit_spreads.tlt_spy_correlation} | [Negative=Normal / Positive=Stress] |
+| **Stress Score** | {composite.stress_score}/100 | {composite.level} [BENIGN/CAUTIOUS/STRESS/CRISIS] |
+| **Risk Regime** | {risk_regime.regime} | [RISK_ON / RISK_OFF / STAGFLATION] |
+| **Target Bond %** | {target_bond_pct}% | Based on {risk_target} risk profile |
+
+**Bond Recommendations (Tax-Aware):**
+- **RRSP/LIRA:** Bond ETFs (interest income sheltered — 0% tax)
+- **TFSA:** Keep equity (tax-free cap gains more valuable)
+- **CCPC/Margin:** Short-duration only (interest at ~50% marginal rate)
+
+---
+
 ## ACCOUNT SUMMARY
 
 | Metric | Value | Change |
@@ -1311,6 +1328,9 @@ TSLA      X.XX   X.XX   X.XX   1.00
 | `calculate_portfolio_beta_weighted_delta` | Once per report | SPY-equivalent directional risk, per-position breakdown |
 | `check_portfolio_concentration_limits` | Once per report | Ticker/sector/expiration limit compliance, breach warnings |
 | `get_portfolio_summary` | Once per report | High-level portfolio summary with asset type detection (STOCK/ETF/MUTUAL_FUND routing) |
+| `monitor_credit_spreads` | Once per report | HYG/LQD ratio, TLT/SPY correlation, yield curve, composite stress score |
+| `analyze_bond_allocation` | Once per report | Tax-aware bond ETF placement (RRSP/LIRA/TFSA/CCPC), regime-based targets |
+| `calculate_bond_beta` | Per bond ETF | Bond beta vs AGG, SPY hedge effectiveness, rate regime beta |
 
 ---
 

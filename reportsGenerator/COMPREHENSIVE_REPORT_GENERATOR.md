@@ -77,7 +77,8 @@ Before calling intraday functions (`fetch_intraday_1h`, `fetch_intraday_15m`): c
 4. Fundamental Analysis
 5. Smart Money Positioning
 6. McMillan Options Strategy (AFTER technical — options strategy is informed by price action)
-7. Trading Plan (LAST — synthesizes everything above)
+7. Beta & Risk Regime (rolling beta, conditional alpha, position size adjustment)
+8. Trading Plan (LAST — synthesizes everything above)
 ```
 
 ---
@@ -97,12 +98,14 @@ Before calling intraday functions (`fetch_intraday_1h`, `fetch_intraday_15m`): c
 | **Credit** | {macro_summary.credit} | HYG/LQD ratio |
 | **Fed Stance** | {macro_summary.fed_policy_stance} | [DOVISH / NEUTRAL / HAWKISH] |
 | **Options Bias** | {macro_summary.options_strategy_bias} | [BUY_PREMIUM / SELL_PREMIUM / NEUTRAL] |
+| **Beta Regime** | {beta_regime.regime_signal} | [RISK_ON / RISK_OFF / TRANSITION] |
+| **Beta Dispersion** | {beta_regime.beta_dispersion.regime} | [COMPRESSED / NORMAL / EXPANDING] |
 
 **Macro Narrative:** {narrative}
 
 **Trading Implications:** {trading_implications}
 
-**Tools:** `generate_macro_context_header(include_breadth=True, include_intermarket=True)`, `analyze_vix_term_structure()`
+**Tools:** `generate_macro_context_header(include_breadth=True, include_intermarket=True)`, `analyze_vix_term_structure()`, `analyze_beta_regime()`
 
 ---
 
@@ -400,6 +403,43 @@ For each bar: Type (bull/bear/doji/inside), Close (near high/low/middle), Size, 
 **Strike Selection Guidance:** Use expected move to validate options strike placement — short strikes should be OUTSIDE the expected move range.
 
 **Tools:** `analyze_intermarket_correlation()`, `calculate_expected_move()`
+
+---
+
+#### H. Fixed Income & Credit Environment `[monitor_credit_spreads]` + `[analyze_yield_curve]`
+
+**Purpose:** Provides macro fixed income context that informs equity risk assessment, sector rotation, and portfolio hedging. Educational lessons from `BOND_LESSONS` explain the WHY behind each signal.
+
+| Metric | Value | Signal |
+|--------|-------|--------|
+| **Credit Stress** | {composite.credit_stress_score}/100 | {composite.level} — [{BENIGN/CAUTIOUS/STRESS/CRISIS}] |
+| **OAS (HY)** | {oas_spreads.hy_oas}bp | {oas_spreads.signal} |
+| **Yield Curve** | {us_curve.slope_2s10s_bp}bp | {us_curve.shape} / {us_curve.direction} |
+| **Risk Regime** | {risk_regime.regime} | TLT/SPY corr: {risk_regime.tlt_spy_correlation_60d} |
+| **Breakeven 10Y** | {breakeven_inflation.breakeven_10y}% | {breakeven_inflation.tips_signal} |
+| **Term Premium** | {term_premium.acm_10y}% | {term_premium.interpretation} |
+| **Butterfly 2s5s10s** | {butterfly.value_bp}bp | {butterfly.signal} |
+| **Carry** | {carry.carry_5y}% (5Y) | {carry_positive ? "POSITIVE — time is on your side" : "NEGATIVE — hold only if expecting cuts"} |
+| **Bond Bias** | {macro_bond_environment.overall_bond_bias} | Duration: {macro_bond_environment.duration_preference} |
+
+**Bond Wisdom:** (Auto-populated from tool `lessons` field — include the top 2-3 most relevant)
+
+For each lesson returned by the tool:
+```
+**{lesson.name}**
+*"{lesson.quote}"*
+**Why:** {lesson.why_it_works}
+**Action:** {lesson.what_to_do}
+**Win Rate:** {lesson.win_rate}
+```
+
+**Equity Impact:**
+- If STRESS/CRISIS: "Credit stress elevated — reduce equity exposure, tighten stops, favor defensive sectors."
+- If BENIGN: "Credit environment supportive — risk-on positioning appropriate."
+- If INVERTED curve: "Recession risk elevated — growth stocks face headwind, value/defensive outperform."
+- If WIDENING spreads: "Credit deterioration precedes equity weakness 70% of the time — hedge portfolio."
+
+**Tools:** `monitor_credit_spreads()`, `analyze_yield_curve()`
 
 ---
 
@@ -702,12 +742,11 @@ For each bar: Type (bull/bear/doji/inside), Close (near high/low/middle), Size, 
 | Probability of Profit | XX% |
 
 **Position Sizing (1% Account Risk):**
+**CRITICAL: Use totalEquity from BALANCE data for account size. NEVER use hypothetical amounts.**
 
 | Account Size | Max Risk (1%) | Max Contracts | Capital |
 |--------------|---------------|---------------|---------|
-| $25,000 | $250 | X | $XXX |
-| $50,000 | $500 | X | $XXX |
-| $100,000 | $1,000 | X | $XXX |
+| $TOTAL_EQUITY from BALANCE | 1% of totalEquity | X | $XXX |
 
 **Exit Rules:**
 
@@ -1002,6 +1041,39 @@ find_similar_historical_setups(
 **Confirmation:** [STRONG ≥60% hit / MODERATE 40-59% / WEAK <40% / INSUFFICIENT <5 setups]
 
 **Tools:** `find_similar_historical_setups()`
+
+---
+
+### 11C. BETA & RISK REGIME `[calculate_rolling_beta]` + `[analyze_beta_regime]`
+
+**Dynamic beta analysis — verifies whether the trade has genuine alpha or is just riding market beta.**
+
+| Metric | Value | Signal |
+|--------|-------|--------|
+| **Beta (60d)** | {beta_60d} | [HIGH_BETA >1.3 / NORMAL 0.7-1.3 / LOW_BETA <0.7] |
+| **Beta (120d)** | {beta_120d} | — |
+| **Beta (252d)** | {beta_252d} | — |
+| **Beta Trend** | {beta_trend} | [RISING / FALLING / STABLE] |
+| **Bull Beta** | {bull_beta} | Beta on up-market days |
+| **Bear Beta** | {bear_beta} | Beta on down-market days |
+| **Alpha Type** | {interpretation} | [GENUINE_ALPHA / BETA_TIMING / DEFENSIVE_ALPHA] |
+| **Position Adj** | {position_size_multiplier}x | Beta-adjusted sizing multiplier |
+
+**Market Regime (Beta Rotation):**
+
+| Metric | Value | Signal |
+|--------|-------|--------|
+| **XLU/SPY Signal** | {regime_signal} | [RISK_ON / RISK_OFF / TRANSITION] |
+| **Dispersion** | {dispersion} | [COMPRESSED / NORMAL / EXPANDING] |
+| **Scanner Bias** | {scanner_bias} | [AGGRESSIVE / DEFENSIVE / NEUTRAL] |
+
+**Interpretation:**
+- If BETA_TIMING: "Alpha may be fake — stock rides market up, hides down. Reduce conviction."
+- If GENUINE_ALPHA: "Symmetric beta — stock-specific alpha confirmed. Full conviction."
+- If RISING beta + RISK_OFF regime: "Double caution — stock correlating with weakening market."
+- If FALLING beta + RISK_ON regime: "Stock decoupling in strong market — investigate catalyst."
+
+**Position Size Adjustment:** Multiply final shares by {position_size_multiplier}x.
 
 ---
 

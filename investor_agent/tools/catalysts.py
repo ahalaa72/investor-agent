@@ -288,9 +288,11 @@ def _analyze_news_sentiment(news_items: list, ticker: str = None) -> dict:
     # When these appear, MUST flag as CRITICAL and investigate further
     # =========================================================================
     CRITICAL_REGULATORY_KEYWORDS = [
-        # Government/Policy
-        "trump", "biden", "congress", "senate", "white house", "executive order",
-        "legislation", "bill", "law", "policy", "government", "federal",
+        # Government/Policy — Political figure names REMOVED (they appear in both
+        # bullish and bearish contexts; "Trump announces $40B deal" ≠ bearish).
+        # Only action-oriented policy terms remain.
+        "congress", "senate", "white house", "executive order",
+        "legislation", "bill signed", "law passed", "government shutdown", "federal shutdown",
         # Regulatory Bodies
         "sec", "doj", "ftc", "cfpb", "fcc", "fda", "epa", "fed", "federal reserve",
         # Regulatory Actions
@@ -320,18 +322,25 @@ def _analyze_news_sentiment(news_items: list, ticker: str = None) -> dict:
         "expansion", "launch", "momentum", "surge", "soars", "jumps", "rallies",
         "deal", "contract", "agreement", "acquisition", "approved", "fda approval",
         "higher", "gains", "climbs", "rises", "up", "order", "orders", "buy",
-        "skyrocket", "boom", "lift", "soar", "spike", "advance", "accelerate"
+        "skyrocket", "boom", "lift", "soar", "spike", "advance", "accelerate",
+        # Government/infrastructure/spending catalysts
+        "billion", "million", "investment", "infrastructure", "project",
+        "announced", "announces", "secured", "selected", "chosen",
+        "revenue", "pipeline", "backlog", "funding",
     ]
 
     BEARISH_KEYWORDS = [
-        "downgrade", "miss", "misses", "disappoints", "cuts", "lowers", "lowered",
+        "downgrade", "miss", "misses", "disappoints", "cuts guidance", "lowers outlook", "lowered",
         "negative", "bearish", "underperform", "sell rating", "concern", "concerns",
         "decline", "falls", "drops", "plunges", "slumps", "weakness", "weak",
         "lawsuit", "investigation", "recall", "warning", "layoffs", "restructuring",
-        "ban", "banned", "restriction", "sanctions", "tariff", "trade war",
-        "export", "block", "blocked", "hit", "loss", "down", "slide", "tumble",
-        "risk", "threat", "probe", "fine", "penalty", "delay", "halt", "suspend",
-        "cap", "rate cap", "limit", "ceiling"  # NEW: Regulatory bearish terms
+        "ban", "banned", "restriction", "sanctions", "tariff war", "trade war",
+        "export ban", "blocked by", "slide", "tumble",
+        "threat", "probe", "fine", "penalty", "delay", "halt", "suspend",
+        "rate cap", "price cap", "fee cap", "ceiling"
+        # REMOVED overly generic: "hit", "down", "loss", "risk", "block", "export",
+        # "tariff", "cap", "limit", "cuts" — too many false positives on bullish
+        # headlines like "Trump hits $40B deal", "block funding approved", "tariff exemption"
     ]
 
     # Major catalyst keywords (requires web search for context)
@@ -372,14 +381,44 @@ def _analyze_news_sentiment(news_items: list, ticker: str = None) -> dict:
         title_lower = title.lower()
         return [kw for kw in CRITICAL_REGULATORY_KEYWORDS if _word_boundary_match(kw, title_lower)]
 
+    def _net_sentiment(text: str) -> tuple:
+        """
+        Score sentiment by counting bullish vs bearish keyword matches
+        using word boundary matching. Returns (sentiment, bull_count, bear_count).
+
+        Net scoring prevents false negatives where both lists match
+        (e.g., "Trump announces $40B deal" matching "deal" bullish + "trade war" bearish).
+        """
+        bull_hits = [kw for kw in BULLISH_KEYWORDS if _word_boundary_match(kw, text)]
+        bear_hits = [kw for kw in BEARISH_KEYWORDS if _word_boundary_match(kw, text)]
+        bull_count = len(bull_hits)
+        bear_count = len(bear_hits)
+
+        if bull_count > bear_count:
+            return ("BULLISH", bull_count, bear_count)
+        elif bear_count > bull_count:
+            return ("BEARISH", bull_count, bear_count)
+        elif bull_count == bear_count and bull_count > 0:
+            # Tie — check for strong bullish signals that override
+            strong_bullish = any(_word_boundary_match(kw, text) for kw in [
+                "deal", "contract", "agreement", "awarded", "partnership",
+                "billion", "approved", "fda approval", "record", "breakthrough",
+                "infrastructure", "investment", "project", "funding", "selected",
+                "announced", "secured", "revenue", "pipeline", "backlog",
+            ])
+            return ("BULLISH" if strong_bullish else "NEUTRAL", bull_count, bear_count)
+        else:
+            return ("NEUTRAL", 0, 0)
+
     # Step 1: Analyze yfinance news with SEVERITY CLASSIFICATION
     if news_items:
         for item in news_items[:10]:
             title_original = item.get('title', '')
             title = str(title_original).lower()
 
-            is_bullish = any(kw in title for kw in BULLISH_KEYWORDS)
-            is_bearish = any(kw in title for kw in BEARISH_KEYWORDS)
+            sentiment, bull_n, bear_n = _net_sentiment(title)
+            is_bullish = sentiment == "BULLISH"
+            is_bearish = sentiment == "BEARISH"
 
             # NEW: Classify severity
             severity = _classify_news_severity(title, days_ago=None)
@@ -391,7 +430,7 @@ def _analyze_news_sentiment(news_items: list, ticker: str = None) -> dict:
                 result["critical_news"].append({
                     "title": title_original[:150],
                     "severity": "CRITICAL",
-                    "sentiment": "BEARISH" if is_bearish else ("BULLISH" if is_bullish else "NEUTRAL"),
+                    "sentiment": sentiment,
                     "keywords": critical_keywords_found[:5],
                     "source": "yfinance",
                     "requires_investigation": True
@@ -403,7 +442,7 @@ def _analyze_news_sentiment(news_items: list, ticker: str = None) -> dict:
             else:
                 score_multiplier = 1
 
-            if is_bullish and not is_bearish:
+            if is_bullish:
                 result["bullish_count"] += score_multiplier
                 result["notable_headlines"].append({
                     "title": title_original[:100],
@@ -411,7 +450,7 @@ def _analyze_news_sentiment(news_items: list, ticker: str = None) -> dict:
                     "severity": severity,
                     "source": "yfinance"
                 })
-            elif is_bearish and not is_bullish:
+            elif is_bearish:
                 result["bearish_count"] += score_multiplier
                 result["notable_headlines"].append({
                     "title": title_original[:100],
@@ -436,7 +475,7 @@ def _analyze_news_sentiment(news_items: list, ticker: str = None) -> dict:
             # Financial sector - banks, credit cards, fintech
             "financial": [
                 "credit card rate cap",
-                "Trump bank regulation",
+                "bank regulation 2026",
                 "CFPB credit card",
                 "interest rate cap legislation",
                 "bank fee regulation",
@@ -552,20 +591,11 @@ def _analyze_news_sentiment(news_items: list, ticker: str = None) -> dict:
             title = str(title_original).lower()
             content = title
 
-            # Analyze sentiment
-            is_bullish = any(kw in content for kw in BULLISH_KEYWORDS)
-            is_bearish = any(kw in content for kw in BEARISH_KEYWORDS)
+            # Analyze sentiment using net scoring (not binary any())
+            sentiment, bull_n, bear_n = _net_sentiment(content)
 
             # Check for major catalyst keywords (using word boundary matching)
             catalysts_found = [kw for kw in MAJOR_CATALYST_KEYWORDS if _word_boundary_match(kw, content)]
-
-            # Determine sentiment
-            if is_bullish and not is_bearish:
-                sentiment = "BULLISH"
-            elif is_bearish and not is_bullish:
-                sentiment = "BEARISH"
-            else:
-                sentiment = "NEUTRAL"
 
             # RECENCY WEIGHTING
             is_recent = item.get('is_recent', False)
@@ -1886,19 +1916,22 @@ def register_tools(mcp):
                 shares = row.get('Shares', 0)
                 value = row.get('Value', 0)
 
+                position = row.get('Position', '')
                 trade_info = {
                     "insider": insider,
+                    "position": position,
                     "transaction": transaction,
                     "shares": shares,
-                    "value": value,
+                    "value": value if not pd.isna(value) else 0,
                     "date": str(row.get('date', ''))[:10]
                 }
 
                 if 'Purchase' in str(transaction) or 'Buy' in str(transaction):
                     buys.append(trade_info)
 
-                    # Flag C-suite
-                    if any(title in str(insider).upper() for title in ['CEO', 'CFO', 'COO', 'PRESIDENT', 'CHAIRMAN']):
+                    # Flag C-suite buys
+                    c_suite = ['CEO', 'CFO', 'COO', 'PRESIDENT', 'CHAIRMAN', 'CHIEF']
+                    if any(t in str(insider).upper() or t in str(position).upper() for t in c_suite):
                         trade_info["notable"] = True
                         result["notable_trades"].append(trade_info)
 
@@ -1908,7 +1941,19 @@ def register_tools(mcp):
             # Calculate totals
             result["total_buy_value"] = sum(b.get('value', 0) or 0 for b in buys)
             result["total_sell_value"] = sum(s.get('value', 0) or 0 for s in sells)
+            result["buy_count"] = len(buys)
+            result["sell_count"] = len(sells)
             result["insiders"] = buys + sells
+
+            # Flag C-suite sells too (not just buys)
+            c_suite_titles = ['CEO', 'CFO', 'COO', 'PRESIDENT', 'CHAIRMAN', 'CHIEF']
+            for s_trade in sells:
+                insider_name = str(s_trade.get('insider', '')).upper()
+                position = str(s_trade.get('position', '')).upper() if 'position' in s_trade else ''
+                if any(title in insider_name or title in position for title in c_suite_titles):
+                    s_trade["notable"] = True
+                    if s_trade not in result["notable_trades"]:
+                        result["notable_trades"].append(s_trade)
 
             # Determine cluster type and strength
             buy_count = len(buys)
@@ -1926,18 +1971,29 @@ def register_tools(mcp):
                 result["cluster_detected"] = False
                 result["cluster_type"] = "BUYING"
                 result["cluster_strength"] = "WEAK"
-            elif sell_count >= 3:
-                result["cluster_detected"] = True
-                result["cluster_type"] = "SELLING"
-                result["cluster_strength"] = "STRONG"
+
+            if sell_count >= 3:
+                if not result["cluster_detected"] or result["cluster_type"] != "BUYING":
+                    result["cluster_detected"] = True
+                    result["cluster_type"] = "SELLING"
+                    result["cluster_strength"] = "STRONG"
             elif sell_count >= 2:
-                result["cluster_detected"] = True
-                result["cluster_type"] = "SELLING"
-                result["cluster_strength"] = "MODERATE"
+                if not result["cluster_detected"]:
+                    result["cluster_detected"] = True
+                    result["cluster_type"] = "SELLING"
+                    result["cluster_strength"] = "MODERATE"
 
             # Mixed if both significant
             if buy_count >= 2 and sell_count >= 2:
                 result["cluster_type"] = "MIXED"
+
+            # Net signal for compact summary
+            if buy_count > sell_count:
+                result["net_signal"] = "BULLISH"
+            elif sell_count > buy_count:
+                result["net_signal"] = "BEARISH"
+            else:
+                result["net_signal"] = "NEUTRAL"
 
         except Exception as e:
             result["error"] = str(e)

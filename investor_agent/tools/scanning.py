@@ -845,7 +845,7 @@ def _scan_one_direction(
     top_n: int,
     batch_size: int = 20,
     candidates: list = None,
-    data_driven: bool = False,
+    data_driven: bool = False,  # Deprecated: direction is always data-driven now
     timeout_seconds: int = 0,
     scan_start_override: float = None,
 ) -> dict[str, Any]:
@@ -956,6 +956,7 @@ def _scan_one_direction(
 
     # Step 2: Process in batches
     validated = []
+    opposite_opportunities = []  # Stocks where data says opposite direction (discovered opportunities)
     all_results = []  # Compact one-liner for EVERY company tested
     stocks_seen = set()
     rejection_reasons = {}
@@ -1064,23 +1065,51 @@ def _scan_one_direction(
                 # Fetch all analysis data ONCE
                 cached_data = fetch_analysis_data(symbol)
 
-                # Pass cached_data to avoid redundant API calls
-                sig_direction = None if data_driven else direction
-                signal = generate_trading_signal(ticker=symbol, direction=sig_direction, report_type="scanner", cached_data=cached_data)
+                # ALWAYS let data decide direction — never force scan direction.
+                # This prevents contradictory gates (e.g. Gate 1 PASS as LONG,
+                # Gate 2 FAIL as SHORT). Gates evaluate the direction data supports.
+                signal = generate_trading_signal(ticker=symbol, direction=None, report_type="scanner", cached_data=cached_data)
                 gate_status = signal.get('gate_status', {})
                 core_gates_passed = sum(1 for g in ['catalyst', 'freshness', 'brooks', 'quality'] if gate_status.get(g) == "PASS")
                 all_gates_passed = sum(1 for g in gate_status.values() if g == "PASS")
                 signal_direction = signal.get('direction')
+                data_dir = signal.get('data_direction', 'NO_CONSENSUS')
 
-                # In data-driven mode, filter by confirmed direction
-                if data_driven:
-                    if signal_direction is None:
-                        log_progress(f"   ⏸️ {symbol}: NO_TRADE - indicators neutral, no clear direction")
-                        continue
-                    opposite = "SHORT" if direction == "LONG" else "LONG"
-                    if signal_direction == opposite:
-                        log_progress(f"   🔄 {symbol}: Data indicates {opposite}, not {direction} | skipping")
-                        continue
+                # Classify: does data agree with scan direction?
+                if data_dir == "NO_CONSENSUS" or signal_direction is None:
+                    log_progress(f"   ⏸️ {symbol}: NO_TRADE — indicators neutral, no clear direction")
+                    all_results.append(f"⏸️ {symbol}: NO_CONSENSUS — skipped")
+                    rejection_reasons['no_consensus'] = rejection_reasons.get('no_consensus', 0) + 1
+                    continue
+
+                opposite = "SHORT" if direction == "LONG" else "LONG"
+                if data_dir == opposite:
+                    # Data says opposite — this is a discovered opportunity!
+                    # Still fully analyzed with correct gates, just in wrong scan.
+                    log_progress(f"   🔄 {symbol}: Data says {data_dir} (scan={direction}) — opposite opportunity found")
+                    if core_gates_passed >= 3:
+                        opposite_opportunities.append({
+                            'symbol': symbol,
+                            'direction': data_dir,
+                            'data_direction': data_dir,
+                            'price': signal.get('current_price') or (candidate.get('price') if isinstance(candidate, dict) else None),
+                            'signal': signal.get('signal'),
+                            'confidence': signal.get('confidence', 0),
+                            'gates_passed': all_gates_passed if signal.get('gate_5_analysis') else core_gates_passed,
+                            'core_gates_passed': core_gates_passed,
+                            'gate_status': gate_status,
+                            'vehicle': signal.get('vehicle', 'STOCK'),
+                            'trading_plan': signal.get('trading_plan'),
+                            'catalyst_analysis': signal.get('catalyst_analysis'),
+                            'freshness_analysis': signal.get('freshness_analysis'),
+                            'brooks_analysis': signal.get('brooks_analysis'),
+                            'quality_analysis': signal.get('quality_analysis'),
+                        })
+                        all_results.append(f"🔄 {symbol}: {core_gates_passed}/4 gates as {data_dir} (opposite opportunity)")
+                    else:
+                        all_results.append(f"🔄 {symbol}: {core_gates_passed}/4 gates as {data_dir} (weak opposite)")
+                    rejection_reasons['opposite_direction'] = rejection_reasons.get('opposite_direction', 0) + 1
+                    continue
 
                 # Compact one-liner for this company (now with Gate 5)
                 price = signal.get('current_price') or (candidate.get('price') if isinstance(candidate, dict) else None)
@@ -1099,37 +1128,31 @@ def _scan_one_direction(
                 gates_passed = all_gates_passed if gate_5_result else core_gates_passed
 
                 if gates_passed >= 3:
-                    # Check for direction conflict
-                    data_dir = signal.get('data_direction', 'NO_CONSENSUS')
-                    direction_conflict = data_dir != "NO_CONSENSUS" and data_dir != direction
-
                     # Create options summary for display
                     options_summary = _create_options_summary(gate_5_result, options_decision, signal.get('vehicle'))
 
                     validated.append({
                         'symbol': symbol,
-                        'direction': direction,
-                        'data_direction': data_dir,  # NEW: What the data actually says
-                        'direction_conflict': direction_conflict,  # NEW: True if scanner direction != data direction
-                        'direction_votes': signal.get('direction_votes', {}),  # NEW: How each tool voted
+                        'direction': data_dir,  # Use data-determined direction (always matches gates)
+                        'data_direction': data_dir,
+                        'direction_votes': signal.get('direction_votes', {}),
                         'price': price,
                         'signal': signal.get('signal'),
                         'confidence': signal.get('confidence', 0),
                         'gates_passed': gates_passed,
                         'core_gates_passed': core_gates_passed,
                         'gate_status': gate_status,
-                        'vehicle': signal.get('vehicle', 'STOCK'),  # NEW: OPTIONS or STOCK
-                        'options_summary': options_summary,  # NEW: Quick options display
-                        'gate_5_analysis': gate_5_result,  # NEW: Full Gate 5 data
-                        'options_vs_stock_decision': options_decision,  # NEW: Decision framework result
+                        'vehicle': signal.get('vehicle', 'STOCK'),
+                        'options_summary': options_summary,
+                        'gate_5_analysis': gate_5_result,
+                        'options_vs_stock_decision': options_decision,
                         'trading_plan': signal.get('trading_plan'),
                         'catalyst_analysis': signal.get('catalyst_analysis'),
                         'freshness_analysis': signal.get('freshness_analysis'),
                         'brooks_analysis': signal.get('brooks_analysis'),
                         'quality_analysis': signal.get('quality_analysis'),
                     })
-                    conflict_warning = " ⚠️ DIRECTION CONFLICT" if direction_conflict else ""
-                    log_progress(f"   ✅ {symbol}: {gates_passed}/5 gates | {gate_status}{conflict_warning}")
+                    log_progress(f"   ✅ {symbol}: {gates_passed}/5 gates as {data_dir} | {gate_status}")
                 else:
                     log_progress(f"   ❌ {symbol}: {gates_passed}/5 gates | {gate_status}")
                     for gate, val in gate_status.items():
@@ -1169,6 +1192,10 @@ def _scan_one_direction(
 
     elapsed = time.time() - scan_start
     log_progress(f"")
+    # Rank opposite opportunities by confidence
+    opposite_opportunities.sort(key=lambda x: x.get('confidence', 0), reverse=True)
+
+    opposite_dir = "SHORT" if direction == "LONG" else "LONG"
     log_progress(f"═══════════════════════════════════════════════════════════")
     log_progress(f"📊 {direction} SCAN COMPLETE")
     log_progress(f"   Raw candidates:  {raw_candidates_count}")
@@ -1176,6 +1203,8 @@ def _scan_one_direction(
     log_progress(f"   5/5 gates:       {len(five_gates)}")
     log_progress(f"   3/5 gates:       {len(three_gates)}")
     log_progress(f"   Returned:        {len(final)}")
+    if opposite_opportunities:
+        log_progress(f"   🔄 {opposite_dir} discovered: {len(opposite_opportunities)} (data contradicts scan direction)")
     log_progress(f"   Time:            {elapsed:.0f}s")
     log_progress(f"═══════════════════════════════════════════════════════════")
 
@@ -1194,6 +1223,7 @@ def _scan_one_direction(
         "relaxed": relaxed,
         "all_results": all_results,
         "candidates": final,
+        "opposite_opportunities": opposite_opportunities,  # Stocks where data says opposite direction
         "rejection_reasons": rejection_reasons,
         "errors": errors[:10],
         "elapsed_seconds": round(elapsed, 1),

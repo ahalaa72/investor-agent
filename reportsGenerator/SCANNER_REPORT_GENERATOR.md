@@ -53,6 +53,8 @@ Every trade MUST have an identifiable catalyst. Without a catalyst, there's no r
 | `detect_insider_cluster` | Clustered insider buying patterns | Scoring |
 | `calculate_quality_score` | F-Score + Z-Score + ROE unified | Scoring |
 | `analyze_competitors` | Sector comparison + leader detection | Scoring |
+| `calculate_rolling_beta` | Dynamic beta, trend, bull/bear alpha verification | **CORE** |
+| `analyze_beta_regime` | Market risk-on/off regime, sector dispersion | Context |
 
 ---
 
@@ -1407,9 +1409,12 @@ GATE 2 STATUS:     [✅ PASS (5/6) / ❌ FAIL (<5/6)]
 ---
 
 #### Complete Trading Plan
+
+**⚠️ ENTRY MUST USE PULLBACK PERSONALITY DATA:** If `analyze_pullback_personality` data is available, the ENTRY PRICE below MUST use the top confluence level (highest score), NOT generic EMA20/SMA20. For example: "$133.00 (100/100 pullback confluence: EMA21+Keltner+EMA8 78% bounce)" instead of "$139-142 (SMA20/VWAP cluster)".
+
 ```
 ENTRY TRIGGER:     [Buy on break above $XXX / Buy on pullback to $XXX]
-ENTRY PRICE:       $XXX.XX (LIMIT / STOP / MARKET)
+ENTRY PRICE:       $XXX.XX (from PULLBACK PERSONALITY top level, not generic EMA)
 ENTRY TYPE:        [Breakout / Pullback / Reversal]
 
 STOP LOSS:         $XXX.XX (-X.X%)
@@ -1419,7 +1424,7 @@ RISK PER SHARE:    $X.XX
 TARGET 1:          $XXX.XX (+X.X%) - [First resistance / 1.5x risk]
 TARGET 2:          $XXX.XX (+XX.X%) - [Major resistance / 2.5x risk]
 
-POSITION SIZE:     XX shares ($XXX risk on $10K account)
+POSITION SIZE:     XX shares ($XXX risk on $TOTAL_EQUITY account from BALANCE data)
 RISK/REWARD:       X.X:1
 TIME FRAME:        X-XX trading days
 ```
@@ -1621,7 +1626,31 @@ scan_market_opportunities(market="both", top_n=3)
 generate_macro_context_header()                    # Regime, Fed stance, sector rotation, options bias
 analyze_vix_term_structure()                       # VIX contango/backwardation
 get_macro_regime()                                 # Yield curve, breadth, VIX regime, credit cycle
+monitor_credit_spreads()                           # FRED OAS, stress score, TIPS signal, term premium
+analyze_yield_curve()                              # US+CA curve, butterfly, carry, roll-down
 ```
+
+**Fixed Income Context (from credit_spreads + yield_curve):**
+
+Include in the Macro Context section at the top of the scan report:
+
+```
+**Credit Environment:**
+| Metric | Value | Signal |
+|--------|-------|--------|
+| Credit Stress | {composite.credit_stress_score}/100 | {composite.level} |
+| OAS (HY) | {oas_spreads.hy_oas}bp | {oas_spreads.signal} |
+| Yield Curve | {us_curve.slope_2s10s_bp}bp | {us_curve.shape} / {us_curve.direction} |
+| Term Premium | {term_premium.acm_10y}% | {term_premium.interpretation} |
+| Carry (5Y) | {carry.carry_5y}% | {carry_positive ? POSITIVE : NEGATIVE} |
+
+**Bond Wisdom:** {Include top lesson from lessons[] — e.g., "Yield curve inverted — recession signal active. Favor short duration."}
+```
+
+**How it affects candidate scoring:**
+- STRESS/CRISIS → Penalize LONG candidates, boost SHORT candidates
+- WIDENING spreads → Favor defensive sectors, penalize cyclicals
+- INVERTED curve → Flag recession risk in every candidate narrative
 
 ### Step 2: Analyze Each Candidate (10 min per stock)
 
@@ -1783,6 +1812,7 @@ Create the final ranking table with:
 | `generate_macro_context_header()` | Regime, Fed stance, sector rotation, options bias |
 | `analyze_vix_term_structure()` | VIX contango/backwardation, term structure |
 | `get_macro_regime()` | Yield curve, breadth, VIX regime, credit cycle |
+| `analyze_beta_regime()` | ⭐ NEW: XLU/SPY risk-on/off, sector beta dispersion, scanner bias |
 
 ### Section C: Al Brooks Price Action + Multi-Timeframe (Gates 2 & 3)
 
@@ -1817,6 +1847,19 @@ Create the final ranking table with:
 |------|------|
 | `generate_trading_signal()` | Final signal with all gates, trading plan |
 | `find_similar_historical_setups()` | Proof of validity, success rate (async) |
+
+### Section G: Beta & Risk Regime
+
+| Tool | Data |
+|------|------|
+| `calculate_rolling_beta()` | ⭐ NEW: 60/120/252d rolling beta, trend, bull/bear conditional beta |
+| `analyze_beta_regime()` | ⭐ NEW: XLU/SPY regime, sector dispersion (already in macro context) |
+
+**Include in report:**
+- Rolling Beta: β60d, β120d, β252d + trend (RISING/FALLING/STABLE)
+- Conditional Beta: Bull β vs Bear β → Alpha type (GENUINE_ALPHA / BETA_TIMING / DEFENSIVE_ALPHA)
+- Position Size Adjustment: Multiply shares by regime multiplier (0.5-1.5x)
+- Market Regime: RISK_ON/RISK_OFF + dispersion COMPRESSED/EXPANDING
 
 ---
 

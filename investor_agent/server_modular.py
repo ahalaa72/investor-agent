@@ -7,7 +7,7 @@ tools/*.py modules or investor_agent.core/*.
 Usage:
     python -m investor_agent.server_modular
 
-Modules (18 total, 87 tools):
+Modules (20 total, 93 tools):
     tools/market_data.py              6 tools
     tools/financial_data.py           5 tools
     tools/options_analysis.py         7 tools
@@ -72,6 +72,8 @@ from .tools import (
     statistical_validation,
     institutional_analysis,
     pullback_analysis,
+    beta_analysis,
+    fixed_income,
 )
 
 _modules = [
@@ -93,6 +95,8 @@ _modules = [
     statistical_validation,
     institutional_analysis,
     pullback_analysis,
+    beta_analysis,
+    fixed_income,
 ]
 
 for mod in _modules:
@@ -103,6 +107,40 @@ for mod in _modules:
         logger.error(f"Failed to register tools from {mod.__name__}: {e}")
 
 logger.info(f"Modular server ready: {len(_modules)} modules loaded")
+
+# ---------------------------------------------------------------------------
+# Monkey-patch FastMCP's JSON encoder to handle numpy/pandas types globally.
+# This prevents "Unable to serialize unknown type: <class 'numpy.bool'>" errors
+# from ANY tool without requiring per-tool sanitization.
+# ---------------------------------------------------------------------------
+import json as _json
+_OrigEncoder = _json.JSONEncoder
+
+class _NumpySafeEncoder(_OrigEncoder):
+    def default(self, obj):
+        try:
+            import numpy as np
+            if isinstance(obj, (np.bool_,)):
+                return bool(obj)
+            if isinstance(obj, (np.integer,)):
+                return int(obj)
+            if isinstance(obj, (np.floating,)):
+                v = float(obj)
+                return None if np.isnan(v) else v
+            if isinstance(obj, np.ndarray):
+                return obj.tolist()
+            if hasattr(obj, 'item'):
+                return obj.item()
+        except ImportError:
+            pass
+        return super().default(obj)
+
+_json.JSONEncoder = _NumpySafeEncoder
+# Also replace the cached default encoder used by json.dumps()
+_json._default_encoder = _NumpySafeEncoder(
+    skipkeys=False, ensure_ascii=True, check_circular=True,
+    allow_nan=True, indent=None, separators=None, default=None,
+)
 
 # ---------------------------------------------------------------------------
 # Entry point

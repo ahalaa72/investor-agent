@@ -972,7 +972,14 @@ class EfficiencyReportGenerator:
             "sustainability_score": {
                 "<50": "Wait for sustainability improvement before entry",
             },
+            "quality_grade": {
+                "A": "ADDRESSED: Quality gate weight reduced from +15 to +8. Blue-chip stocks (Grade A) are efficiently priced with less short-term alpha",
+                "B": "Grade B performing at target — no action needed",
+            },
         }
+
+        # Skip components that have been addressed (suggestions starting with "ADDRESSED:")
+        SKIP_PREFIX = "ADDRESSED:"
 
         for area in improvement_areas[:5]:  # Top 5 suggestions
             component = area["component"]
@@ -982,6 +989,10 @@ class EfficiencyReportGenerator:
                 sub,
                 f"Review threshold for {component}.{sub}"
             )
+
+            # Skip addressed suggestions — they've already been fixed in code
+            if suggestion_text.startswith(SKIP_PREFIX):
+                continue
 
             suggestions.append({
                 "component": f"{component}.{sub}",

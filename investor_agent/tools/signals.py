@@ -1402,9 +1402,12 @@ def register_tools(mcp):
 
                     if actual_direction == "LONG":
                         # LONG: High quality = PASS
+                        # NOTE: Data shows Grade A (80+) has 50% win rate vs Grade F 62%.
+                        # High fundamentals don't predict short-term moves — cap bonus at +8
+                        # to avoid over-weighting quality in composite score.
                         if quality_score >= 50:
                             result["gate_status"]["quality"] = "PASS"
-                            score += 15
+                            score += 8
                         else:
                             result["gate_status"]["quality"] = "FAIL"
                             result["warnings"].append(f"Low quality for LONG: {quality_score}")
@@ -1890,10 +1893,11 @@ def register_tools(mcp):
                         result["stock_trade_plan"] = None  # No stock plan needed
                         result["summary"] = f"{ticker}: {result['signal']} via OPTIONS | {decision.get('reason', '')}"
                     else:
-                        # STOCK: Build stock plan with Al Brooks stops
+                        # STOCK: Use the risk-managed trading_plan (1% base risk, confidence-adjusted)
+                        # NOT build_stock_plan() which uses naive 2% risk and contradicts trading_plan
                         result["vehicle"] = "STOCK"
                         result["options_trade_plan"] = None
-                        result["stock_trade_plan"] = decision.get("stock_plan") or result.get("trading_plan")
+                        result["stock_trade_plan"] = result.get("trading_plan")
                         result["summary"] = f"{ticker}: {result['signal']} via STOCK | {decision.get('reason', '')}"
 
                 except Exception as e:
@@ -1949,8 +1953,37 @@ def register_tools(mcp):
             result["prediction_stored"] = False
             result["prediction_skipped_reason"] = f"Signal '{result.get('signal')}' not actionable"
 
-        return result
+        return _sanitize_for_json(result)
 
     # Expose closure function via module-level _impl reference
     global generate_trading_signal_impl
     generate_trading_signal_impl = generate_trading_signal
+
+
+def _sanitize_for_json(obj):
+    """Recursively convert numpy/pandas types to native Python for JSON serialization."""
+    import numpy as np
+    if isinstance(obj, dict):
+        return {k: _sanitize_for_json(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [_sanitize_for_json(v) for v in obj]
+    elif isinstance(obj, (np.bool_,)):
+        return bool(obj)
+    elif isinstance(obj, bool):
+        return obj
+    elif isinstance(obj, (np.integer,)):
+        return int(obj)
+    elif isinstance(obj, (np.floating,)):
+        return float(obj) if not np.isnan(obj) else None
+    elif isinstance(obj, np.ndarray):
+        return [_sanitize_for_json(v) for v in obj.tolist()]
+    elif isinstance(obj, (str, int, float, type(None))):
+        return obj
+    else:
+        # Catch-all for any unhandled numpy/pandas types (e.g. numpy.bool, pd.Timestamp)
+        try:
+            if hasattr(obj, 'item'):
+                return obj.item()  # numpy scalar → Python scalar
+        except Exception:
+            pass
+        return str(obj)  # Last resort: stringify

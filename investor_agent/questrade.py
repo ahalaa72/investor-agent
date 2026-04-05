@@ -41,23 +41,23 @@ logging.basicConfig(
 _original_urlopen = urllib.request.urlopen
 
 def _urlopen_with_user_agent(url, data=None, timeout=None, **kwargs):
-    """Wrapper for urlopen that adds User-Agent header to prevent Cloudflare blocking."""
+    """Wrapper for urlopen that adds User-Agent header to prevent Cloudflare blocking.
+    Also enforces a default 10s timeout to prevent 75s hangs on dead connections."""
+    # Default 10s timeout — prevents 75s hang when Questrade API is unreachable
+    if timeout is None:
+        timeout = 10
     if isinstance(url, str):
         # Create Request object with User-Agent header
         headers = {
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
         }
         req = urllib.request.Request(url, data=data, headers=headers)
-        if timeout is not None:
-            return _original_urlopen(req, timeout=timeout, **kwargs)
-        return _original_urlopen(req, **kwargs)
+        return _original_urlopen(req, timeout=timeout, **kwargs)
     else:
         # Already a Request object, add User-Agent if not present
         if not url.has_header('User-Agent'):
             url.add_header('User-Agent', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36')
-        if timeout is not None:
-            return _original_urlopen(url, timeout=timeout, **kwargs)
-        return _original_urlopen(url, **kwargs)
+        return _original_urlopen(url, timeout=timeout, **kwargs)
 
 urllib.request.urlopen = _urlopen_with_user_agent
 logger.info("Patched urllib.request.urlopen to add User-Agent header for Questrade API")

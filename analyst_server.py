@@ -206,6 +206,11 @@ Your mandate:
 - Flag missing risks, exit conditions, unsupported recommendations
 - Challenge every Al Brooks pattern interpretation and probability claim
 - Verify McMillan options strategy matches stated IV environment
+- ACCOUNT TOTALS: The report MUST use totalEquity from the BALANCE data. If the report shows a different account total, flag it as MATH error with the correct totalEquity value.
+- PRICES: Cross-check EVERY stock price in the report against the PRICE lines in the compact reference. Flag any price that differs by more than 1%.
+- CANADIAN REGISTERED ACCOUNTS: LIRA, RRSP, TFSA trades have ZERO tax implications. If the report suggests tax loss harvesting or tax consequences for trades within these accounts, flag it as a TAX error.
+- P/C RATIO CONSISTENCY: Flag if different sections cite different P/C ratios for the same ticker. The McMillan multi-expiration P/C is authoritative.
+- RELATIVE STRENGTH: A daily move under 0.5% is noise, not a "strength signal." Flag any claim of relative strength based on moves under 0.5%.
 
 For EVERY error use EXACTLY this format:
 
@@ -261,7 +266,50 @@ CONTEXT:
 - Current positions and hedges are in the MCP data above — use LIVE portfolio data, do NOT assume any specific positions
 - Options: McMillan + TastyTrade. 50% profit target. 21 DTE roll. 16-delta. Half-Kelly. NO stops.
 - Tax: Interest ~50.17%, Capital gains ~25.08%, RDTOH mechanism
-- Geopolitical/macro context: Use WebSearch for CURRENT situation — do NOT reference stale events"""
+- Geopolitical/macro context: Use WebSearch for CURRENT situation — do NOT reference stale events
+
+HARD RULES (violations = audit failure):
+- ACCOUNT TOTALS: Use totalEquity from BALANCE data exactly. NEVER calculate your own.
+- PRICES: Use ONLY prices from MCP PRICE data. NEVER round, guess, or hallucinate.
+- LIRA/RRSP/TFSA: Tax-deferred/free. Zero tax on trades within. Cannot harvest losses.
+- P/C RATIO: Use ONE consistent P/C ratio (McMillan multi-exp) throughout.
+- RELATIVE STRENGTH: Daily moves < 0.5% are noise, NOT strength signals."""
+
+INSTITUTIONAL_SYS = """You are a professional equity research analyst at a top-tier investment bank.
+
+You receive an internal trading analysis report. Transform it into a CLEAN, SELLABLE institutional equity research report.
+
+FOLLOW THE TEMPLATE in INSTITUTIONAL_REPORT_GENERATOR.md exactly — it defines sections, formatting, and tone.
+
+MANDATORY STRIPPING — these must NEVER appear in your output:
+- Account numbers, portfolio positions, personal names, P&L data
+- Data source disclosures ("Yahoo Finance", "Questrade", "MCP", "tool")
+- Tool names in brackets [analyze_technical], [detect_catalyst_strength]
+- Gate system references (Gate 1 PASS, 5-gate, etc.)
+- Audit findings, RESOLUTION_LOG, CONFIDENCE_SUMMARY, HUMAN_REVIEW_REQUIRED
+- Bug reports, errors, debug info, pipeline references
+- Emojis of any kind
+- First-person language ("I", "we", "my", "Ahmed")
+
+MANDATORY INCLUSION:
+- Professional rating header (BUY/SELL/HOLD with conviction level)
+- Investment thesis (2-3 paragraphs, third person)
+- Technical analysis with key levels table
+- Catalyst summary table
+- Risk factors
+- Trade plan with entry/stop/targets
+- Legal disclaimer at the bottom
+
+TRANSLATION RULES:
+- "Always-In Long" → "Trend structure bullish"
+- "High 2 setup" → "Second pullback to rising moving average"
+- "STRONG_BUY" → "BUY (High Conviction)"
+- "5/5 gates PASS" → omit entirely, just state the analysis confidently
+- "Data source: Questrade" → omit
+- "Quality: 85/100 (A)" → omit
+
+TONE: Professional, third-person, confident but measured. Every sentence earns its place.
+No filler. No hedging. Quantify everything."""
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -286,7 +334,14 @@ _SLOW_TOOLS = {"scan_long_candidates", "scan_short_candidates", "scan_market_opp
                 "scan_market_by_sector", "scan_stocks_by_setup",
                 "generate_trading_signal", "calculate_relative_strength_tool",
                 "analyze_technical", "analyze_options_mcmillan",
-                "analyze_pullback_personality"}
+                "analyze_pullback_personality",
+                "analyze_beta_regime", "screen_bab_candidates",
+                "analyze_volume_tool", "analyze_volatility_tool",
+                "find_similar_historical_setups", "analyze_iv_skew",
+                "detect_insider_cluster", "detect_unusual_options_activity",
+                "analyze_intermarket_correlation", "quantify_pattern_edge",
+                "calculate_expected_move", "calculate_rolling_beta",
+                "generate_options_trade_plan"}
 
 MAX_MCP_RESPONSE_SIZE = 500_000  # 500KB max per tool
 
@@ -317,9 +372,12 @@ def _validate_mcp_response(tool_name: str, data_str: str) -> tuple:
     return True, data_str
 
 
+_VERY_SLOW_TOOLS = {"scan_long_candidates", "scan_short_candidates", "scan_market_opportunities",
+                    "scan_market_by_sector", "scan_stocks_by_setup"}
+
 def _call_mcp_tool(tool_name: str, arguments: dict, timeout: int = 0) -> dict:
     if timeout <= 0:
-        timeout = 300 if tool_name in _SLOW_TOOLS else 120
+        timeout = 600 if tool_name == "scan_market_by_sector" else (420 if tool_name in _VERY_SLOW_TOOLS else (300 if tool_name in _SLOW_TOOLS else 120))
     """Call a single MCP tool via docker exec + JSON-RPC. Returns result dict."""
     init_req = json.dumps({
         "jsonrpc": "2.0", "method": "initialize", "id": 0,
@@ -367,7 +425,7 @@ def _call_mcp_tool(tool_name: str, arguments: dict, timeout: int = 0) -> dict:
 def _classify_request(prompt: str) -> tuple:
     """Classify the request and return (request_type, tickers_list).
     Returns one of: ticker_analysis, market_scan_long, market_scan_short,
-    market_scan, portfolio_review, options_focus, comparison, general.
+    market_scan, sector_scan, portfolio_review, options_focus, comparison, general.
     """
     lower = prompt.lower()
     tickers = _extract_all_tickers(prompt)
@@ -384,7 +442,12 @@ def _classify_request(prompt: str) -> tuple:
     if any(w in lower for w in ["portfolio", "positions", "holdings", "balances", "accounts"]):
         return ("portfolio_review", tickers)
 
-    # ── Priority 3: Market scanning (no tickers — they'd be caught by Priority 1) ──
+    # ── Priority 3: Sector rotation scan ──
+    if any(w in lower for w in ["sector rotation", "sector scan", "by sector", "sector analysis",
+                                 "per sector", "sector monitor"]):
+        return ("sector_scan", tickers)
+
+    # ── Priority 4: Market scanning (no tickers — they'd be caught by Priority 1) ──
     if any(w in lower for w in ["scan", "screen", "find opportunities", "market opportunities"]):
         if any(w in lower for w in ["short", "bear", "put"]):
             return ("market_scan_short", tickers)
@@ -472,9 +535,20 @@ def _build_tool_list(request_type: str, tickers: list) -> list:
         tools += [
             (f"pattern_edge_{t}",   "quantify_pattern_edge",           {"ticker": t}),
         ]
-        # Positions across all accounts
+        # Phase 7: Dynamic Beta Analysis
+        tools += [
+            (f"beta_{t}",           "calculate_rolling_beta",          {"ticker": t}),
+            ("beta_regime",         "analyze_beta_regime",             {}),
+        ]
+        # Phase 8: Fixed Income
+        tools += [
+            ("credit_spreads",      "monitor_credit_spreads",          {}),
+            ("yield_curve",         "analyze_yield_curve",             {}),
+        ]
+        # Positions and balances across all accounts (balances needed for position sizing)
         for acct in QUESTRADE_ACCOUNTS:
             tools.append((f"positions_{acct}", "get_questrade_positions", {"account_number": acct}))
+            tools.append((f"balances_{acct}",  "get_questrade_balances",  {"account_number": acct}))
 
     elif request_type == "options_focus":
         t = tickers[0] if tickers else ""
@@ -524,11 +598,13 @@ def _build_tool_list(request_type: str, tickers: list) -> list:
                 (f"intermarket_{t}",    "analyze_intermarket_correlation", {"ticker": t}),
                 (f"expected_move_{t}",  "calculate_expected_move",         {"ticker": t, "dte": 30}),
                 (f"pattern_edge_{t}",   "quantify_pattern_edge",           {"ticker": t}),
+                (f"beta_{t}",           "calculate_rolling_beta",          {"ticker": t}),
             ]
         # Shared macro tools (once for comparison)
         tools += [
             ("vix_ts",       "analyze_vix_term_structure",    {}),
             ("macro_header", "generate_macro_context_header", {}),
+            ("beta_regime",  "analyze_beta_regime",           {}),
         ]
 
     elif request_type == "market_scan_long":
@@ -538,6 +614,8 @@ def _build_tool_list(request_type: str, tickers: list) -> list:
             ("scan_market",      "scan_market_opportunities", {}),
             ("vix_ts",           "analyze_vix_term_structure",    {}),
             ("macro_header",     "generate_macro_context_header", {}),
+            ("beta_regime",      "analyze_beta_regime",            {}),
+            ("credit_spreads",   "monitor_credit_spreads",         {}),
         ]
 
     elif request_type == "market_scan_short":
@@ -547,6 +625,8 @@ def _build_tool_list(request_type: str, tickers: list) -> list:
             ("scan_market",      "scan_market_opportunities", {}),
             ("vix_ts",           "analyze_vix_term_structure",    {}),
             ("macro_header",     "generate_macro_context_header", {}),
+            ("beta_regime",      "analyze_beta_regime",            {}),
+            ("credit_spreads",   "monitor_credit_spreads",         {}),
         ]
 
     elif request_type == "market_scan":
@@ -557,6 +637,19 @@ def _build_tool_list(request_type: str, tickers: list) -> list:
             ("scan_market",      "scan_market_opportunities", {}),
             ("vix_ts",           "analyze_vix_term_structure",    {}),
             ("macro_header",     "generate_macro_context_header", {}),
+            ("beta_regime",      "analyze_beta_regime",            {}),
+            ("credit_spreads",   "monitor_credit_spreads",         {}),
+        ]
+
+    elif request_type == "sector_scan":
+        tools += [
+            ("fear_greed",       "get_cnn_fear_greed_index",       {}),  # light — token warmup
+            ("sector_scan",      "scan_market_by_sector",          {"include_validation": False}),  # fast: raw sector bias without per-stock 5-gate
+            ("macro_header",     "generate_macro_context_header",  {}),
+            ("macro_regime",     "get_macro_regime",               {}),
+            ("vix_ts",           "analyze_vix_term_structure",     {}),
+            ("credit_spreads",   "monitor_credit_spreads",         {}),
+            ("yield_curve",      "analyze_yield_curve",            {}),
         ]
 
     elif request_type == "portfolio_review":
@@ -564,6 +657,12 @@ def _build_tool_list(request_type: str, tickers: list) -> list:
             tools.append((f"positions_{acct}", "get_questrade_positions", {"account_number": acct}))
             tools.append((f"balances_{acct}",  "get_questrade_balances",  {"account_number": acct}))
         tools.append(("accounts", "get_questrade_accounts", {}))
+        tools.append(("beta_regime", "analyze_beta_regime", {}))
+        # Fixed income for portfolio context
+        tools.append(("credit_spreads", "monitor_credit_spreads", {}))
+        tools.append(("yield_curve", "analyze_yield_curve", {}))
+        tools.append(("bond_allocation", "analyze_bond_allocation", {"risk_target": "MODERATE"}))
+        tools.append(("bond_recommendations", "recommend_bond_trades", {"risk_target": "MODERATE"}))
         # If specific ticker mentioned, add its analysis too
         for t in tickers[:3]:
             tools += [
@@ -901,16 +1000,16 @@ def _compact_mcp_summary(mcp_data: dict) -> str:
         # ── Options McMillan ──
         elif label.startswith("options_mcmillan_"):
             iv = d.get("iv_analysis", {})
-            pc = d.get("put_call_analysis", {})
-            oi = d.get("open_interest_analysis", {})
+            pc = d.get("put_call_ratio", d.get("put_call_analysis", {}))
+            oi = d.get("open_interest", d.get("open_interest_analysis", {}))
             inst = d.get("institutional", {})
             lines.append(
                 f"OPTIONS: IV Rank {iv.get('iv_rank', '?')} | IV%ile {iv.get('iv_percentile', '?')} | "
-                f"IV {iv.get('current_iv', '?')} | {iv.get('iv_regime', '?')}"
+                f"IV {iv.get('current_iv', '?')}% | {iv.get('iv_environment', iv.get('iv_regime', '?'))}"
             )
             lines.append(
-                f"  P/C {_n(pc.get('overall_ratio'), '.2f')} ({pc.get('sentiment', '?')}) | "
-                f"Max Pain ${_n(oi.get('max_pain'))} | Grade {inst.get('liquidity_grade', '?')} {inst.get('liquidity_tier', '?')}"
+                f"  P/C Vol {_n(pc.get('volume_pc_ratio'), '.2f')} OI {_n(pc.get('oi_pc_ratio'), '.2f')} ({pc.get('sentiment', '?')}) | "
+                f"Max Pain ${_n(oi.get('max_pain_strike'))} | Grade {inst.get('liquidity_grade', '?')} {inst.get('liquidity_tier', '?')}"
             )
             # McMillan Mastery Insights (Phase 2 enhancements)
             mm = d.get("mcmillan_mastery", {})
@@ -1041,46 +1140,68 @@ def _compact_mcp_summary(mcp_data: dict) -> str:
 
         # ── Similar Historical Setups (ML) ──
         elif label.startswith("historical_"):
-            setups = d.get("similar_setups", d.get("setups", []))
-            count = d.get("total_setups_found", len(setups) if isinstance(setups, list) else 0)
-            win_rate = d.get("win_rate", d.get("historical_win_rate", "?"))
-            avg_ret = d.get("avg_return", d.get("expected_return", "?"))
-            lines.append(f"HISTORICAL: {count} similar setups | Win rate {win_rate} | Avg return {_n(avg_ret, '.1f')}%")
-            if isinstance(setups, list):
-                for s in setups[:3]:
-                    if isinstance(s, dict):
-                        lines.append(f"  {s.get('date', '?')}: {s.get('pattern', '?')} → {s.get('outcome', '?')}")
+            count = d.get("similar_setups_found", d.get("total_setups_found", 0))
+            win_rate = d.get("success_rate_5d", d.get("win_rate", "?"))
+            avg_ret = d.get("average_return_5d", d.get("avg_return", "?"))
+            confidence = d.get("statistical_confidence", "?")
+            lines.append(f"HISTORICAL: {count} similar setups | Win rate {_n(win_rate, '.1f')}% | Avg return {_n(avg_ret, '.2f')}% | Confidence {confidence}")
+            rec = d.get("recommendation", "")
+            if rec:
+                lines.append(f"  {rec[:200]}")
 
         # ── IV Skew ──
         elif label.startswith("iv_skew_"):
-            skew_val = d.get("skew", d.get("iv_skew", "?"))
-            skew_type = d.get("skew_type", d.get("skew_direction", "?"))
-            put_iv = d.get("put_iv", d.get("avg_put_iv", "?"))
-            call_iv = d.get("call_iv", d.get("avg_call_iv", "?"))
+            ss = d.get("skew_summary", {})
+            skew_val = ss.get("primary_skew", d.get("skew", "?"))
+            skew_type = ss.get("classification", d.get("skew_type", "?"))
+            sentiment = ss.get("sentiment_signal", "?")
+            skew_pctile = ss.get("skew_percentile", "?")
+            # Get 25-delta put/call IVs
+            d25 = d.get("skew_by_delta", {}).get("delta_25", {})
+            put_iv = d25.get("put_iv", d.get("put_iv", "?"))
+            call_iv = d25.get("call_iv", d.get("call_iv", "?"))
             lines.append(f"IV SKEW: {_n(skew_val, '.2f')} ({skew_type}) | Put IV {_n(put_iv, '.1f')}% | Call IV {_n(call_iv, '.1f')}%")
-            tail = d.get("tail_risk", d.get("tail_risk_indicator", ""))
-            if tail:
-                lines.append(f"  Tail risk: {tail}")
+            lines.append(f"  Sentiment: {sentiment} | Skew %ile: {_n(skew_pctile, '.0f')}%")
+            interp = ss.get("interpretation", "")
+            if interp:
+                lines.append(f"  {interp[:200]}")
 
         # ── Relative Strength ──
         elif label.startswith("rel_strength_"):
-            rs = d.get("relative_strength", d.get("rs_rating", "?"))
-            sector = d.get("sector", d.get("sector_name", "?"))
-            rank = d.get("sector_rank", d.get("rank", "?"))
-            perf = d.get("performance_vs_sector", d.get("vs_sector", "?"))
-            lines.append(f"REL STRENGTH: RS {rs} | Sector {sector} | Rank {rank} | vs Sector {perf}")
+            rs = d.get("rs_score", "?")
+            trend = d.get("rs_trend", "?")
+            classification = d.get("classification", "?")
+            w_outperf = d.get("weighted_outperformance_%", "?")
+            outperf_1 = d.get("outperformance_1mo_%", "?")
+            outperf_3 = d.get("outperformance_3mo_%", "?")
+            rec = d.get("recommendation", "?")
+            lines.append(f"REL STRENGTH: RS {rs} ({classification}) | Trend {trend} | Weighted outperf {_n(w_outperf, '.1f')}%")
+            lines.append(f"  vs SPY: 1mo {_n(outperf_1, '.1f')}% | 3mo {_n(outperf_3, '.1f')}% | {rec}")
 
         # ── Insider Cluster ──
         elif label.startswith("insider_cluster_"):
-            clusters = d.get("clusters", d.get("insider_clusters", []))
-            total_buys = d.get("total_buys", d.get("buy_count", 0))
-            total_sells = d.get("total_sells", d.get("sell_count", 0))
-            net = d.get("net_signal", d.get("signal", "?"))
-            lines.append(f"INSIDER CLUSTER: {total_buys} buys / {total_sells} sells | Signal {net}")
-            if isinstance(clusters, list):
-                for c in clusters[:3]:
+            buy_count = d.get("buy_count", 0)
+            sell_count = d.get("sell_count", 0)
+            buy_val = d.get("total_buy_value", 0) or 0
+            sell_val = d.get("total_sell_value", 0) or 0
+            cluster_type = d.get("cluster_type", "NONE")
+            strength = d.get("cluster_strength", "NONE")
+            net = d.get("net_signal", "NEUTRAL")
+            detected = d.get("cluster_detected", False)
+            lines.append(f"INSIDER CLUSTER: {buy_count} buys (${buy_val:,.0f}) / {sell_count} sells (${sell_val:,.0f}) | "
+                        f"Type={cluster_type} Strength={strength} Signal={net} Detected={detected}")
+            notables = d.get("notable_trades", [])
+            if isinstance(notables, list):
+                for c in notables[:5]:
                     if isinstance(c, dict):
-                        lines.append(f"  {c.get('insider', '?')}: {c.get('type', '?')} {c.get('shares', '?')} shares @ ${_n(c.get('price'))} ({c.get('date', '?')})")
+                        lines.append(f"  NOTABLE: {c.get('insider', '?')}: {c.get('transaction', '?')} "
+                                    f"{c.get('shares', '?')} shares ${_n(c.get('value'),'.0f')} ({c.get('date', '?')})")
+            insiders = d.get("insiders", [])
+            if isinstance(insiders, list) and not notables:
+                for c in insiders[:3]:
+                    if isinstance(c, dict):
+                        lines.append(f"  {c.get('insider', '?')}: {c.get('transaction', '?')} "
+                                    f"{c.get('shares', '?')} shares ${_n(c.get('value'),'.0f')} ({c.get('date', '?')})")
 
         # ── Unusual Options Activity ──
         elif label.startswith("unusual_options_"):
@@ -1180,15 +1301,17 @@ def _compact_mcp_summary(mcp_data: dict) -> str:
                 lines.append(f"  Regime: {regime.get('regime','?')} | Typical depth: {_n(regime.get('typical_depth_pct'),'.1f')}%")
 
         elif label.startswith("pattern_edge_"):
+            em = d.get("edge_metrics", {})
+            ks = d.get("kelly_sizing", {})
             lines.append(f"STATISTICAL EDGE:")
-            lines.append(f"  Pattern: {d.get('pattern','?')} | Signal: {d.get('signal','?')}")
-            lines.append(f"  Win rate: {d.get('win_rate','?')} | Trades: {d.get('total_trades','?')} | Edge: {d.get('edge_assessment','?')}")
-            if d.get("profit_factor"):
-                lines.append(f"  Profit factor: {_n(d.get('profit_factor'))} | Avg win: {_n(d.get('avg_win_pct'))}% | Avg loss: {_n(d.get('avg_loss_pct'))}%")
-            if d.get("kelly_fraction"):
-                lines.append(f"  Kelly: {_n(d.get('kelly_fraction'))} | Rec size: {d.get('recommended_size','?')}")
-            if d.get("interpretation"):
-                lines.append(f"  {d.get('interpretation')}")
+            lines.append(f"  Pattern: {d.get('pattern_id','?')} | Quality: {em.get('edge_quality','?')}")
+            lines.append(f"  Win rate: {_n(em.get('win_rate'), '.2f')} | Avg win: {_n(em.get('avg_win_pct'), '.1f')}% | Avg loss: {_n(em.get('avg_loss_pct'), '.1f')}%")
+            lines.append(f"  R/R: {_n(em.get('risk_reward_ratio'), '.2f')} | Sharpe-like: {_n(em.get('sharpe_like_ratio'), '.2f')}")
+            if ks:
+                lines.append(f"  Kelly: Full {_n(ks.get('full_kelly_pct'), '.1f')}% | Half {_n(ks.get('half_kelly_pct'), '.1f')}% | Quarter {_n(ks.get('quarter_kelly_pct'), '.1f')}%")
+            rec = d.get("recommendation", "")
+            if rec:
+                lines.append(f"  {rec[:200]}")
 
         # ── Market scans / fear-greed / other ──
         elif label.startswith("fear_greed"):
@@ -1209,6 +1332,140 @@ def _compact_mcp_summary(mcp_data: dict) -> str:
                         lines.append(f"  {sym}: {sig} (score {score})")
             else:
                 lines.append(f"[{label}]: {str(d)[:150]}")
+
+        # ── Account Balances ──
+        elif label.startswith("balances_"):
+            acct = label.replace("balances_", "")
+            # Questrade returns perCurrencyBalances (CAD/USD separate) and combinedBalances (converted)
+            per_ccy = d.get("perCurrencyBalances", [])
+            combined = d.get("combinedBalances", [])
+            # Show per-currency breakdown (authoritative)
+            if isinstance(per_ccy, list) and per_ccy:
+                for bal in per_ccy:
+                    if isinstance(bal, dict):
+                        ccy = bal.get("currency", "?")
+                        cash = bal.get("cash", "?")
+                        equity = bal.get("totalEquity", "?")
+                        mv = bal.get("marketValue", "?")
+                        lines.append(
+                            f"BALANCE ({acct} {ccy}): totalEquity=${_n(equity, ',.2f')} | "
+                            f"cash=${_n(cash, ',.2f')} | marketValue=${_n(mv, ',.2f')}"
+                        )
+            # Show combined (converted to CAD) — this is what the report should use for totals
+            if isinstance(combined, list) and combined:
+                for bal in combined:
+                    if isinstance(bal, dict) and bal.get("currency") == "CAD":
+                        lines.append(
+                            f"COMBINED TOTAL ({acct} CAD): totalEquity=${_n(bal.get('totalEquity'), ',.2f')} | "
+                            f"cash=${_n(bal.get('cash'), ',.2f')} | marketValue=${_n(bal.get('marketValue'), ',.2f')}"
+                        )
+            lines.append(f"  ⚠️ AUTHORITATIVE: Use COMBINED TOTAL totalEquity for account totals. DO NOT sum positions yourself.")
+
+        # ── Rolling Beta (per ticker) ──
+        elif label.startswith("beta_") and label != "beta_regime":
+            betas = d.get("current_betas", {})
+            cond = d.get("conditional_beta", {})
+            regime = d.get("regime", {})
+            lines.append(f"ROLLING BETA ({d.get('ticker','?')} vs {d.get('benchmark','SPY')}): "
+                        f"β60d={_n(betas.get('60d'))} β120d={_n(betas.get('120d'))} β252d={_n(betas.get('252d'))} | "
+                        f"Trend={d.get('beta_trend','?')} Accel={_n(d.get('beta_acceleration'))} | "
+                        f"Bull_β={_n(cond.get('bull_beta'))} Bear_β={_n(cond.get('bear_beta'))} "
+                        f"Alpha={cond.get('interpretation','?')} | "
+                        f"Regime={regime.get('current','?')} Signal={regime.get('signal','?')} "
+                        f"SizeMult={_n(regime.get('position_size_multiplier'))} | "
+                        f"Source={d.get('data_source','?')}")
+
+        # ── Credit Spreads (fixed income) ──
+        elif label == "credit_spreads":
+            cs = d.get("credit_spreads", {})
+            rr = d.get("risk_regime", {})
+            yc = d.get("yield_curve", {})
+            comp = d.get("composite", {})
+            lines.append(f"CREDIT SPREADS: HYG/LQD={_n(cs.get('hyg_lqd_ratio'))} Δ20d={_n(cs.get('change_20d'))}% "
+                        f"Signal={cs.get('signal','?')} | TLT/SPY corr={_n(cs.get('tlt_spy_correlation'))} | "
+                        f"Regime={rr.get('regime','?')}")
+            lines.append(f"  Yield curve: 10Y-2Y={_n(yc.get('spread_10y_2y'))}% {yc.get('shape','?')} | "
+                        f"Stress score: {_n(comp.get('stress_score'),'.0f')}/100 ({comp.get('level','?')})")
+            implications = d.get("implications", [])
+            for imp in (implications if isinstance(implications, list) else [])[:2]:
+                lines.append(f"  {imp}")
+
+        # ── Bond Allocation (fixed income) ──
+        elif label == "bond_allocation":
+            lines.append(f"BOND ALLOCATION: Target {d.get('target_bond_pct','?')}% bonds ({d.get('risk_target','?')} risk)")
+            recs = d.get("recommended_purchases", [])
+            if isinstance(recs, list):
+                for r in recs[:4]:
+                    if isinstance(r, dict):
+                        lines.append(f"  {r.get('ticker','?')}: {r.get('name','?')} | Account={r.get('account','?')} | "
+                                    f"Duration={r.get('duration','?')}y Risk={r.get('risk','?')}")
+            regime_note = d.get("regime_note", "")
+            if regime_note:
+                lines.append(f"  Regime: {regime_note[:120]}")
+
+        # ── Yield Curve Analysis ──
+        elif label == "yield_curve":
+            uc = d.get("us_curve", {})
+            ca = d.get("canadian_curve", {})
+            bf = d.get("butterfly", {})
+            rd = d.get("roll_down", {})
+            cy = d.get("carry", {})
+            lines.append(f"YIELD CURVE: US {uc.get('shape','?')} ({uc.get('slope_2s10s_bp','?')}bp) "
+                        f"Dir={uc.get('direction','?')} | Source={uc.get('source','?')}")
+            if bf:
+                lines.append(f"  Butterfly 2s5s10s: {bf.get('value_bp','?')}bp ({bf.get('signal','?')})")
+            if rd:
+                lines.append(f"  Roll-down: Best={rd.get('best_position','?')} ({rd.get('best_roll_down_pct','?')}%)")
+            if cy:
+                lines.append(f"  Carry: Financing={cy.get('financing_rate','?')}% Positive={cy.get('carry_positive','?')}")
+            if ca:
+                lines.append(f"  Canada: {ca.get('shape','?')} ({ca.get('slope_10y_2y_bp','?')}bp) Source={ca.get('source','?')}")
+            for imp in d.get("implications", [])[:2]:
+                lines.append(f"  {imp}")
+
+        # ── Bond Recommendations ──
+        elif label == "bond_recommendations":
+            env = d.get("macro_bond_environment", {})
+            summ = d.get("summary", {})
+            lines.append(f"BOND RECOMMENDATIONS: Bias={env.get('overall_bond_bias','?')} | "
+                        f"Duration={env.get('duration_preference','?')} | "
+                        f"Stress={env.get('credit_stress','?')}/100 ({env.get('credit_stress_level','?')}) | "
+                        f"Curve={env.get('curve_shape','?')} {env.get('curve_direction','?')}")
+            lines.append(f"  Scanned: {summ.get('total_etfs_scanned','?')} ETFs | "
+                        f"BUY: {summ.get('buy_signals','?')} | HOLD: {summ.get('hold_signals','?')} | SELL: {summ.get('sell_signals','?')}")
+            recs = d.get("recommendations", [])
+            for r in recs[:8]:
+                if isinstance(r, dict):
+                    lines.append(f"  {r.get('signal','?')} {r.get('ticker','?')} ({r.get('score','?')}/100) "
+                                f"dur={r.get('duration','?')}y {r.get('currency','?')} → {r.get('best_account','?')} | "
+                                f"{r.get('rationale','')[:80]}")
+            acct = d.get("account_allocation", {})
+            for a, info in acct.items():
+                if isinstance(info, dict) and info.get("etfs"):
+                    lines.append(f"  {a}: {', '.join(info['etfs'])} — {info.get('note','')[:60]}")
+
+        # ── Bond Beta ──
+        elif label.startswith("bond_beta_"):
+            lines.append(f"BOND BETA ({d.get('ticker','?')} vs {d.get('benchmark','AGG')}): "
+                        f"β={_n(d.get('beta_vs_benchmark'))} | SPY_β={_n(d.get('spy_beta'))} "
+                        f"Hedge={d.get('hedge_effectiveness','?')} | "
+                        f"Rate_β={_n(d.get('rate_beta'))} Rate_regime={d.get('rate_regime','?')} | "
+                        f"Source={d.get('data_source','?')}")
+
+        # ── Beta Regime (market-wide) ──
+        elif label == "beta_regime":
+            xlu = d.get("xlu_spy_ratio", {})
+            disp = d.get("beta_dispersion", {})
+            rec = d.get("recommendation", {})
+            lines.append(f"BETA REGIME: Signal={d.get('regime_signal','?')} | "
+                        f"XLU/SPY 20d={_n(xlu.get('20d_change_pct'))}% ({xlu.get('strength','?')}) | "
+                        f"Dispersion={_n(disp.get('current'))} ({disp.get('regime','?')}) "
+                        f"StockPicking={disp.get('stock_picking_value','?')} | "
+                        f"Bias={rec.get('scanner_bias','?')} SizeMult={_n(rec.get('position_size_multiplier'))}")
+            sector_betas = disp.get("sector_betas", {})
+            if sector_betas:
+                beta_str = " ".join(f"{k}={v}" for k, v in sector_betas.items())
+                lines.append(f"  Sector Betas: {beta_str}")
 
         else:
             # Unknown tool — first 150 chars
@@ -1427,8 +1684,18 @@ def _run_claude_once(prompt: str, stage: str, pq, env: dict, needs_mcp: bool = T
 
                 # System init event (stream-json input mode)
                 if etype == "system":
+                    _sys_init_count = getattr(proc, '_sys_init_count', 0) + 1
+                    proc._sys_init_count = _sys_init_count
                     log(f"System init (session={ev.get('session_id', '')[:12]})")
-                    last_activity = time.time()
+                    if _sys_init_count <= 5:
+                        last_activity = time.time()  # First few inits = normal startup
+                    # After 5 inits without real content = stuck (rate limited)
+                    if _sys_init_count >= 10:
+                        log(f"STUCK: {_sys_init_count} system inits without output — killing")
+                        proc.kill()
+                        proc.wait()
+                        result_text = ""
+                        break
                     continue
 
                 # Full assistant message (stream-json input mode)
@@ -1741,6 +2008,18 @@ def run_claude(prompt: str, stage: str, pq,
 
     result_text = _run_claude_once(prompt, stage, pq, env, needs_mcp=needs_mcp, job_id=job_id, model=model)
 
+    # Auto-fallback: if current model got stuck, switch to the other one
+    if len(result_text.strip()) < 100:
+        alt_model = "sonnet" if model != "sonnet" else ""
+        alt_name = "Sonnet" if alt_model == "sonnet" else "Opus"
+        cur_name = "Opus" if model != "sonnet" else "Sonnet"
+        log(f"{cur_name} produced no output — falling back to {alt_name}")
+        push(pq, stage, "running", f"{cur_name} rate-limited — switching to {alt_name}…")
+        time.sleep(5)
+        result_text = _run_claude_once(prompt, stage, pq, env, needs_mcp=needs_mcp, job_id=job_id, model=alt_model)
+        if len(result_text.strip()) >= 100:
+            log(f"{alt_name} fallback succeeded: {len(result_text):,} chars")
+
     # Retry loop for MCP validation failures
     if validate_mcp and not _mcp_output_valid(result_text):
         for attempt in range(1, max_retries + 1):
@@ -1761,8 +2040,8 @@ def run_claude(prompt: str, stage: str, pq,
     return result_text
 
 
-def run_gemini(prompt: str, stage: str, pq) -> str:
-    """Run Gemini CLI → return output text. Plain text mode (no stream-json)."""
+def run_gemini(prompt: str, stage: str, pq, max_retries: int = 2) -> str:
+    """Run Gemini CLI → return output text. Retries on rate limit / premature close."""
     log = lambda msg: print(f"  [{stage}] {msg}", flush=True)
     push(pq, stage, "running", f"{stage} starting…")
 
@@ -1770,9 +2049,42 @@ def run_gemini(prompt: str, stage: str, pq) -> str:
     env.pop("GEMINI_API_KEY", None)   # Gemini uses Google login, not API key
 
     cmd = [GEMINI_BIN, "-p", "", "--approval-mode", "yolo"]
-    log(f"CMD: gemini -p --approval-mode yolo")
-    log(f"Prompt: {len(prompt):,} chars")
 
+    for attempt in range(1, max_retries + 2):  # up to max_retries + 1 attempts
+        if attempt > 1:
+            wait = min(attempt * 10, 30)
+            log(f"Gemini retry {attempt-1}/{max_retries} — waiting {wait}s…")
+            push(pq, stage, "running", f"Gemini retry {attempt-1}/{max_retries} (waiting {wait}s)…")
+            time.sleep(wait)
+
+        log(f"CMD: gemini -p --approval-mode yolo (attempt {attempt})")
+        log(f"Prompt: {len(prompt):,} chars")
+        result = _run_gemini_once(prompt, stage, pq, cmd, env, log)
+
+        # Retry on rate limit or premature close errors
+        # IMPORTANT: Only check for error strings in SHORT outputs (<500 chars).
+        # Long outputs (500+ chars) are real audit text that may coincidentally
+        # contain error-like strings (e.g., "429" in prices, "RATE_LIMIT" in
+        # findings about API issues, "Premature close" in trade discussions).
+        is_retryable = False
+        if len(result) < 500:
+            is_retryable = any(err in result for err in [
+                "exhausted your capacity", "Premature close",
+                "RATE_LIMIT", "429", "ERR_STREAM_PREMATURE_CLOSE",
+                "unexpected critical error", "TIMEOUT",
+            ])
+        if is_retryable and attempt <= max_retries:
+            log(f"Retryable error detected in output ({len(result):,} chars)")
+            continue
+        break
+
+    log(f"Done: {len(result):,} chars")
+    push(pq, stage, "done", f"{stage.title()} done ({len(result):,} chars)")
+    return result
+
+
+def _run_gemini_once(prompt: str, stage: str, pq, cmd, env, log) -> str:
+    """Single Gemini CLI execution attempt."""
     try:
         proc = subprocess.Popen(
             cmd,
@@ -1839,8 +2151,6 @@ def run_gemini(prompt: str, stage: str, pq) -> str:
         result = f"[Error: {e}]"
         log(f"ERROR: {e}")
 
-    log(f"Done: {len(result):,} chars")
-    push(pq, stage, "done", f"{stage.title()} done ({len(result):,} chars)")
     return result
 
 
@@ -2389,18 +2699,30 @@ AHMED'S REQUEST: {prompt}
 
 INSTRUCTIONS:
 - The MCP data above is LIVE from {len(mcp_data)} parallel tool calls — use it directly. Do NOT call MCP tools (data is already gathered).
-- USE WebSearch SPARINGLY (max 3 searches) to verify: analyst price targets, recent earnings, breaking news. The MCP data above already contains most data you need — do NOT search for data that is already in MCP results.
-- Follow the report format above EXACTLY.
+- **HARD LIMIT: MAX 3 WEB SEARCHES.** You have data from {len(mcp_data)} MCP tools already — USE IT. WebSearch is ONLY for: (1) analyst consensus price target, (2) most recent earnings result, (3) breaking news. STOP SEARCHING after 3. Every extra search wastes 30+ seconds. If you catch yourself wanting a 4th search, STOP and write the report with what you have.
+- Follow the report format above EXACTLY. Every report MUST include Section A (Company Overview) — a 2-3 sentence description of what the company does, its core business, products/services, and competitive position. Never skip this.
 - Apply 5-gate validation: Catalyst + Freshness + Al Brooks + Quality + Institutional.
 - Include ALL data: price, signal, catalysts, technicals, support/resistance, quality score.
+- ENTRY PRICE DISAMBIGUATION (CRITICAL): Multiple tools produce different entry prices. The report MUST label each clearly:
+  1. **Pullback Entry** (from PULLBACK PERSONALITY data) — the top confluence level (highest score). This is the PREFERRED entry for the trade plan.
+  2. **Signal Entry** (from generate_trading_signal) — the MCP signal's calculated entry. This is what gets auto-stored in prediction tracking.
+  3. **Stock Plan Entry** (from generate_options_trade_plan) — the options tool's stock-level entry.
+  If these differ, list ALL THREE explicitly with labels: "Pullback: $X | Signal: $Y | Stock Plan: $Z" and note: "Prediction tracker stores Signal entry ($Y). If entering at Pullback level ($X), track manually."
+  The trade plan's PRIMARY entry should be the Pullback confluence level when available — it is data-driven and personalized. Do NOT silently pick one and ignore the others.
 - VOLUME ANALYSIS: Use the volume profile data (accumulation/distribution, OBV, relative volume) to confirm trend conviction.
 - VOLATILITY: Use HV vs IV, volatility regime, Bollinger squeeze data to inform options strategy selection.
 - RELATIVE STRENGTH: Report the ticker's sector-relative performance and ranking.
-- HISTORICAL SETUPS: If similar historical setups are found, include win rate and expected return from ML analysis.
+- HISTORICAL SETUPS: Use ONLY the pre-computed values from the compact reference — `success_rate_5d` for win rate, `average_return_5d` for avg return, `similar_setups_found` for count. NEVER recalculate by counting wins/losses from raw trade lists — you will get the wrong answer because the tool uses a 5-day forward-return window, not simple W/L counting. Example: compact says "Win rate 38.5% | Avg return -1.26%" → report exactly those numbers.
+- DTE: Always use the DTE value from the tool output directly. Do NOT calculate DTE yourself from calendar dates — use what the options tool returns.
 - INSIDER CLUSTER: If insider cluster buys/sells are detected, feature prominently in catalyst section.
 - UNUSUAL OPTIONS ACTIVITY: If smart money flow or unusual volume detected, include in options analysis.
 - CANDLES: Use daily candle data for Al Brooks price action analysis (support/resistance confirmation).
 - POSITIONS: Data includes positions from all 7 Questrade accounts. Report any holdings of analyzed tickers with account, quantity, cost basis, P&L. If none, state clearly.
+- ACCOUNT TOTALS: ALWAYS use the totalEquity value from BALANCE data — NEVER calculate your own account totals by summing positions. The balance API is authoritative; your math will be wrong.
+- PRICES: Use ONLY the prices from MCP PRICE data (Questrade quotes). NEVER guess, round, or hallucinate a price. If a stock shows $404.35, write $404.35 — not $444 or $400.
+- CANADIAN TAX RULES: LIRA, RRSP, and TFSA are tax-deferred/tax-free accounts. Trades WITHIN these accounts have ZERO immediate tax consequences. Capital losses in registered accounts CANNOT be used for tax loss harvesting. Only flag tax implications for Cash and Margin (non-registered) accounts.
+- RELATIVE STRENGTH SIGNAL: A daily P&L move of less than 0.5% is NOT a "relative strength signal" — it is statistically flat/noise. Only flag relative strength when the move is meaningful (>0.5% outperformance vs benchmark).
+- P/C RATIO: Use ONE P/C ratio consistently throughout the report. The McMillan multi-expiration aggregate P/C is the authoritative source. Do NOT cite different P/C ratios from different tools in different sections.
 - OPTIONS: Include full McMillan analysis and options trade plan with specific strikes, expiries, strategy. Include IV skew analysis if available. If McMILLAN MASTERY data is present (Vol Regime, Seller Risk, Skew, McMillan Lesson), create a dedicated "McMillan Mastery Insights" subsection showing vol regime composite signal, seller risk assessment with warnings, skew type with trading rationale, and the strategy lesson with win rate. Include Greeks (Delta, Gamma, Theta, Vega) for ATM strikes.
 - MACRO CONTEXT: If MACRO CONTEXT data is present, add a "Macro Environment" header at the TOP of the report showing regime, yield curve, VIX regime, credit, Fed stance, and options bias. This sets the stage for the entire analysis.
 - VIX TERM STRUCTURE: If VIX TERM STRUCTURE data is present, integrate into the macro section and options strategy selection. Contango = sell premium, backwardation = buy protection.
@@ -2768,6 +3090,8 @@ Report:
             vault_name = f"MARKET_SCAN_LONG_{date_str}"
         elif req_type == "market_scan_short":
             vault_name = f"MARKET_SCAN_SHORT_{date_str}"
+        elif req_type == "sector_scan":
+            vault_name = f"SECTOR_ROTATION_{date_str}"
         elif req_type == "portfolio_review":
             vault_name = f"PORTFOLIO_REVIEW_{date_str}"
         else:
@@ -2824,9 +3148,86 @@ Report:
             json_file.write_text(json.dumps(structured_json, indent=2), encoding="utf-8")
             print(f"  [vault] Saved JSON: {json_file} ({json_file.stat().st_size:,} bytes)", flush=True)
 
+        # ── Stage 4: Institutional Report (Claude transforms internal → sellable) ──
+        institutional_file = None
+        try:
+            with _jobs_lock:
+                if job_id in _jobs:
+                    _jobs[job_id]["stage"] = "institutional"
+            push(pq, "institutional", "running",
+                 "Generating institutional equity research report...")
+
+            # Load institutional template
+            inst_template_path = REPO / "reportsGenerator" / "INSTITUTIONAL_REPORT_GENERATOR.md"
+            inst_template = ""
+            if inst_template_path.exists():
+                inst_template = inst_template_path.read_text(encoding="utf-8")
+
+            inst_prompt = f"""{INSTITUTIONAL_SYS}
+
+{_wrap_data_section("INSTITUTIONAL_REPORT_GENERATOR", inst_template)}
+
+{_wrap_data_section("INTERNAL_ANALYSIS_REPORT", final_text)}
+
+Transform the INTERNAL_ANALYSIS_REPORT into a clean institutional equity research report following the INSTITUTIONAL_REPORT_GENERATOR template exactly. Output ONLY the final institutional report — no preamble, no commentary.
+
+CRITICAL: Output the report EXACTLY ONCE. End with the disclaimer paragraph. Do NOT repeat any section. Do NOT start a second copy of the report after the disclaimer.
+"""
+            inst_text = run_claude(inst_prompt, "institutional", pq, needs_mcp=False,
+                                  job_id=job_id, model="sonnet")
+
+            if inst_text and len(inst_text.strip()) > 500:
+                # Dedup: if model repeated the report, truncate at first disclaimer
+                disclaimer_marker = "This report is for informational and educational purposes only"
+                first_pos = inst_text.find(disclaimer_marker)
+                if first_pos >= 0:
+                    # Find the end of the disclaimer paragraph (next blank line or ---)
+                    end_pos = inst_text.find("\n\n", first_pos)
+                    if end_pos < 0:
+                        end_pos = len(inst_text)
+                    # Check if there's content repeating after the disclaimer
+                    after = inst_text[end_pos:].strip().strip("-").strip()
+                    if len(after) > 200:
+                        # Repetition detected — truncate
+                        inst_text = inst_text[:end_pos].rstrip()
+                        print(f"  [institutional] Truncated repetition ({len(after):,} chars removed after disclaimer)",
+                              flush=True)
+
+                # Save institutional report to vault
+                if ticker:
+                    inst_vault_name = f"{ticker}_INSTITUTIONAL_{date_str}"
+                elif req_type == "market_scan":
+                    inst_vault_name = f"MARKET_SCAN_INSTITUTIONAL_{date_str}"
+                elif req_type in ("market_scan_long", "market_scan_short"):
+                    inst_vault_name = f"MARKET_SCAN_{req_type.split('_')[-1].upper()}_INSTITUTIONAL_{date_str}"
+                elif req_type == "portfolio_review":
+                    inst_vault_name = f"PORTFOLIO_INSTITUTIONAL_{date_str}"
+                else:
+                    safe = re.sub(r"[^A-Z0-9_]", "_", name.upper())[:30]
+                    inst_vault_name = f"{safe}_INSTITUTIONAL_{date_str}"
+
+                institutional_file = VAULT / f"{inst_vault_name}.md"
+                inst_header = f"# {report_title} — Equity Research Report\nDate: {datetime.now():%Y-%m-%d}\n\n---\n\n"
+                institutional_file.write_text(inst_header + inst_text, encoding="utf-8")
+                print(f"  [vault] Saved institutional: {institutional_file} "
+                      f"({institutional_file.stat().st_size:,} bytes)", flush=True)
+                push(pq, "institutional", "done",
+                     f"Institutional report saved: {inst_vault_name}.md "
+                     f"({len(inst_text):,} chars)")
+            else:
+                print(f"  [institutional] Output too short ({len((inst_text or '').strip())} chars) — skipping",
+                      flush=True)
+                push(pq, "institutional", "done", "Institutional report generation failed (too short)")
+
+        except Exception as inst_err:
+            print(f"  [institutional] Error: {inst_err}", flush=True)
+            push(pq, "institutional", "done", f"Institutional report failed: {str(inst_err)[:100]}")
+
         with _jobs_lock:
             if job_id in _jobs:
                 _jobs[job_id]["files"]["FINAL"] = str(final_file)
+                if institutional_file:
+                    _jobs[job_id]["files"]["INSTITUTIONAL"] = str(institutional_file)
                 _jobs[job_id]["stage"] = "email"
                 _jobs[job_id]["quality"] = quality
                 _jobs[job_id]["structured_data"] = structured_json
@@ -2912,7 +3313,7 @@ Report:
             except Exception as db_err:
                 print(f"  [db] ERROR: {db_err}", flush=True)
 
-        # ── Email FINAL report (quality-gated) ───────────────────────────
+        # ── Email both reports (quality-gated) ─────────────────────────
         if q_score < 40:
             # Score too low — save draft only, no email
             email_status = f"EMAIL_SKIPPED: Quality score {q_score}/100 (Grade {q_grade}) too low for email"
@@ -2921,14 +3322,32 @@ Report:
         else:
             push(pq, "email", "running", f"Emailing to {EMAIL_TO}…")
             quality_tag = f"[LOW QUALITY] " if q_score < 60 else ""
-            subject = f"{quality_tag}[Analyst] {report_title} — {datetime.now():%Y-%m-%d %H:%M}"
+            timestamp_str = f"{datetime.now():%Y-%m-%d %H:%M}"
+
+            # Email 1: Internal report (for you — full audit, portfolio, data sources)
+            subject_internal = f"{quality_tag}[Internal] {report_title} — {timestamp_str}"
             _final_text_for_email = final_text
-            def _send_async(subj, body, _pq=pq):
+            def _send_internal(subj, body, _pq=pq):
                 result = send_email(subj, body)
-                print(f"  [email] {result}", flush=True)
-                push(_pq, "email", "done", result)
-            threading.Thread(target=_send_async, args=(subject, _final_text_for_email), daemon=True).start()
-            email_status = f"EMAIL_QUEUED → {EMAIL_TO}"
+                print(f"  [email] Internal: {result}", flush=True)
+                push(_pq, "email", "running", f"Internal: {result}")
+            threading.Thread(target=_send_internal, args=(subject_internal, _final_text_for_email), daemon=True).start()
+
+            # Email 2: Institutional report (clean, sellable — no personal data)
+            if institutional_file and institutional_file.exists():
+                _inst_text_for_email = institutional_file.read_text(encoding="utf-8")
+                subject_inst = f"[Research] {report_title} — {timestamp_str}"
+                def _send_institutional(subj, body, _pq=pq):
+                    result = send_email(subj, body)
+                    print(f"  [email] Institutional: {result}", flush=True)
+                    push(_pq, "email", "done", f"Institutional: {result}")
+                threading.Thread(target=_send_institutional, args=(subject_inst, _inst_text_for_email), daemon=True).start()
+                email_status = f"EMAIL_QUEUED (2 reports) → {EMAIL_TO}"
+            else:
+                def _send_done(_pq=pq):
+                    push(_pq, "email", "done", "Internal email sent (no institutional report)")
+                threading.Thread(target=_send_done, daemon=True).start()
+                email_status = f"EMAIL_QUEUED (internal only) → {EMAIL_TO}"
 
         # ── Webhook notification (Telegram/Slack via n8n) ────────────────
         if WEBHOOK_URL:
@@ -2945,8 +3364,11 @@ Report:
             push(pq, "webhook", "done", f"Webhook sent to {WEBHOOK_URL[:30]}...")
 
         final_files = {"FINAL": str(final_file)}
+        if institutional_file and institutional_file.exists():
+            final_files["INSTITUTIONAL"] = str(institutional_file)
         update_job(status="done", stage="complete", files=final_files)
         _audit_log("job_complete", job_id=job_id, status="done", file=str(final_file),
+                   institutional_file=str(institutional_file) if institutional_file else None,
                    report_type=report_type, quality_score=q_score, quality_grade=q_grade)
 
         # Clean up checkpoints on successful completion
@@ -3294,11 +3716,21 @@ class Handler(BaseHTTPRequestHandler):
                 except ValueError:
                     pass
 
+            # Cap replay to last 50 events to prevent SSE death loop:
+            # large replays (200+ events) flood the browser, cause broken pipe,
+            # browser reconnects at index 0, repeat forever.
+            total_events = len(bq._events)
+            if from_index == 0 and total_events > 50:
+                from_index = max(0, total_events - 50)
+
             sq = bq.subscribe(from_index=from_index)
             replay_n = sq.qsize()
-            if from_index > 0:
+            if from_index > 0 and last_id_hdr is not None:
                 print(f"  [SSE] Client RECONNECTED for job {job_id[:8]}, "
                       f"Last-Event-ID={last_id_hdr}, replaying {replay_n} missed events", flush=True)
+            elif from_index > 0:
+                print(f"  [SSE] Client connected for job {job_id[:8]}, "
+                      f"capped replay to last {replay_n} of {total_events} events", flush=True)
             else:
                 print(f"  [SSE] Client connected for job {job_id}, {replay_n} buffered events", flush=True)
 
@@ -4263,6 +4695,7 @@ textarea::placeholder{color:var(--muted)}
     <div class="pill" id="p1"><span class="pip"></span>Generator</div>
     <div class="pill" id="p2"><span class="pip"></span>Auditor</div>
     <div class="pill" id="p3"><span class="pip"></span>Resolver</div>
+    <div class="pill" id="p4"><span class="pip"></span>Institutional</div>
   </div>
 </header>
 
@@ -4436,9 +4869,9 @@ function updateSidebar(){
 
 /* ── Header pills ──────────────────────────────────────────────────────────── */
 function updatePills(){
-  const order=['queued','generator','auditor','resolver','email','complete'];
+  const order=['queued','generator','auditor','resolver','institutional','email','complete'];
   const job=selectedJobId?jobs[selectedJobId]:null;
-  ['generator','auditor','resolver'].forEach((s,i)=>{
+  ['generator','auditor','resolver','institutional'].forEach((s,i)=>{
     const pill=document.getElementById('p'+(i+1));if(!pill)return;
     if(!job){pill.className='pill';return}
     const ji=order.indexOf(job.stage);const si=order.indexOf(s);
@@ -4510,11 +4943,12 @@ async function replayJob(jobId){
 
 /* ── Pipeline blocks ───────────────────────────────────────────────────────── */
 function mkBlock(container,stage,jobId){
-  const icon={generator:'\u{1F535}',auditor:'\u{1F534}',resolver:'\u{1F7E2}'}[stage];
+  const icon={generator:'\u{1F535}',auditor:'\u{1F534}',resolver:'\u{1F7E2}',institutional:'\u{1F7E1}'}[stage];
   const name={generator:'Claude Code \u2014 Generator (Subscription)',
     auditor:'Gemini CLI \u2014 Auditor (Google Login)',
-    resolver:'Claude Code \u2014 Resolver (Subscription)'}[stage];
-  const cls={generator:'gen',auditor:'aud',resolver:'res'}[stage];
+    resolver:'Claude Code \u2014 Resolver (Subscription)',
+    institutional:'Claude Sonnet \u2014 Institutional Report'}[stage];
+  const cls={generator:'gen',auditor:'aud',resolver:'res',institutional:'res'}[stage];
   const b=document.createElement('div');b.className='pblock';
   const ph=document.createElement('div');ph.className='ph '+cls;
   ph.innerHTML=`<span>${icon}</span><span class="ph-name">${name}</span>`+
@@ -4555,12 +4989,13 @@ function handleEvent(jobId,ev){
   // Update job state
   if(stage==='complete'){job.status='done';job.stage='complete'}
   else if(stage==='error'){job.status='error'}
-  else if(['generator','auditor','resolver'].includes(stage)){
+  else if(['generator','auditor','resolver','institutional'].includes(stage)){
     if(status==='running'||status==='streaming'){job.status='running';job.stage=stage}
     if(status==='done'){
       if(stage==='generator')job.stage='auditor';
       else if(stage==='auditor')job.stage='resolver';
-      else if(stage==='resolver')job.stage='email';
+      else if(stage==='resolver')job.stage='institutional';
+      else if(stage==='institutional')job.stage='email';
     }
   }
   else if(stage==='email'){job.stage='email'}
@@ -4570,7 +5005,7 @@ function handleEvent(jobId,ev){
   if(!ctr)return;
 
   // Pipeline stage blocks
-  if(['generator','auditor','resolver'].includes(stage)){
+  if(['generator','auditor','resolver','institutional'].includes(stage)){
     if((status==='running'||status==='streaming')&&!job.blocks[stage]){
       job.blocks[stage]=mkBlock(ctr,stage,jobId);
     }
@@ -4826,7 +5261,7 @@ async function go(){
     jobs[jobId]={
       id:jobId,name:data.name,prompt,
       status:'queued',stage:'queued',created:Date.now()/1000,
-      bufs:{generator:'',auditor:'',resolver:''},
+      bufs:{generator:'',auditor:'',resolver:'',institutional:''},
       blocks:{},es:null
     };
 
@@ -4855,7 +5290,7 @@ async function loadJobs(){
         jobs[sj.id]={
           id:sj.id,name:sj.name,prompt:'',
           status:sj.status,stage:sj.stage,created:sj.created,
-          bufs:{generator:'',auditor:'',resolver:''},
+          bufs:{generator:'',auditor:'',resolver:'',institutional:''},
           blocks:{},es:null
         };
         // Auto-connect SSE for running jobs (reconnect after page refresh / tunnel drop)

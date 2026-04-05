@@ -3113,11 +3113,12 @@ def _generate_pc_ratio_narrative(pc_ratio_data: dict) -> str:
     return " ".join(parts)
 
 
-def _assess_vega_theta_tradeoff(iv_rank: float, current_iv: float, dte: int) -> dict:
+def _assess_vega_theta_tradeoff(iv_rank: float, current_iv: float, dte: int, hv_20: float = None) -> dict:
     """
     McMillan Ch.37: A 6-point IV increase can offset one full month of time decay on an ATM option.
 
     This function quantifies the vega-theta risk for premium sellers and opportunity for buyers.
+    Now includes HV vs IV comparison to detect negative volatility risk premium.
     """
     # Estimate daily theta as % of option value based on DTE
     if dte > 45:
@@ -3157,7 +3158,27 @@ def _assess_vega_theta_tradeoff(iv_rank: float, current_iv: float, dte: int) -> 
             f"but a {iv_points_to_offset_month:.0f}-point IV spike could offset a full month of decay."
         )
 
-    return {
+    # HV > IV override: negative volatility risk premium detection
+    # If realized vol exceeds implied vol, sellers are undercompensated regardless of IV rank
+    hv_iv_warning = None
+    if hv_20 and hv_20 > 0 and current_iv > 0:
+        iv_hv_ratio = current_iv / hv_20
+        if iv_hv_ratio < 0.85:
+            # Significant negative premium: HV exceeds IV by >15%
+            hv_iv_warning = (
+                f"NEGATIVE VOL PREMIUM: HV-20 ({hv_20:.1f}%) exceeds IV ({current_iv:.1f}%) — "
+                f"realized vol is {((hv_20/current_iv - 1)*100):.0f}% higher than implied. "
+                f"Sellers are undercompensated for actual stock movement. "
+                f"May be transient (post-shock) but risk is elevated until HV normalizes."
+            )
+            if seller_risk == "LOW":
+                seller_risk = "MODERATE"
+                seller_warning += f" HOWEVER: {hv_iv_warning}"
+            elif seller_risk == "MODERATE":
+                seller_risk = "HIGH"
+                seller_warning += f" ADDITIONALLY: {hv_iv_warning}"
+
+    result = {
         "daily_theta_pct": daily_theta_pct,
         "iv_points_to_offset_month": iv_points_to_offset_month,
         "seller_risk": seller_risk,
@@ -3165,6 +3186,9 @@ def _assess_vega_theta_tradeoff(iv_rank: float, current_iv: float, dte: int) -> 
         "buyer_opportunity": f"At {iv_rank:.0f}th percentile, {'strong' if iv_rank <= 30 else 'moderate' if iv_rank <= 50 else 'weak'} case for buying premium. IV expansion {'likely' if iv_rank <= 30 else 'possible' if iv_rank <= 50 else 'unlikely'} to augment directional gains.",
         "mcmillan_reference": "Ch.37: 6 IV points = 1 month of ATM theta"
     }
+    if hv_iv_warning:
+        result["hv_iv_warning"] = hv_iv_warning
+    return result
 
 
 def _classify_skew_opportunity(iv_analysis: dict, calls_df: pd.DataFrame, puts_df: pd.DataFrame, current_price: float) -> dict:
@@ -3540,8 +3564,29 @@ def register_tools(mcp):
 
             # ============================================================
             # 2. PUT/CALL RATIO ANALYSIS (McMillan Ch. 24: Stock Option Strategies)
+            # Uses MULTI-EXPIRATION aggregate for consistency with UOA tool.
+            # Single-expiration P/C can diverge wildly from multi-exp totals.
             # ============================================================
-            pc_ratio_analysis = _calculate_pc_ratio(calls_df, puts_df)
+            # Aggregate volume/OI across first 2 expirations (matches UOA methodology)
+            all_calls_frames = []
+            all_puts_frames = []
+            for _exp in expirations[:2]:
+                try:
+                    _chain = t.option_chain(_exp)
+                    if _chain.calls is not None and not _chain.calls.empty:
+                        all_calls_frames.append(_chain.calls)
+                    if _chain.puts is not None and not _chain.puts.empty:
+                        all_puts_frames.append(_chain.puts)
+                except Exception:
+                    pass
+            if all_calls_frames and all_puts_frames:
+                multi_calls = pd.concat(all_calls_frames, ignore_index=True)
+                multi_puts = pd.concat(all_puts_frames, ignore_index=True)
+                pc_ratio_analysis = _calculate_pc_ratio(multi_calls, multi_puts)
+                pc_ratio_analysis["method"] = f"multi_expiration ({len(expirations[:2])} expirations)"
+            else:
+                pc_ratio_analysis = _calculate_pc_ratio(calls_df, puts_df)
+                pc_ratio_analysis["method"] = "single_expiration"
 
             # ============================================================
             # 3. OPEN INTEREST ANALYSIS (McMillan Ch. 25: Index Option Strategies)
@@ -3785,7 +3830,34 @@ def register_tools(mcp):
                 dte=optimal_expiry.get('dte', 45) or 45
             )
 
-            # 8f. Determine if options trading allowed (now distinguishes buyers vs sellers)
+            # 8f. Spread-based tier override: if actual spread contradicts volume-based tier, downgrade
+            # Fixes: WFRD classified TIER_2 by stock volume but has 10.7% options spread
+            if spread_pct > 5.0 and liquidity_tier.get('tier') in ('TIER_1', 'TIER_2'):
+                logger.warning(f"Spread override for {ticker}: {spread_pct:.1f}% spread contradicts {liquidity_tier['tier']}. Downgrading to TIER_3.")
+                liquidity_tier = {
+                    "tier": "TIER_3",
+                    "tier_name": "Moderate Liquidity (spread-downgraded)",
+                    "size_multiplier": 0.50,
+                    "description": f"Stock volume qualifies for higher tier but options spread {spread_pct:.1f}% is too wide",
+                    "warnings": [
+                        f"⚠️ Options spread {spread_pct:.1f}% contradicts underlying volume tier",
+                        "⚠️ Reduce position size by 50%",
+                        "⚠️ Use limit orders only — wide bid/ask"
+                    ]
+                }
+            elif spread_pct > 10.0 and liquidity_tier.get('tier') == 'TIER_3':
+                logger.warning(f"Spread override for {ticker}: {spread_pct:.1f}% spread. Downgrading to NON_LIQUID.")
+                liquidity_tier = {
+                    "tier": "NON_LIQUID",
+                    "tier_name": "Non-Liquid (spread-downgraded)",
+                    "size_multiplier": 0.0,
+                    "description": f"Options spread {spread_pct:.1f}% is too wide for any options strategy",
+                    "warnings": [
+                        f"🚫 Options spread {spread_pct:.1f}% — stock only, no options",
+                    ]
+                }
+
+            # Determine if options trading allowed (distinguishes buyers vs sellers)
             # CRITICAL: Sellers benefit from high IV near earnings, buyers get hurt
             is_liquid = liquidity_tier.get('tier') != 'NON_LIQUID' and atm_liquidity.get('tradeable', True)
 
@@ -3837,7 +3909,8 @@ def register_tools(mcp):
             vega_theta = _assess_vega_theta_tradeoff(
                 iv_rank=iv_analysis['iv_rank'],
                 current_iv=iv_analysis['current_iv'],
-                dte=optimal_expiry.get('dte', 45) or 45
+                dte=optimal_expiry.get('dte', 45) or 45,
+                hv_20=iv_analysis.get('hv_20_current')
             )
 
             # 9d. Volatility Skew Opportunity (McMillan Ch.39)

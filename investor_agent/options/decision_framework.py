@@ -354,12 +354,13 @@ def build_stock_plan(
         target_1 = current_price - (stop_distance * 1.5)
         target_2 = current_price - (stop_distance * 2.5)
 
-    # Position sizing: Risk 2% of account per trade
-    risk_pct = 0.02
+    # Position sizing: Risk 1% of account per trade (matches trading_plan in signals.py)
+    # Previously used 2% which contradicted the risk-managed plan in Section F
+    risk_pct = 0.01
     risk_per_trade = account_size * risk_pct
     risk_per_share = abs(current_price - stop_loss)
 
-    shares = int(risk_per_trade / risk_per_share)
+    shares = int(risk_per_trade / risk_per_share) if risk_per_share > 0 else 0
     position_value = shares * current_price
     total_risk = shares * risk_per_share
 
@@ -380,5 +381,5 @@ def build_stock_plan(
         "risk_per_share": round(risk_per_share, 2),
         "total_risk": round(total_risk, 2),
         "reward_risk_ratio": round(reward_risk_ratio, 2),
-        "methodology": "Al Brooks 2.5x ATR stop, 2% account risk per trade"
+        "methodology": "Al Brooks 2.5x ATR stop, 1% account risk per trade"
     }

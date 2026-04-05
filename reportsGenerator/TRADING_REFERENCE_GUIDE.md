@@ -568,4 +568,216 @@ Used across all report sections:
 
 ---
 
-*Last Updated: March 2026 | Extracted from COMPREHENSIVE_REPORT_GENERATOR.md v3.1 + Statistical Validation Framework + Intermarket Analysis Framework*
+## FIXED INCOME & BOND ANALYSIS
+
+**Source:** Campbell Harvey (yield curve), ICE BofA (credit spreads), FRED (macro data), AQR (carry research)
+
+*"The bond market is smarter than the stock market. It's smarter than the Fed. Listen to it."*
+
+### Yield Curve — The Economy's Crystal Ball
+
+The yield curve plots bond yields across maturities. Its shape tells you where the economy is heading.
+
+**Yield Curve Shapes:**
+
+| Shape | 10Y-2Y Spread | What It Means | Duration Action |
+|-------|---------------|---------------|-----------------|
+| **STEEP** (>50bp) | Positive, wide | Expansion ahead. Banks profitable, credit flowing. | EXTEND — roll-down return attractive at 5-10Y |
+| **FLAT** (-10 to +50bp) | Near zero | Late cycle. Growth slowing or Fed hiking. | NEUTRAL — stay diversified across maturities |
+| **INVERTED** (<-10bp) | Negative | Recession warning. Predicted 8 of last 8 US recessions. | SHORT duration until steepening begins |
+
+**Yield Curve Direction (MORE important than shape):**
+
+| Direction | What's Happening | Action |
+|-----------|-----------------|--------|
+| **STEEPENING** | Short rates falling (Fed cutting) or long rates rising | ✅ BEGIN extending duration — this is where bond bulls make money |
+| **FLATTENING** | Short rates rising (Fed hiking) or long rates falling | ✅ REDUCE duration — move to SHY, XSB.TO, PSA.TO |
+| **STABLE** | No change | ✅ Focus on carry and credit selection |
+
+*"When the curve steepens from inversion, the market is front-running rate cuts. TLT gained 25%+ in 2019-2020."*
+
+**Key Rule:** Bull steepening (short rates falling) is the most profitable bond environment. Bear steepening (long rates rising) is inflationary — NOT bond-bullish. Always check WHY the curve is moving.
+
+---
+
+### Credit Spreads — Fear and Greed in Bonds
+
+Credit spreads measure the extra yield corporate bonds pay over Treasuries. Widening = fear rising. Tightening = confidence growing.
+
+**OAS (Option-Adjusted Spread) Levels:**
+
+| Spread Level | HY OAS | Regime | Action |
+|-------------|--------|--------|--------|
+| TIGHT | <300bp | Risk-on, complacency | ⚠️ Spreads near floor — limited upside, high downside. Reduce HY. |
+| NORMAL | 300-500bp | Balanced | ✅ Carry is attractive. Hold corporate bonds. |
+| WIDE | >500bp | Stress/crisis | ✅ Flight to quality → BUY Treasuries. SELL high yield. |
+
+**Spread Signal Interpretation:**
+
+- ✅ **TIGHTENING** — Corporates outperforming. Overweight LQD, XCB.TO, ZMU.TO. Add HY for income (HYG, XHY.TO).
+- ❌ **WIDENING** — Risk-off building. Sell HY first, reduce IG. Buy Treasuries (TLT, ZGB.TO). HY spread widening >100bp over 30 days → 65% probability of equity drawdown within 60 days.
+- ⏸️ **STABLE** — No signal. Focus on carry and duration positioning.
+
+*"High yield spreads widen BEFORE equities drop. The bond market sees trouble first."*
+
+---
+
+### Duration — Your Risk Dial
+
+Duration measures how much a bond's price changes when interest rates move. It's the single most important risk factor in fixed income.
+
+**Duration Rule of Thumb:** Every 1% rate change moves your bond price by approximately [duration]%.
+
+| Duration | Rate ↓1% | Rate ↑1% | ETF Examples |
+|----------|----------|----------|-------------|
+| 2 years | +2% | -2% | SHY, XSB.TO, PSA.TO |
+| 7 years | +7% | -7% | IEF, XBB.TO, ZAG.TO |
+| 15 years | +15% | -15% | TLT, ZFL.TO, XLB.TO |
+
+**When to EXTEND (go long duration):**
+- ✅ Curve steepening from inversion (rate cuts approaching)
+- ✅ Positive term premium (>0.5% ACM) — you're being compensated
+- ✅ Risk-off regime — long Treasuries are your crash hedge
+- ❌ DON'T extend if breakeven inflation >2.8% and rising
+
+**When to REDUCE (go short duration):**
+- ✅ Fed hiking or flattening curve
+- ✅ Stagflation (stocks AND bonds dropping together)
+- ✅ Negative carry across all maturities
+- ❌ DON'T reduce if rate cuts are imminent — you'd miss the rally
+
+*"2022 lesson: AGG lost 13%, TLT lost 31%, SHY lost only 3%. Duration cuts both ways."*
+
+---
+
+### Carry & Roll-Down — Getting Paid to Wait
+
+**Carry** = Bond yield minus financing cost (short-term rate). If positive, you earn the spread daily.
+
+**Roll-Down** = Price appreciation as a bond ages and "rolls down" the yield curve to a lower-yield maturity.
+
+| Signal | Carry | Action |
+|--------|-------|--------|
+| ✅ POSITIVE | Yield > short rate | Lean into duration — time is your friend |
+| ❌ NEGATIVE | Yield < short rate | Hold only if expecting rate cuts within 6-12 months |
+
+**Roll-Down Sweet Spot:** The steepest part of the curve (usually 5-10Y) offers the best roll-down return. If the 10Y-7Y spread is wide, holding 10Y bonds and letting them roll to 7Y captures the price gain.
+
+*"Carry is the foundation of bond investing. It has explained 70%+ of total bond returns historically."* — AQR Research
+
+---
+
+### Butterfly Trade — Relative Value
+
+The butterfly 2s5s10s measures yield curve curvature: `2×5Y - 2Y - 10Y` (in basis points).
+
+| Butterfly | Signal | Trade |
+|-----------|--------|-------|
+| >+10bp | BELLY CHEAP | 5Y yields too high → **Short butterfly:** overweight mid-duration (IEF, XBB.TO) |
+| <-10bp | BELLY RICH | 5Y yields too low → **Long butterfly:** barbell strategy (SHY + TLT) |
+| -10 to +10bp | FAIR | No curvature trade — use other signals |
+
+*"When the belly is cheap, you're getting paid more per unit of duration at 5Y than at 2Y or 10Y. That's a value opportunity."*
+
+---
+
+### Breakeven Inflation — TIPS vs Nominals
+
+Breakeven inflation = nominal yield minus TIPS yield. It's the market's inflation forecast.
+
+| Breakeven 10Y | Signal | Action |
+|---------------|--------|--------|
+| >2.8% | BUY TIPS | Inflation rising — nominals lose real value. Shift to TIP, real return bonds. |
+| 2.0-2.8% | NEUTRAL | Balanced — use other signals for positioning. |
+| <2.0% | BUY NOMINALS | Deflation risk — nominal bonds rally hard (TLT, ZAG.TO, AGG). |
+
+*"When breakevens exceed 2.5%, the market is telling you: real assets beat nominal assets."*
+
+---
+
+### Term Premium — Are You Being Compensated?
+
+Term premium = extra yield for holding long bonds above expected future short rates. Measured by the ACM model (Fed New York).
+
+| Term Premium | Signal | Meaning |
+|-------------|--------|---------|
+| >0.5% | HIGH | ✅ Long bonds compensating you — duration attractive |
+| 0 to 0.5% | NEUTRAL | Fair compensation — no strong signal |
+| <0% | NEGATIVE | ⚠️ Investors paying for safety (flight to quality) — be cautious extending |
+
+*"Positive term premium is your margin of safety. Even if rates don't fall, you earn more than short-term investors."*
+
+---
+
+### Risk Regime — Stock-Bond Correlation
+
+The TLT/SPY 60-day correlation tells you if bonds are acting as hedges or not.
+
+| Correlation | Regime | Meaning | Bond Action |
+|------------|--------|---------|------------|
+| <-0.2 + TLT rising | RISK_OFF | Bonds rallying as stocks drop — hedge working | ✅ Overweight long Treasuries |
+| <-0.2 + TLT falling | RISK_ON | Normal negative correlation — growth regime | ✅ Favor corporates over Treasuries |
+| >+0.2 | STAGFLATION | Stocks AND bonds dropping together | ❌ Short duration + TIPS + cash ONLY |
+| -0.2 to +0.2 | TRANSITION | Correlation shifting — regime change possible | ⏸️ Watch closely, stay diversified |
+
+*"In 2022, the stock-bond correlation flipped positive. The 60/40 portfolio's worst year ever. Duration didn't protect — it amplified losses."*
+
+---
+
+### Tax-Optimized Bond Placement (Canadian)
+
+**The #1 rule:** Bond interest is the most tax-inefficient income. Place it where taxes are lowest.
+
+| Account | Bond Placement | Why | Recommended ETFs |
+|---------|---------------|-----|------------------|
+| **RRSP/LIRA** | ✅ EXCELLENT | Interest sheltered at 0% tax. A 4% bond yields 4% here vs ~1.9% taxable. | ZAG.TO, XBB.TO, AGG, IEF, TLT |
+| **TFSA** | ⏸️ KEEP EQUITY | Tax-free cap gains on equity more valuable. US bond interest QII-exempt (IRS 871h). | Equity preferred. US bonds OK if needed. |
+| **CCPC** | ⚠️ USE HBB.TO | Interest at 50.17% passive rate. HBB.TO (swap-based) converts to cap gains → ~33.4% effective. | HBB.TO primary. PSA.TO for cash. |
+| **Margin** | ❌ POOR | Interest at ~53% marginal rate. Short-duration only. | XSB.TO, PSA.TO only if needed |
+
+*"The RRSP doubles your effective bond return compared to a taxable account. This is the single most impactful tax optimization for Canadian investors."*
+
+**2026 CCPC Change:** Capital gains inclusion rose to 66.67%. HBB.TO still saves ~17% tax on bond returns vs raw interest. Monitor CRA — swap-based reclassification risk exists but hasn't materialized.
+
+---
+
+### Bond ETF Categories Quick Reference
+
+| Category | Examples | Duration | When to Use |
+|----------|---------|----------|-------------|
+| **Cash/Savings** | PSA.TO, MINT | 0-0.3 | Stagflation, parking cash, negative carry periods |
+| **Short-Term** | SHY, XSB.TO, VSB.TO | 2-3 | Rising rates, flattening curve, risk-off transition |
+| **Mid-Term** | IEF, XBB.TO, ZAG.TO | 6-8 | Neutral regime, balanced carry + roll-down |
+| **Long-Term** | TLT, ZFL.TO, XLB.TO | 15-17 | Rate cuts, risk-off, steep curve, positive term premium |
+| **Corporate IG** | LQD, XCB.TO, ZMU.TO | 5-8 | Spread tightening, expansion, recovery |
+| **High Yield** | HYG, XHY.TO | 4 | Spread tightening + strong economy ONLY |
+| **TIPS** | TIP | 7 | Breakeven >2.5%, inflation rising |
+| **Government** | ZGB.TO, XGB.TO | 8 | Pure flight-to-quality, risk-off |
+| **Swap-Based** | HBB.TO | 8 | CCPC tax optimization ONLY |
+
+---
+
+### Credit Stress Score (0-100)
+
+Composite score combining OAS signal, risk regime, and yield curve shape.
+
+| Score | Level | Bond Allocation Bias | Action |
+|-------|-------|---------------------|--------|
+| 0-34 | BENIGN | UNDERWEIGHT bonds | Economy strong — favor equities, minimal bonds |
+| 35-54 | CAUTIOUS | NEUTRAL | Balanced — maintain target bond allocation |
+| 55-74 | STRESS | OVERWEIGHT bonds | Risk rising — increase bond allocation, favor govts |
+| 75-100 | CRISIS | MAX OVERWEIGHT | Flight to quality — long Treasuries, exit all credit |
+
+### Fixed Income Tools
+
+| Tool | Purpose | Key Output |
+|------|---------|-----------|
+| `monitor_credit_spreads()` | FRED OAS + ETF proxy + stress score | Credit regime, TIPS signal, term premium |
+| `analyze_yield_curve()` | US + CA curve, butterfly, roll-down, carry | Shape, direction, duration recommendation |
+| `recommend_bond_trades()` | 28-ETF scanner, 8-signal scoring | BUY/SELL/HOLD per ETF with account placement |
+| `analyze_bond_allocation()` | Tax-aware placement by account | RRSP/TFSA/CCPC optimal ETFs |
+| `calculate_bond_beta()` | Rolling beta vs AGG, hedge quality | Rate regime asymmetry, SPY hedge effectiveness |
+
+---
+
+*Last Updated: March 2026 | Extracted from COMPREHENSIVE_REPORT_GENERATOR.md v3.1 + Statistical Validation Framework + Intermarket Analysis Framework + Fixed Income Framework*
